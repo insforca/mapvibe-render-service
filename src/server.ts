@@ -15,7 +15,7 @@ const app = express();
 // M03: body limit reduced to 2 MB
 app.use(express.json({ limit: '2mb' }));
 
-const PORT       = process.env.PORT || 3000;
+const PORT        = process.env.PORT || 3000;
 const API_SECRET = process.env.RENDER_API_SECRET ?? '';
 
 // C02 — Fail closed: refuse to start without a secret configured
@@ -24,7 +24,7 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ── C02 — Constant-time auth check ───────────────────────────────────────────
+// ── C02 — Constant-time auth check ──────────────────────────────────────────────────────────────────────────
 function checkAuth(req: Request, res: Response): boolean {
   const raw   = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
   const token = typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
@@ -38,7 +38,7 @@ function checkAuth(req: Request, res: Response): boolean {
   }
 }
 
-// ── C01 — HTML-safe JSON serializer (prevents </script> injection) ────────────
+// ── C01 — HTML-safe JSON serializer (prevents </script> injection) ────────────────
 function htmlSafeJson(obj: unknown): string {
   return JSON.stringify(obj)
     .replace(/</g,  '\u003c')
@@ -48,7 +48,7 @@ function htmlSafeJson(obj: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-// ── H01 — styleJson URL allowlist (blocks SSRF) ───────────────────────────────
+// ── H01 — styleJson URL allowlist (blocks SSRF) ──────────────────────────────────────────────────────────────────
 const ALLOWED_TILE_HOSTS = [
   'tiles.openfreemap.org',
   'tile.openstreetmap.org',
@@ -84,11 +84,11 @@ function validateStyleJsonUrls(styleJson: object): string | null {
   return null;
 }
 
-// ── H02 — Concurrency limiter ─────────────────────────────────────────────────
+// ── H02 — Concurrency limiter ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 let activeRenders = 0;
 const MAX_CONCURRENT = 1; // H02 tightened: two simultaneous 24×36" renders exceed 512MB RAM
 
-// ── MapLibre from node_modules (zero CDN dependency) ─────────────────────────
+// ── MapLibre from node_modules (zero CDN dependency) ────────────────────────────────────────────────────
 let MAPLIBRE_SCRIPT = '';
 try {
   const js = readFileSync(
@@ -146,8 +146,9 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (urlError) { res.status(400).json({ error: urlError }); return; }
 
   const [lng, lat] = center;
-  const w = Math.max(100, Math.min(Math.floor(Number(width)  || 2400), 12288));
-  const h = Math.max(100, Math.min(Math.floor(Number(height) || 2400), 12288));
+  // B5 fix: let (not const) — OOM guard below mutates w and h
+  let w = Math.max(100, Math.min(Math.floor(Number(width)  || 2400), 12288));
+  let h = Math.max(100, Math.min(Math.floor(Number(height) || 2400), 12288));
 
   // B5: DPR:2 — half viewport, double deviceScaleFactor → same pixel output, less Chromium overhead
   const DEVICE_SCALE = 2;
