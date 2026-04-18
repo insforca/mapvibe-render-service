@@ -1,1 +1,21 @@
-{"name":"mapvibe-render-service","version":"1.0.0","description":"Headless map render service for MapVibe Studio","main":"dist/server.js","scripts":{"build":"tsc","start":"node dist/server.js","dev":"ts-node src/server.ts"},"dependencies":{"express":"^4.18.2","playwright":"^1.44.0"},"devDependencies":{"@types/express":"^4.17.21","@types/node":"^20.12.0","typescript":"^5.4.0"}}
+{
+  "name": "mapvibe-render-service",
+  "version": "1.2.0",
+  "description": "Headless map render service for MapVibe Studio",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "maplibre-gl": "4.3.2",
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.12.0",
+    "typescript": "^5.4.0"
+  }
+}
