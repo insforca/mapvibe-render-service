@@ -178,7 +178,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: err.message || 'Render failed' });
   } finally {
     activeRenders--;
-    await context?.close().catch((e: unknown) => console.error('context.close() error:', e));
+    await (context as BrowserContext | null)?.close().catch((e: unknown) => console.error('context.close() error:', e));
   }
 });
 
