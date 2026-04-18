@@ -2,8 +2,8 @@
  * MapVibe Render Service — server.ts
  *
  * Security hardening: C01 htmlSafeJson, C02 fail-closed auth + timingSafeEqual,
- * H01 SSRF tile-URL allowlist, H02 concurrency limiter, H03 no --single-process.
- * Quality:  8192px cap, antialias, maplibre from node_modules, 300ms sustained idle.
+ * H01 SSRF tile-URL allowlist, H02 concurrency limiter (max:1, OOM-safe), H03 no --single-process.
+ * Quality:  12288px cap, DPR:2 (viewport halved, deviceScaleFactor:2), antialias, maplibre from node_modules, 300ms idle.
  */
 import express, { Request, Response } from 'express';
 import { chromium, Browser, BrowserContext } from 'playwright';
@@ -86,7 +86,7 @@ function validateStyleJsonUrls(styleJson: object): string | null {
 
 // ── H02 — Concurrency limiter ─────────────────────────────────────────────────
 let activeRenders = 0;
-const MAX_CONCURRENT = 3;
+const MAX_CONCURRENT = 1; // H02 tightened: two simultaneous 24×36" renders exceed 512MB RAM
 
 // ── MapLibre from node_modules (zero CDN dependency) ─────────────────────────
 let MAPLIBRE_SCRIPT = '';
@@ -146,8 +146,22 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (urlError) { res.status(400).json({ error: urlError }); return; }
 
   const [lng, lat] = center;
-  const w = Math.max(100, Math.min(Math.floor(Number(width)  || 2400), 8192));
-  const h = Math.max(100, Math.min(Math.floor(Number(height) || 2400), 8192));
+  const w = Math.max(100, Math.min(Math.floor(Number(width)  || 2400), 12288));
+  const h = Math.max(100, Math.min(Math.floor(Number(height) || 2400), 12288));
+
+  // B5: DPR:2 — half viewport, double deviceScaleFactor → same pixel output, less Chromium overhead
+  const DEVICE_SCALE = 2;
+
+  // B5 OOM guard: physical px budget = 80M (covers 24×36" = 77.8M px; silently scales down near-square 12K)
+  const MAX_PHYSICAL_PX = 80_000_000;
+  const pixelScale = Math.sqrt(MAX_PHYSICAL_PX / (w * h));
+  if (pixelScale < 1) { w = Math.floor(w * pixelScale); h = Math.floor(h * pixelScale); }
+
+  const vpW = Math.ceil(w / DEVICE_SCALE);
+  const vpH = Math.ceil(h / DEVICE_SCALE);
+
+  // B5: adaptive idle — DPR:2 loads 2× tiles, 300ms too short for full load
+  const IDLE_MS = DEVICE_SCALE > 1 ? 500 : 300;
 
   let context: BrowserContext | null = null;
   activeRenders++;
@@ -155,14 +169,14 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   try {
     const renderAsync = async () => {
       const b = await getBrowser();
-      context = await b.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 1 });
+      context = await b.newContext({ viewport: { width: vpW, height: vpH }, deviceScaleFactor: DEVICE_SCALE });
       const page = await context.newPage();
       await page.setContent(buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch), { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(
-        'window.__mapIdle === true && (Date.now() - window.__mapIdleTime) >= 300',
+        `window.__mapIdle === true && (Date.now() - window.__mapIdleTime) >= ${IDLE_MS}`,
         { timeout: 30000, polling: 150 }
       );
-      return page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: w, height: h } });
+      return page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: vpW, height: vpH } });
     };
 
     const timeoutP = new Promise<never>((_, reject) =>
