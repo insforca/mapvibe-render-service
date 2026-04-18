@@ -58,7 +58,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     const page = await context.newPage();
     const html = buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch);
     await page.setContent(html, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => (window as any).__mapIdle === true, { timeout: 30000, polling: 500 });
+    // Pass as string so TypeScript does not evaluate window in Node.js context
+    await page.waitForFunction('window.__mapIdle === true', { timeout: 30000, polling: 500 });
     await page.waitForTimeout(500);
     const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: w, height: h } });
     res.setHeader('Content-Type', 'image/png');
