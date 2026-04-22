@@ -3,7 +3,7 @@
  *
  * Security hardening: C01 htmlSafeJson, C02 fail-closed auth + timingSafeEqual,
  * H01 SSRF tile-URL allowlist, H02 concurrency limiter (max:1, OOM-safe), H03 no --single-process.
- * Quality:  12288px cap, DPR:2 (viewport halved, deviceScaleFactor:2), antialias, maplibre from node_modules, 300ms idle.
+ * Quality:  12288px cap, DPR:2 web / DPR:3 print (printMode:true), antialias, maplibre from node_modules, 300ms idle.
  */
 import express, { Request, Response } from 'express';
 import { chromium, Browser, BrowserContext } from 'playwright';
@@ -120,7 +120,7 @@ async function getBrowser(): Promise<Browser> {
 }
 
 app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok', version: '1.2.0' });
+  res.json({ status: 'ok', version: '1.3.0' });
 });
 
 app.post('/render', async (req: Request, res: Response): Promise<void> => {
@@ -131,7 +131,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { styleJson, center, zoom, width = 2400, height = 2400, bearing = 0, pitch = 0 } = req.body;
+  const { styleJson, center, zoom, width = 2400, height = 2400, bearing = 0, pitch = 0, printMode = false } = req.body;
 
   if (!styleJson || typeof styleJson !== 'object' || Array.isArray(styleJson)) {
     res.status(400).json({ error: 'styleJson must be a non-null object' });
@@ -150,8 +150,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   let w = Math.max(100, Math.min(Math.floor(Number(width)  || 2400), 12288));
   let h = Math.max(100, Math.min(Math.floor(Number(height) || 2400), 12288));
 
-  // B5: DPR:2 — half viewport, double deviceScaleFactor → same pixel output, less Chromium overhead
-  const DEVICE_SCALE = 2;
+  // B5/P1: printMode uses DPR:3 for ~600 DPI at A3; default DPR:2 for web
+  const DEVICE_SCALE = printMode ? 3 : 2;
 
   // B5 OOM guard: physical px budget = 80M (covers 24×36" = 77.8M px; silently scales down near-square 12K)
   const MAX_PHYSICAL_PX = 80_000_000;
@@ -177,7 +177,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         `window.__mapIdle === true && (Date.now() - window.__mapIdleTime) >= ${IDLE_MS}`,
         { timeout: 30000, polling: 150 }
       );
-      return page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: vpW, height: vpH } });
+      // P1: scale:'device' captures at physical pixels (DEVICE_SCALE x viewport), not CSS pixels
+      return page.screenshot({ type: 'png', scale: 'device' });
     };
 
     const timeoutP = new Promise<never>((_, reject) =>
@@ -186,7 +187,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 
     const screenshot = await Promise.race([renderAsync(), timeoutP]);
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    // P1: print exports are large/unique — don't cache them
+    if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(screenshot);
   } catch (err: any) {
     console.error('Render error:', err);
@@ -222,4 +224,4 @@ map.on('idle',   () => { window.__mapIdle = true; window.__mapIdleTime = Date.no
 }
 
 process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
-app.listen(PORT, () => console.log(`MapVibe Render Service on port ${PORT}`));
+app.listen(PORT, () => console.log(`MapVibe Render Service v1.3.0 on port ${PORT}`));
