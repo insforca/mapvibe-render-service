@@ -10,9 +10,10 @@
  */
 import express, { Request, Response } from 'express';
 import { chromium, Browser, BrowserContext } from 'playwright';
-import { timingSafeEqual } from 'crypto';
+import { timingSafeEqual, createHmac } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { resolve4, resolve6 } from 'dns/promises';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -25,17 +26,20 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
+// HMAC-normalised timing-safe compare — fixes length-leak timing oracle (H3)
+const COMPARE_KEY = Buffer.from('mapvibe-cte-v1');
+function constantTimeEqual(a: string, b: string): boolean {
+  const ha = createHmac('sha256', COMPARE_KEY).update(Buffer.from(a)).digest();
+  const hb = createHmac('sha256', COMPARE_KEY).update(Buffer.from(b)).digest();
+  return timingSafeEqual(ha, hb); // always 32 vs 32 — never throws
+}
+
 function checkAuth(req: Request, res: Response): boolean {
   const raw   = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
   const token = typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
-  try {
-    const ok = timingSafeEqual(Buffer.from(token), Buffer.from(API_SECRET));
-    if (!ok) res.status(401).json({ error: 'Unauthorized' });
-    return ok;
-  } catch {
-    res.status(401).json({ error: 'Unauthorized' });
-    return false;
-  }
+  const ok = constantTimeEqual(token, API_SECRET);
+  if (!ok) res.status(401).json({ error: 'Unauthorized' });
+  return ok;
 }
 
 function htmlSafeJson(obj: unknown): string {
@@ -51,7 +55,26 @@ const ALLOWED_TILE_HOSTS = [
   'tiles.openfreemap.org','tile.openstreetmap.org',
   'a.tile.openstreetmap.org','b.tile.openstreetmap.org','c.tile.openstreetmap.org',
   'basemaps.cartocdn.com','api.maptiler.com','maps.geoapify.com',
+  'mapvibestudio.com', // glyphs and sprites served from studio CDN
 ];
+
+// CDN hosts allowed for script/stylesheet/font resource types only (C2/H4 fix)
+const ALLOWED_ASSET_HOSTS = ['unpkg.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+
+// Private/loopback IP ranges — blocks SSRF redirect chain targets
+const PRIVATE_IP_RE = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fd[0-9a-f]{2}:)/i;
+
+async function isPrivateHost(hostname: string): Promise<boolean> {
+  try {
+    const [a4, a6] = await Promise.all([
+      resolve4(hostname).catch(() => [] as string[]),
+      resolve6(hostname).catch(() => [] as string[]),
+    ]);
+    return [...a4, ...a6].some(ip => PRIVATE_IP_RE.test(ip));
+  } catch {
+    return true; // unresolvable → fail closed
+  }
+}
 
 function extractUrls(obj: unknown, urls: string[] = []): string[] {
   if (typeof obj === 'string') { urls.push(obj); return urls; }
@@ -92,7 +115,7 @@ let browser: Browser | null = null;
 async function getBrowser(): Promise<Browser> {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.launch({
-      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+      args: ['--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'], // C1: removed --no-sandbox
     });
   }
   return browser;
@@ -173,6 +196,40 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       const b = await getBrowser();
       context = await b.newContext({ viewport: { width: vpW, height: vpH }, deviceScaleFactor: DEVICE_SCALE });
       const page = await context.newPage();
+
+      // C2/H4 fix: intercept every Chromium network request — validates redirects too
+      await page.route('**/*', async (route) => {
+        const preq  = route.request();
+        const url   = preq.url();
+        const rtype = preq.resourceType();
+        if (!url.startsWith('http')) { await route.continue(); return; }
+        try {
+          const { protocol, hostname } = new URL(url);
+          // CDN asset loads use a separate allowlist
+          if (['script', 'stylesheet', 'font'].includes(rtype)) {
+            if (ALLOWED_ASSET_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
+              await route.continue(); return;
+            }
+            console.warn(`[render] Blocked ${rtype} from unlisted asset host: ${hostname}`);
+            await route.abort('blockedbyclient'); return;
+          }
+          // All other requests: HTTPS + tile allowlist + not private IP
+          if (protocol !== 'https:') { await route.abort('blockedbyclient'); return; }
+          if (!ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
+            console.warn(`[render] Blocked request to unlisted host: ${hostname}`);
+            await route.abort('blockedbyclient'); return;
+          }
+          if (await isPrivateHost(hostname)) {
+            console.warn(`[render] Blocked request to private IP for host: ${hostname}`);
+            await route.abort('blockedbyclient'); return;
+          }
+          await route.continue();
+        } catch (e) {
+          console.warn('[render] Route intercept error — aborting:', e);
+          await route.abort('blockedbyclient');
+        }
+      });
+
       await page.setContent(buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch, overlay), { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(`window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`, { timeout: 30000, polling: 150 });
       await page.evaluate('window.__runComposite()');
