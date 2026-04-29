@@ -115,7 +115,7 @@ let browser: Browser | null = null;
 async function getBrowser(): Promise<Browser> {
   if (!browser || !browser.isConnected()) {
     browser = await chromium.launch({
-      args: ['--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'], // C1: removed --no-sandbox
+      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
     });
   }
   return browser;
