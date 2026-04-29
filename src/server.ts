@@ -1,12 +1,14 @@
 /**
- * MapVibe Render Service — server.ts v2.1
+ * MapVibe Render Service — server.ts v2.2
  *
- * v2.0 additions: server-side text compositing.
- * Accepts displayCity, displayCountry, fontFamily, theme, showPosterText,
- * fadeStyle, includeCredits in POST body. After map.idle, composites
- * gradient fades + poster text onto the map canvas using Canvas2D inside
- * Playwright's Chromium context. page.screenshot() captures the fully
- * composited poster — no client-side drawPosterText call needed.
+ * v2.2 changes:
+ * - TILE_IDLE_TIMEOUT_MS raised 45s → 55s (high-res 2400×3000 viewport needs more time)
+ * - Graceful partial-render: if tiles haven't gone idle after 30s, proceed with whatever
+ *   is loaded rather than failing — a partially-loaded map is better than a 500 error.
+ *   Full idle is still attempted first; partial-render is the fallback.
+ * - MAX_CONCURRENT raised 1 → 2 (prevents 503 cascade when 2 users render simultaneously)
+ * - Health endpoint version bumped to 2.2.0
+ * - /health endpoint does NOT require auth (diagnostic use)
  */
 import express, { Request, Response } from 'express';
 import { chromium, Browser, BrowserContext } from 'playwright';
@@ -108,8 +110,9 @@ function validateStyleJsonUrls(styleJson: object): string | null {
   return null;
 }
 
+// v2.2: raised 1 → 2 to prevent cascade 503s when two users render simultaneously.
 let activeRenders = 0;
-const MAX_CONCURRENT = 1;
+const MAX_CONCURRENT = 2;
 
 let MAPLIBRE_SCRIPT = '';
 try {
@@ -131,7 +134,7 @@ async function getBrowser(): Promise<Browser> {
   return browser;
 }
 
-app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.1.0' }));
+app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.2.0', activeRenders }));
 
 interface OverlayParams {
   displayCity?: string; displayCountry?: string; fontFamily?: string;
@@ -145,7 +148,18 @@ interface OverlayParams {
 // (layers.ts), formatCoordinates (posterBounds.ts), formatCityLabel/shrinkFont/
 // getTextLayoutMetrics/drawTextWithSpacing/drawPosterText (typography.ts + textLayout.ts)
 const COMPOSITING_JS = `
-function _wa(hex,a){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}\nfunction _ph(hex){var h=(hex||'#808080').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return{r:parseInt(h.slice(0,2),16)||0,g:parseInt(h.slice(2,4),16)||0,b:parseInt(h.slice(4,6),16)||0};}\nfunction _dr(ctx,rx,ry,w,h,i){i=i||4;var rw=Math.round(w),rh=Math.round(h);if(rw<=0||rh<=0)return;var t=ctx.getTransform(),ax=Math.round(rx+t.e),ay=Math.round(ry+t.f),id=ctx.getImageData(ax,ay,rw,rh),d=id.data,B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];for(var py=0;py<rh;py++){var rb=py*rw,br=(py&3)*4;for(var px=0;px<rw;px++){var ii=(rb+px)*4,dv=Math.round(((B[br+(px&3)]/15)-0.5)*2*i);d[ii]=Math.max(0,Math.min(255,d[ii]+dv));d[ii+1]=Math.max(0,Math.min(255,d[ii+1]+dv));d[ii+2]=Math.max(0,Math.min(255,d[ii+2]+dv));}}ctx.putImageData(id,ax,ay);}\nfunction applyFades(ctx,W,H,color,fs){if(fs==='none')return;var tH=Math.round(H*0.25),tg=ctx.createLinearGradient(0,0,0,tH);tg.addColorStop(0,_wa(color,1));tg.addColorStop(.4,_wa(color,.45));tg.addColorStop(.7,_wa(color,.12));tg.addColorStop(1,_wa(color,0));ctx.fillStyle=tg;ctx.fillRect(0,0,W,tH);_dr(ctx,0,0,W,tH);if(fs==='text'){var fH=Math.round(H*.125),gH=Math.round(H*.10),fT=H-fH-gH,fg=ctx.createLinearGradient(0,fT,0,fT+gH);fg.addColorStop(0,_wa(color,0));fg.addColorStop(.18,_wa(color,.04));fg.addColorStop(.34,_wa(color,.14));fg.addColorStop(.5,_wa(color,.34));fg.addColorStop(.65,_wa(color,.6));fg.addColorStop(.8,_wa(color,.84));fg.addColorStop(.92,_wa(color,.97));fg.addColorStop(1,color);ctx.fillStyle=fg;ctx.fillRect(0,fT,W,gH);ctx.fillStyle=color;ctx.fillRect(0,H-fH,W,fH);_dr(ctx,0,fT,W,gH+fH);}else{var bH=Math.round(H*.25),bY=H-bH,bg=ctx.createLinearGradient(0,H,0,bY);bg.addColorStop(0,_wa(color,1));bg.addColorStop(.4,_wa(color,.45));bg.addColorStop(.7,_wa(color,.12));bg.addColorStop(1,_wa(color,0));ctx.fillStyle=bg;ctx.fillRect(0,bY,W,bH);_dr(ctx,0,bY,W,bH);}}\nvar _DR=3600,_EM=.02,_CB=250,_CM=110,_CTB=92,_COB=58,_AB=30,_CS=.35,_CTS=.45,_COS=.25;\nfunction fmtCoords(lat,lon){return Math.abs(lat).toFixed(4)+'\\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\\u00b0 '+(lon>=0?'E':'W');}\nfunction fmtCity(c){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\\u00C0-\\u024F]/.test(ch)){lc++;ac++;}else if(/\\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}\nfunction shrinkFont(base,min,len,sp){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}\nfunction textMetrics(w,h,layout){if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.82,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.92,al:'left',dW:120};}var cx=w*.5;return{cX:cx,cY:h*.885,dX:cx,dY:h*.905,coX:cx,coY:h*.925,crX:cx,crY:h*.945,al:'center',dW:w*.2};}\nfunction drawSpaced(ctx,text,x,y,sp,fs,al){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}\nfunction drawPosterText(ctx,W,H,theme,lat,lon,city,country,ff,showText,credits,layout){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Space Grotesk",sans-serif':'"Space Grotesk",sans-serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var m=textMetrics(W,H,layout||'centered'),cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds;ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}\n`;
+function _wa(hex,a){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
+function _ph(hex){var h=(hex||'#808080').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return{r:parseInt(h.slice(0,2),16)||0,g:parseInt(h.slice(2,4),16)||0,b:parseInt(h.slice(4,6),16)||0};}
+function _dr(ctx,rx,ry,w,h,i){i=i||4;var rw=Math.round(w),rh=Math.round(h);if(rw<=0||rh<=0)return;var t=ctx.getTransform(),ax=Math.round(rx+t.e),ay=Math.round(ry+t.f),id=ctx.getImageData(ax,ay,rw,rh),d=id.data,B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];for(var py=0;py<rh;py++){var rb=py*rw,br=(py&3)*4;for(var px=0;px<rw;px++){var ii=(rb+px)*4,dv=Math.round(((B[br+(px&3)]/15)-0.5)*2*i);d[ii]=Math.max(0,Math.min(255,d[ii]+dv));d[ii+1]=Math.max(0,Math.min(255,d[ii+1]+dv));d[ii+2]=Math.max(0,Math.min(255,d[ii+2]+dv));}}ctx.putImageData(id,ax,ay);}
+function applyFades(ctx,W,H,color,fs){if(fs==='none')return;var tH=Math.round(H*0.25),tg=ctx.createLinearGradient(0,0,0,tH);tg.addColorStop(0,_wa(color,1));tg.addColorStop(.4,_wa(color,.45));tg.addColorStop(.7,_wa(color,.12));tg.addColorStop(1,_wa(color,0));ctx.fillStyle=tg;ctx.fillRect(0,0,W,tH);_dr(ctx,0,0,W,tH);if(fs==='text'){var fH=Math.round(H*.125),gH=Math.round(H*.10),fT=H-fH-gH,fg=ctx.createLinearGradient(0,fT,0,fT+gH);fg.addColorStop(0,_wa(color,0));fg.addColorStop(.18,_wa(color,.04));fg.addColorStop(.34,_wa(color,.14));fg.addColorStop(.5,_wa(color,.34));fg.addColorStop(.65,_wa(color,.6));fg.addColorStop(.8,_wa(color,.84));fg.addColorStop(.92,_wa(color,.97));fg.addColorStop(1,color);ctx.fillStyle=fg;ctx.fillRect(0,fT,W,gH);ctx.fillStyle=color;ctx.fillRect(0,H-fH,W,fH);_dr(ctx,0,fT,W,gH+fH);}else{var bH=Math.round(H*.25),bY=H-bH,bg=ctx.createLinearGradient(0,H,0,bY);bg.addColorStop(0,_wa(color,1));bg.addColorStop(.4,_wa(color,.45));bg.addColorStop(.7,_wa(color,.12));bg.addColorStop(1,_wa(color,0));ctx.fillStyle=bg;ctx.fillRect(0,bY,W,bH);_dr(ctx,0,bY,W,bH);}}
+var _DR=3600,_EM=.02,_CB=250,_CM=110,_CTB=92,_COB=58,_AB=30,_CS=.35,_CTS=.45,_COS=.25;
+function fmtCoords(lat,lon){return Math.abs(lat).toFixed(4)+'\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\u00b0 '+(lon>=0?'E':'W');}
+function fmtCity(c){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\u00C0-\u024F]/.test(ch)){lc++;ac++;}else if(/\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}
+function shrinkFont(base,min,len,sp){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}
+function textMetrics(w,h,layout){if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.82,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.92,al:'left',dW:120};}var cx=w*.5;return{cX:cx,cY:h*.885,dX:cx,dY:h*.905,coX:cx,coY:h*.925,crX:cx,crY:h*.945,al:'center',dW:w*.2};}
+function drawSpaced(ctx,text,x,y,sp,fs,al){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
+function drawPosterText(ctx,W,H,theme,lat,lon,city,country,ff,showText,credits,layout){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Space Grotesk",sans-serif':'"Space Grotesk",sans-serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var m=textMetrics(W,H,layout||'centered'),cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds;ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
+`;
 
 function buildRenderHtml(
   styleJson: object, lng: number, lat: number,
@@ -158,12 +172,15 @@ function buildRenderHtml(
   const overlayJson = overlay ? htmlSafeJson(overlay) : 'null';
   const bgColor     = overlay?.theme?.ui?.bg ?? '#ffffff';
 
-  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8" />\n<style>*{margin:0;padding:0;box-sizing:border-box;}html,body{width:100%;height:100%;overflow:hidden;}#map{width:100%;height:100%;}#composite{display:none;position:absolute;top:0;left:0;width:100%;height:100%;}</style>\n${fontTag}\n<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.css"/>\n${MAPLIBRE_SCRIPT}\n</head><body>\n<div id="map"></div><canvas id="composite"></canvas>\n<script>\n${COMPOSITING_JS}\nwindow.__mapIdle=false;window.__mapIdleTime=0;window.__compositeReady=false;\nvar __ov=${overlayJson};\nconst map=new maplibregl.Map({container:'map',style:${htmlSafeJson(styleJson)},center:[${lng},${lat}],zoom:${zoom},bearing:${bearing},pitch:${pitch},interactive:false,attributionControl:false,fadeDuration:0,preserveDrawingBuffer:true,canvasContextAttributes:{antialias:true}});\nmap.on('render',()=>{window.__mapIdle=false;});\nmap.on('idle',()=>{window.__mapIdle=true;window.__mapIdleTime=Date.now();});\nwindow.__runComposite=async function(){\n  if(document.fonts&&document.fonts.ready)await document.fonts.ready;\n  var mc=map.getCanvas(),w=mc.width,h=mc.height;\n  var cv=document.getElementById('composite');cv.width=w;cv.height=h;\n  var ctx=cv.getContext('2d',{colorSpace:'srgb'});\n  ctx.fillStyle=${JSON.stringify(bgColor)};ctx.fillRect(0,0,w,h);\n  ctx.drawImage(mc,0,0);\n  if(__ov){var fc=(__ov.theme&&__ov.theme.ui&&__ov.theme.ui.bg)||${JSON.stringify(bgColor)};applyFades(ctx,w,h,fc,__ov.fadeStyle||'default');drawPosterText(ctx,w,h,__ov.theme||{},${lat},${lng},__ov.displayCity||'',__ov.displayCountry||'',__ov.fontFamily||'',__ov.showPosterText!==false,__ov.includeCredits!==false,__ov.textLayout||'centered');}\n  document.getElementById('map').style.display='none';cv.style.display='block';\n  window.__compositeReady=true;\n};\n</script></body></html>`;
+  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8" />\n<style>*{margin:0;padding:0;box-sizing:border-box;}html,body{width:100%;height:100%;overflow:hidden;}#map{width:100%;height:100%;}#composite{display:none;position:absolute;top:0;left:0;width:100%;height:100%;}</style>\n${fontTag}\n<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.css"/>\n${MAPLIBRE_SCRIPT}\n</head><body>\n<div id="map"></div><canvas id="composite"></canvas>\n<script>\n${COMPOSITING_JS}\nwindow.__mapIdle=false;window.__mapIdleTime=0;window.__compositeReady=false;window.__tileCount=0;\nvar __ov=${overlayJson};\nconst map=new maplibregl.Map({container:'map',style:${htmlSafeJson(styleJson)},center:[${lng},${lat}],zoom:${zoom},bearing:${bearing},pitch:${pitch},interactive:false,attributionControl:false,fadeDuration:0,preserveDrawingBuffer:true,canvasContextAttributes:{antialias:true}});\nmap.on('render',()=>{window.__mapIdle=false;});\nmap.on('idle',()=>{window.__mapIdle=true;window.__mapIdleTime=Date.now();});\nmap.on('data',(e)=>{if(e.dataType==='tile')window.__tileCount++;});\nwindow.__runComposite=async function(){\n  if(document.fonts&&document.fonts.ready)await document.fonts.ready;\n  var mc=map.getCanvas(),w=mc.width,h=mc.height;\n  var cv=document.getElementById('composite');cv.width=w;cv.height=h;\n  var ctx=cv.getContext('2d',{colorSpace:'srgb'});\n  ctx.fillStyle=${JSON.stringify(bgColor)};ctx.fillRect(0,0,w,h);\n  ctx.drawImage(mc,0,0);\n  if(__ov){var fc=(__ov.theme&&__ov.theme.ui&&__ov.theme.ui.bg)||${JSON.stringify(bgColor)};applyFades(ctx,w,h,fc,__ov.fadeStyle||'default');drawPosterText(ctx,w,h,__ov.theme||{},${lat},${lng},__ov.displayCity||'',__ov.displayCountry||'',__ov.fontFamily||'',__ov.showPosterText!==false,__ov.includeCredits!==false,__ov.textLayout||'centered');}\n  document.getElementById('map').style.display='none';cv.style.display='block';\n  window.__compositeReady=true;\n};\n</script></body></html>`;
 }
 
 app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
-  if (activeRenders >= MAX_CONCURRENT) { res.status(503).json({ error: 'Render service busy — try again shortly' }); return; }
+  if (activeRenders >= MAX_CONCURRENT) {
+    res.status(503).json({ error: 'Render service busy — try again shortly', activeRenders });
+    return;
+  }
 
   const {
     styleJson, center, zoom, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
@@ -187,6 +204,13 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   const vpH     = Math.ceil(h / DEVICE_SCALE);
   const IDLE_MS = DEVICE_SCALE > 1 ? 150 : 100;
 
+  // v2.2: Two-phase tile wait.
+  // Phase 1: Full idle — all tiles loaded. Up to 55s. (raised from 45s)
+  // Phase 2 (fallback): Partial render — if full idle times out after 30s of tile activity,
+  //   proceed with whatever tiles loaded. Produces a valid 300 DPI PNG rather than a 500 error.
+  const FULL_IDLE_MS      = 55_000;
+  const PARTIAL_AFTER_MS  = 30_000; // give up waiting for full idle after 30s if tiles are loading
+
   const overlay: OverlayParams | undefined =
     (displayCity || displayCountry || showPosterText !== false) ? {
       displayCity:    displayCity    ?? '',
@@ -201,6 +225,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 
   let context: BrowserContext | null = null;
   activeRenders++;
+  const renderStart = Date.now();
   try {
     const renderAsync = async () => {
       const b = await getBrowser();
@@ -241,19 +266,44 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       });
 
       await page.setContent(buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch, overlay), { waitUntil: 'domcontentloaded' });
-      await page.waitForFunction(`window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`, { timeout: 45000, polling: 150 });
+
+      // v2.2: Two-phase tile wait.
+      // Try full idle first (all tiles loaded). If that times out, check if we have
+      // any tiles at all and proceed with partial render rather than throwing.
+      let isPartialRender = false;
+      try {
+        await page.waitForFunction(
+          `window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`,
+          { timeout: FULL_IDLE_MS, polling: 150 },
+        );
+      } catch (idleErr: unknown) {
+        const tilesLoaded = await page.evaluate<number>('window.__tileCount || 0');
+        const elapsed = Date.now() - renderStart;
+        if (tilesLoaded > 0 && elapsed >= PARTIAL_AFTER_MS) {
+          console.warn(`[render] Partial render fallback: full idle not reached after ${Math.round(elapsed/1000)}s, tileCount=${tilesLoaded} — proceeding`);
+          isPartialRender = true;
+          // Give the map a brief moment to finish the last paint cycle
+          await page.waitForTimeout(500);
+        } else {
+          throw new Error(`Map tiles not loaded after ${Math.round(elapsed/1000)}s (tileCount=${tilesLoaded})`);
+        }
+      }
+
       await page.evaluate('window.__runComposite()');
       await page.waitForFunction('window.__compositeReady===true', { timeout: 15000, polling: 100 });
-      return page.screenshot({ type: 'png', scale: 'device' });
+      const screenshot = await page.screenshot({ type: 'png', scale: 'device' });
+      console.log(`[render] Done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}×${h}px${isPartialRender?' (partial)':''}`);
+      return screenshot;
     };
-    const timeoutP = new Promise<never>((_,rej)=>setTimeout(()=>rej(new Error('Render timeout (50s)')),50_000));
+    const timeoutP = new Promise<never>((_,rej)=>setTimeout(()=>rej(new Error('Render timeout (58s)')),58_000));
     const screenshot = await Promise.race([renderAsync(), timeoutP]);
     res.setHeader('Content-Type', 'image/png');
     if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(screenshot);
   } catch (err: any) {
-    console.error('Render error:', err);
-    res.status(500).json({ error: err.message || 'Render failed' });
+    const elapsed = Math.round((Date.now()-renderStart)/1000);
+    console.error(`[render] Error after ${elapsed}s:`, err.message || err);
+    res.status(500).json({ error: err.message || 'Render failed', elapsed });
   } finally {
     activeRenders--;
     await (context as BrowserContext | null)?.close().catch((e: unknown) => console.error('context.close():', e));
@@ -261,4 +311,4 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 });
 
 process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
-app.listen(PORT, () => console.log(`MapVibe Render Service v2.0.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`MapVibe Render Service v2.2.0 on port ${PORT}`));
