@@ -1,5 +1,5 @@
 /**
- * MapVibe Render Service — server.ts v2.0
+ * MapVibe Render Service — server.ts v2.1
  *
  * v2.0 additions: server-side text compositing.
  * Accepts displayCity, displayCountry, fontFamily, theme, showPosterText,
@@ -64,14 +64,24 @@ const ALLOWED_ASSET_HOSTS = ['unpkg.com', 'fonts.googleapis.com', 'fonts.gstatic
 // Private/loopback IP ranges — blocks SSRF redirect chain targets
 const PRIVATE_IP_RE = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fd[0-9a-f]{2}:)/i;
 
+// DNS result cache — avoids 50–100 redundant lookups per render (same host repeated)
+const _dnsCache = new Map<string, { isPrivate: boolean; expires: number }>();
+const DNS_TTL_MS = 5 * 60 * 1000; // 5 min
+
 async function isPrivateHost(hostname: string): Promise<boolean> {
+  const now = Date.now();
+  const cached = _dnsCache.get(hostname);
+  if (cached && cached.expires > now) return cached.isPrivate;
   try {
     const [a4, a6] = await Promise.all([
       resolve4(hostname).catch(() => [] as string[]),
       resolve6(hostname).catch(() => [] as string[]),
     ]);
-    return [...a4, ...a6].some(ip => PRIVATE_IP_RE.test(ip));
+    const isPrivate = [...a4, ...a6].some(ip => PRIVATE_IP_RE.test(ip));
+    _dnsCache.set(hostname, { isPrivate, expires: now + DNS_TTL_MS });
+    return isPrivate;
   } catch {
+    _dnsCache.set(hostname, { isPrivate: true, expires: now + DNS_TTL_MS });
     return true; // unresolvable → fail closed
   }
 }
@@ -121,7 +131,7 @@ async function getBrowser(): Promise<Browser> {
   return browser;
 }
 
-app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.0.0' }));
+app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.1.0' }));
 
 interface OverlayParams {
   displayCity?: string; displayCountry?: string; fontFamily?: string;
@@ -175,7 +185,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
   const vpW     = Math.ceil(w / DEVICE_SCALE);
   const vpH     = Math.ceil(h / DEVICE_SCALE);
-  const IDLE_MS = DEVICE_SCALE > 1 ? 500 : 300;
+  const IDLE_MS = DEVICE_SCALE > 1 ? 150 : 100;
 
   const overlay: OverlayParams | undefined =
     (displayCity || displayCountry || showPosterText !== false) ? {
@@ -231,7 +241,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       });
 
       await page.setContent(buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch, overlay), { waitUntil: 'domcontentloaded' });
-      await page.waitForFunction(`window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`, { timeout: 30000, polling: 150 });
+      await page.waitForFunction(`window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`, { timeout: 45000, polling: 150 });
       await page.evaluate('window.__runComposite()');
       await page.waitForFunction('window.__compositeReady===true', { timeout: 15000, polling: 100 });
       return page.screenshot({ type: 'png', scale: 'device' });
