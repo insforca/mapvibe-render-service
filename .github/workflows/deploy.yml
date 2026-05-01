@@ -16,25 +16,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
+      - name: Install Railway CLI & jq
+        run: |
+          npm install -g @railway/cli
+          sudo apt-get install -q -y jq
 
       - name: Fix Railway root directory (set to repo root)
         run: |
-          # Query for service ID named "render" in any project
-          SERVICE_ID=$(curl -sf -X POST https://backboard.railway.app/graphql/v2 \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"query":"query { me { projects { edges { node { id name services { edges { node { id name } } } } } } } }"}' \
-            | jq -r '.data.me.projects.edges[].node.services.edges[] | select(.node.name == "render") | .node.id' | head -1)
+          GQL="https://backboard.railway.app/graphql/v2"
+          AUTH="Authorization: Bearer $RAILWAY_TOKEN"
+
+          # Project-scoped tokens use the `project` query (not `me`)
+          RESP=$(curl -sf -X POST "$GQL" \
+            -H "$AUTH" -H "Content-Type: application/json" \
+            -d '{"query":"query { project { id name services { edges { node { id name } } } } }"}')
+          echo "Project query: $RESP"
+
+          SERVICE_ID=$(echo "$RESP" | jq -r '.data.project.services.edges[] | select(.node.name | test("render";"i")) | .node.id' | head -1)
           echo "Service ID: $SERVICE_ID"
 
-          # Update rootDirectory to empty string (= repo root)
-          RESULT=$(curl -sf -X POST https://backboard.railway.app/graphql/v2 \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -H "Content-Type: application/json" \
+          if [ -z "$SERVICE_ID" ]; then
+            echo "::warning::Could not find service ID — skipping rootDirectory fix"
+            exit 0
+          fi
+
+          # Patch rootDirectory to empty string (= repo root)
+          MUT=$(curl -sf -X POST "$GQL" \
+            -H "$AUTH" -H "Content-Type: application/json" \
             -d "{\"query\":\"mutation { serviceUpdate(id: \\\"$SERVICE_ID\\\", input: { source: { rootDirectory: \\\"\\\", repo: \\\"insforca/mapvibe-render-service\\\" } }) { id name } }\"}")
-          echo "Update result: $RESULT"
+          echo "Mutation result: $MUT"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
