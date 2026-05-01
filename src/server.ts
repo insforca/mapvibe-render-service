@@ -396,11 +396,16 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     if (sources) {
       for (const src of Object.values(sources)) {
         if (typeof src?.url === 'string') {
-          const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/');
-          if (needsPatch) {
+          if (src.url.includes('openfreemap.org')) {
+            // Replace external OpenFreeMap with MapTiler (better reliability from Railway)
             src.url = MAPTILER_API_KEY
               ? `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_API_KEY}`
               : `https://tiles.openfreemap.org/planet`;
+          } else if (src.url.startsWith('/')) {
+            // Absolutize relative tile URLs using SITE_ORIGIN — preserves MapVibe tile server
+            // layer IDs which the style layers are built against (e.g. /api/tilejson →
+            // https://mapvibestudio.com/api/tilejson, which is in ALLOWED_TILE_HOSTS).
+            src.url = SITE_ORIGIN + src.url;
           }
         }
       }
