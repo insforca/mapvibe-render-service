@@ -157,7 +157,7 @@ async function getBrowser(): Promise<Browser> {
   return browser;
 }
 
-app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.3.0', activeRenders }));
+app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.3.2', activeRenders }));
 
 interface OverlayParams {
   displayCity:    string;
