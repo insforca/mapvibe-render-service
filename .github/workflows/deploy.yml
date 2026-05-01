@@ -16,37 +16,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Railway CLI & jq
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Mirror repo root into main/ (Railway rootDirectory workaround)
+        # Railway service is configured with rootDirectory=/main but no main/ exists.
+        # Mirror all files into main/ so Railway finds main/Dockerfile, main/package.json, etc.
+        # Once the rootDirectory is corrected to / in the Railway dashboard this step can be removed.
         run: |
-          npm install -g @railway/cli
-          sudo apt-get install -q -y jq
-
-      - name: Fix Railway root directory (set to repo root)
-        run: |
-          GQL="https://backboard.railway.app/graphql/v2"
-          AUTH="Authorization: Bearer $RAILWAY_TOKEN"
-
-          # Project-scoped tokens use the `project` query (not `me`)
-          RESP=$(curl -sf -X POST "$GQL" \
-            -H "$AUTH" -H "Content-Type: application/json" \
-            -d '{"query":"query { project { id name services { edges { node { id name } } } } }"}')
-          echo "Project query: $RESP"
-
-          SERVICE_ID=$(echo "$RESP" | jq -r '.data.project.services.edges[] | select(.node.name | test("render";"i")) | .node.id' | head -1)
-          echo "Service ID: $SERVICE_ID"
-
-          if [ -z "$SERVICE_ID" ]; then
-            echo "::warning::Could not find service ID — skipping rootDirectory fix"
-            exit 0
-          fi
-
-          # Patch rootDirectory to empty string (= repo root)
-          MUT=$(curl -sf -X POST "$GQL" \
-            -H "$AUTH" -H "Content-Type: application/json" \
-            -d "{\"query\":\"mutation { serviceUpdate(id: \\\"$SERVICE_ID\\\", input: { source: { rootDirectory: \\\"\\\", repo: \\\"insforca/mapvibe-render-service\\\" } }) { id name } }\"}")
-          echo "Mutation result: $MUT"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          mkdir -p main
+          rsync -a --exclude=main/ --exclude=.git/ . main/
+          echo "main/ contents:" && ls main/
 
       - name: Deploy to Railway
         run: railway up --detach --service render
