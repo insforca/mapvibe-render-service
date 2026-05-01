@@ -44,6 +44,7 @@ const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 // ── Config-render constants (used by /fulfill configUrl path) ───────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
+const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN ?? 'https://mapvibe-studio-alpha.vercel.app';
 const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
 const CM_PER_INCH       = 2.54;
 const MAX_RENDER_PX_WH  = 12288; // 24x36 at 300 DPI = 9000×10800 px — well within cap
@@ -79,6 +80,7 @@ const ALLOWED_TILE_HOSTS = [
   'a.tile.openstreetmap.org','b.tile.openstreetmap.org','c.tile.openstreetmap.org',
   'basemaps.cartocdn.com','api.maptiler.com','maps.geoapify.com',
   'mapvibestudio.com', // glyphs and sprites served from studio CDN
+  'mapvibe-studio-alpha.vercel.app', // Vercel app serving /api/tilejson, /glyphs/
 ];
 
 // CDN hosts allowed for script/stylesheet/font resource types only (C2/H4 fix)
@@ -405,15 +407,15 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
             // Absolutize relative tile URLs using SITE_ORIGIN — preserves MapVibe tile server
             // layer IDs which the style layers are built against (e.g. /api/tilejson →
             // https://mapvibestudio.com/api/tilejson, which is in ALLOWED_TILE_HOSTS).
-            src.url = SITE_ORIGIN + src.url;
+            src.url = VERCEL_APP_ORIGIN + src.url;
           }
         }
       }
     }
     if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
-      styleJson.glyphs = SITE_ORIGIN + styleJson.glyphs;
+      styleJson.glyphs = VERCEL_APP_ORIGIN + styleJson.glyphs;
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
-      styleJson.sprite = SITE_ORIGIN + styleJson.sprite;
+      styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
     styleJson = cfg.styleJson as Record<string, unknown>;
   }
