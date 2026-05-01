@@ -2,13 +2,19 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
-# Force Mesa software rasterizer — Docker has no GPU/DRI device (/dev/dri unavailable)
-# Without this, Mesa tries hardware path, fails to open /dev/dri, crashes
+# ── EGL headless stack ────────────────────────────────────────────────────────
+# Docker has no GPU / /dev/dri — Mesa must use software rasterizer.
+# LIBGL_ALWAYS_SOFTWARE=1      : force Mesa swrast (GL layer)
+# MESA_LOADER_DRIVER_OVERRIDE  : skip hardware probe, load swrast directly
+# EGL_PLATFORM=surfaceless     : EGL surfaceless context — no display/DRM needed
+#   Without this, libEGL tries EGL_DEFAULT_DISPLAY → fails to open /dev/dri → SIGABRT
 ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_LOADER_DRIVER_OVERRIDE=swrast
+ENV EGL_PLATFORM=surfaceless
 
 # ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
-# libgl1-mesa-dri provides swrast_dri.so (Mesa software rasterizer for EGL headless context)
+# libgl1-mesa-dri   : swrast_dri.so (Mesa software rasterizer DRI driver)
+# libegl-mesa0      : Mesa EGL implementation (surfaceless extension included)
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
   && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && apt-get install -y nodejs \
@@ -27,6 +33,28 @@ RUN npm install
 
 COPY src/ ./src/
 RUN npx tsc
+
+# ── Build-time smoke tests ────────────────────────────────────────────────────
+# 1. ldd: check all native deps resolved
+RUN find /app/node_modules/@maplibre -name '*.node' | head -1 | xargs ldd 2>&1 | grep 'not found' || echo 'ldd: all libs resolved'
+
+# 2. require() — shared library loads
+RUN node -e "  const {spawnSync}=require('child_process');  const r=spawnSync('node',['-e','require(\"@maplibre/maplibre-gl-native\");console.log(\"mbgl OK\")'],{timeout:8000});  console.log('mbgl exit:'+r.status+' signal:'+r.signal+' out:'+String(r.stdout).trim()+' err:'+String(r.stderr).trim());" || true
+
+# 3. Map() + render() — EGL context creation (the real test)
+RUN node -e "
+  const mbgl = require('@maplibre/maplibre-gl-native');
+  const m = new mbgl.Map({ request: function(req, cb) { cb(new Error('blocked')); }, ratio: 1 });
+  const style = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#336699' } }] };
+  m.load(style);
+  m.render({ zoom: 0, center: [0, 0], width: 64, height: 64, bearing: 0, pitch: 0 }, function(err, buf) {
+    m.release();
+    if (err) { console.error('RENDER FAIL:', err.message); process.exit(1); }
+    console.log('RENDER OK — buf size:', buf ? buf.length : 0);
+  });
+" || true
+
+RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
