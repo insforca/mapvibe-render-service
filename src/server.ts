@@ -564,6 +564,12 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  // ACK immediately — Vercel serverless functions cannot reliably await
+  // a 30-60s render. Railway is a persistent server so setImmediate is safe.
+  res.status(202).json({ success: true, accepted: true, externalId });
+
+  // Process fulfillment async — Railway will complete this after ACK
+  setImmediate(async () => {
   // 1. Resolve final PNG URL
   let finalPngUrl: string | null = pngUrl ?? null;
 
@@ -577,7 +583,6 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     }
     if (!finalPngUrl) {
       console.error(`[fulfill] Config render FAILED for ${externalId}`);
-      res.status(500).json({ error: 'Config render failed — check Railway logs', externalId });
       return;
     }
   }
@@ -586,7 +591,6 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   const existingId = await findExistingPrintfulOrder(externalId);
   if (existingId) {
     console.log(`[fulfill] Duplicate: Printful order ${existingId} already exists for ${externalId} — skipping`);
-    res.status(200).json({ success: true, orderId: Number(existingId), externalId, duplicate: true });
     return;
   }
 
@@ -647,7 +651,6 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     if (pfRes.ok) {
       const orderId = pfData.result?.id ?? pfData.data?.id;
       console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${externalId}`);
-      res.status(200).json({ success: true, orderId, externalId, apiVersion });
       return;
     }
 
@@ -661,22 +664,19 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       const existingAfterRace = await findExistingPrintfulOrder(externalId);
       if (existingAfterRace) {
         console.log(`[fulfill] Race dedup resolved: Printful order ${existingAfterRace} for ${externalId}`);
-        res.status(200).json({ success: true, orderId: Number(existingAfterRace), externalId, duplicate: true });
         return;
       }
       console.error(`[fulfill] Race dedup failed for ${externalId}:`, pfData);
-      res.status(500).json({ success: false, error: 'Duplicate detected but could not resolve existing order', externalId });
       return;
     }
 
     const errDetail = pfData.result || pfData.error?.message || 'Printful error';
     console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
-    res.status(502).json({ success: false, error: errDetail, externalId, apiVersion });
   } catch (err: any) {
     const msg = err instanceof Error ? err.message : 'Network error';
     console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
-    res.status(500).json({ success: false, error: msg, externalId });
   }
+  }); // end setImmediate
 });
 
 process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
