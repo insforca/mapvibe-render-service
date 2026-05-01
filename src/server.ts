@@ -21,7 +21,7 @@
  */
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
-import { mkdirSync, existsSync, writeFileSync } from 'fs';
+import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'fs';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
@@ -148,7 +148,7 @@ async function ensureFont(fontFamily: string): Promise<void> {
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
   try {
-    let ttfBuf: Buffer | null = existsSync(fontPath) ? await import('fs').then(f => f.promises.readFile(fontPath)) : null;
+    let ttfBuf: Buffer | null = existsSync(fontPath) ? readFileSync(fontPath) : null;
     if (!ttfBuf) {
       // Fetch CSS from Google Fonts requesting TTF (older UA)
       const cssUrl = `https://fonts.googleapis.com/css?family=${encodeURIComponent(fontFamily)}:300,400,700`;
