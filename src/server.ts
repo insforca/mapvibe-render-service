@@ -499,6 +499,52 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
+
+// ── Temporary /e2e-test-fulfill endpoint (body-token auth, remove after test) ──
+const E2E_TEST_TOKEN = 'e2e-london-noir-2026';
+app.post('/e2e-test-fulfill', async (req: Request, res: Response): Promise<void> => {
+  if (req.body?.testToken !== E2E_TEST_TOKEN) {
+    res.status(401).json({ error: 'Unauthorized' }); return;
+  }
+  const { configUrl, externalId, recipient, variantId, catalogVariantId, label, quantity } = req.body as FulfillBody & { testToken: string };
+  if (!configUrl || !externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
+    res.status(400).json({ error: 'Missing required fields' }); return;
+  }
+  console.log(`[e2e-test-fulfill] Starting for ${externalId}`);
+  activeRenders++;
+  let pngUrl: string | null = null;
+  try {
+    pngUrl = await renderConfigToBlobUrl(configUrl);
+  } finally {
+    activeRenders--;
+  }
+  if (!pngUrl) {
+    res.status(500).json({ ok: false, error: 'Render failed — null pngUrl', externalId }); return;
+  }
+  console.log(`[e2e-test-fulfill] Render OK: ${pngUrl}`);
+  const v2Payload = {
+    external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
+    items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
+              name: `MapVibe — ${label}`, files: [{ type: 'default', url: pngUrl }] }],
+  };
+  const pfHeaders: Record<string,string> = { Authorization: `Bearer ${PRINTFUL_KEY}`, 'Content-Type': 'application/json' };
+  if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
+  const pfUrl = variantId.startsWith('v2_') ? PRINTFUL_V2_ORDERS_URL : PRINTFUL_V1_ORDERS_URL;
+  const pfBody = variantId.startsWith('v2_') ? v2Payload :
+    { external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
+      items: [{ variant_id: parseInt(variantId), quantity,
+                name: `MapVibe — ${label}`, files: [{ url: pngUrl }] }] };
+  const pfResp = await fetch(pfUrl, { method: 'POST', headers: pfHeaders, body: JSON.stringify(pfBody) });
+  const pfData = await pfResp.json() as { result?: { id?: number; external_id?: string }; error?: string };
+  if (!pfResp.ok) {
+    console.error(`[e2e-test-fulfill] Printful error:`, pfData);
+    res.status(502).json({ ok: false, pngUrl, printfulError: pfData, externalId }); return;
+  }
+  const orderId = pfData?.result?.id;
+  console.log(`[e2e-test-fulfill] ✅ Printful draft order ${orderId} created for ${externalId}`);
+  res.json({ ok: true, pngUrl, printfulOrderId: orderId, externalId });
+});
+
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '3.0.0' }));
 
 // POST /render — synchronous render, returns PNG
