@@ -565,11 +565,11 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   }
 
   // ACK immediately — Vercel serverless functions cannot reliably await
-  // a 30-60s render. Railway is a persistent server so setImmediate is safe.
+  // a 30-60s render. Railway is a persistent server so void Promise is safe.
   res.status(202).json({ success: true, accepted: true, externalId });
 
   // Process fulfillment async — Railway will complete this after ACK
-  setImmediate(async () => {
+  void (async () => {
   // 1. Resolve final PNG URL
   let finalPngUrl: string | null = pngUrl ?? null;
 
@@ -676,7 +676,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     const msg = err instanceof Error ? err.message : 'Network error';
     console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
   }
-  }); // end setImmediate
+  })(); // end void async IIFE
 });
 
 process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
