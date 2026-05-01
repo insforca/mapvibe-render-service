@@ -26,9 +26,29 @@ import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
 // Native renderer + compositing
+// Load native renderer — log error but keep service alive if GL is unavailable
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const mbgl = require('@maplibre/maplibre-gl-native') as any;
-import { createCanvas, registerFont } from 'canvas';
+let mbgl: any = null;
+let mbglLoadError: string | null = null;
+try {
+  mbgl = require('@maplibre/maplibre-gl-native');
+  console.log('[startup] @maplibre/maplibre-gl-native loaded OK');
+} catch (e: any) {
+  mbglLoadError = e?.message ?? String(e);
+  console.error('[startup] FATAL: @maplibre/maplibre-gl-native failed to load:', mbglLoadError);
+}
+
+// Load node-canvas — same pattern
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let canvasModule: any = null;
+try {
+  canvasModule = require('canvas');
+  console.log('[startup] canvas loaded OK');
+} catch (e: any) {
+  console.error('[startup] FATAL: canvas failed to load:', e?.message ?? e);
+}
+const createCanvas: any = canvasModule?.createCanvas;
+const registerFont: any = canvasModule?.registerFont;
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
