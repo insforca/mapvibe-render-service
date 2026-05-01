@@ -601,7 +601,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     }
 
     const v2Payload = {
-      external_id: externalId, shipping: 'STANDARD', recipient, confirm: true,
+      external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
                 name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
     };
@@ -618,7 +618,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       if (!pfRes.ok) {
         console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
         const v1Payload = {
-          external_id: externalId, shipping: 'STANDARD', recipient, confirm: true,
+          external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
           items: [{ variant_id: variantId, quantity,
                     name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
         };
