@@ -688,4 +688,4 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 });
 
 process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
-app.listen(PORT, () => console.log(`MapVibe Render Service v2.3.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`MapVibe Render Service v2.3.1 on port ${PORT}`));
