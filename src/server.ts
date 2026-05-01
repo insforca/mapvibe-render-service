@@ -1,28 +1,34 @@
 /**
- * MapVibe Render Service — server.ts v2.3
+ * MapVibe Render Service — server.ts v3.0.0
  *
- * v2.3 changes:
- * - Extracted renderPngInternal() — shared browser render function used by /render and /fulfill
- * - Added POST /fulfill — receives fulfillment job from Vercel dispatcher,
- *   renders PNG (from configUrl or uses provided pngUrl), uploads to Vercel Blob,
- *   creates Printful order (v2 + v1 fallback + race-dedup handler), returns result.
- * - Railway now owns 100% of Printful logic; Vercel webhook is a pure dispatcher.
+ * v3.0.0: Replace Playwright/SwiftShader browser pipeline with
+ *   @maplibre/maplibre-gl-native (native OpenGL/EGL, no browser).
+ *   Resolves vector-tile blank-map bug at zoom >= 13 in headless containers.
+ *   Compositing (applyFades, drawPosterText) now runs via node-canvas
+ *   using the identical Canvas 2D API — zero logic changes to poster rendering.
  *
- * New env vars required (add to Railway):
- *   PRINTFUL_API_KEY       — Printful OAuth token
- *   PRINTFUL_STORE_ID      — Printful store ID (default: 17897492)
- *   BLOB_READ_WRITE_TOKEN  — Vercel Blob write token (for PNG upload in fulfill path)
- *   MAPTILER_API_KEY       — MapTiler API key (for tile source patching in configUrl path)
- *   SITE_ORIGIN            — Site origin for absolutizing relative glyphs/sprites URLs
- *                            (default: https://mapvibestudio.com)
+ * Base image changed: mcr.microsoft.com/playwright → node:20-bookworm-slim
+ *   (smaller image, explicit GL/EGL deps instead of bundled Chromium)
+ *
+ * Env vars (unchanged from v2.x):
+ *   RENDER_API_SECRET        — required; auth for /render and /fulfill
+ *   PRINTFUL_API_KEY         — Printful OAuth token
+ *   PRINTFUL_STORE_ID        — Printful store ID (default: 17897492)
+ *   BLOB_READ_WRITE_TOKEN    — Vercel Blob write token
+ *   MAPTILER_API_KEY         — MapTiler API key (optional; used for glyph CDN)
+ *   SITE_ORIGIN              — Site origin (default: https://mapvibestudio.com)
+ *   VERCEL_APP_ORIGIN        — Vercel app origin for sprite absolutization
  */
 import express, { Request, Response } from 'express';
-import { chromium, Browser, BrowserContext } from 'playwright';
 import { timingSafeEqual, createHmac } from 'crypto';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { resolve4, resolve6 } from 'dns/promises';
+import { mkdirSync, existsSync, writeFileSync } from 'fs';
+import { join, basename } from 'path';
 import { put } from '@vercel/blob';
+
+// Native renderer + compositing
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const mbgl = require('@maplibre/maplibre-gl-native') as any;
+import { createCanvas, registerFont } from 'canvas';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -41,124 +47,152 @@ const PRINTFUL_API_V1   = 'https://api.printful.com';
 const PRINTFUL_KEY      = process.env.PRINTFUL_API_KEY      ?? '';
 const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 
-// ── Config-render constants (used by /fulfill configUrl path) ───────────────
+// ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
-const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN ?? 'https://mapvibe-studio-alpha.vercel.app';
+const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-studio-alpha.vercel.app';
 const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
 const CM_PER_INCH       = 2.54;
-const MAX_RENDER_PX_WH  = 12288; // 24x36 at 300 DPI = 9000×10800 px — well within cap
+const MAX_RENDER_PX_WH  = 12288;
 const MAX_ZOOM_RENDER   = 17;
+const MAX_CONCURRENT    = 4;
+let   activeRenders     = 0;
 
-// HMAC-normalised timing-safe compare — fixes length-leak timing oracle (H3)
+// ── Auth ────────────────────────────────────────────────────────────────────
 const COMPARE_KEY = Buffer.from('mapvibe-cte-v1');
 function constantTimeEqual(a: string, b: string): boolean {
   const ha = createHmac('sha256', COMPARE_KEY).update(Buffer.from(a)).digest();
   const hb = createHmac('sha256', COMPARE_KEY).update(Buffer.from(b)).digest();
-  return timingSafeEqual(ha, hb); // always 32 vs 32 — never throws
+  return timingSafeEqual(ha, hb);
 }
-
 function checkAuth(req: Request, res: Response): boolean {
   const raw   = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
   const token = typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
-  const ok = constantTimeEqual(token, API_SECRET);
+  const ok    = constantTimeEqual(token, API_SECRET);
   if (!ok) res.status(401).json({ error: 'Unauthorized' });
   return ok;
 }
 
-function htmlSafeJson(obj: unknown): string {
-  return JSON.stringify(obj)
-    .replace(/</g,  '\u003c')
-    .replace(/>/g,  '\u003e')
-    .replace(/&/g,  '\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-}
-
+// ── Tile / asset allowlist ──────────────────────────────────────────────────
 const ALLOWED_TILE_HOSTS = [
   'tiles.openfreemap.org','tile.openstreetmap.org',
   'a.tile.openstreetmap.org','b.tile.openstreetmap.org','c.tile.openstreetmap.org',
   'basemaps.cartocdn.com','api.maptiler.com','maps.geoapify.com',
-  'mapvibestudio.com', // glyphs and sprites served from studio CDN
-  'mapvibe-studio-alpha.vercel.app', // Vercel app serving /api/tilejson, /glyphs/
+  'mapvibe-studio-alpha.vercel.app',
 ];
-
-// CDN hosts allowed for script/stylesheet/font resource types only (C2/H4 fix)
-const ALLOWED_ASSET_HOSTS = ['unpkg.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
-
-// Private/loopback IP ranges — blocks SSRF redirect chain targets
 const PRIVATE_IP_RE = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fd[0-9a-f]{2}:)/i;
 
-// DNS result cache — avoids 50–100 redundant lookups per render (same host repeated)
-const _dnsCache = new Map<string, { isPrivate: boolean; expires: number }>();
-const DNS_TTL_MS = 5 * 60 * 1000; // 5 min
-
-async function isPrivateHost(hostname: string): Promise<boolean> {
-  const now = Date.now();
-  const cached = _dnsCache.get(hostname);
-  if (cached && cached.expires > now) return cached.isPrivate;
+function isAllowedUrl(url: string): boolean {
   try {
-    const [a4, a6] = await Promise.all([
-      resolve4(hostname).catch(() => [] as string[]),
-      resolve6(hostname).catch(() => [] as string[]),
-    ]);
-    const isPrivate = [...a4, ...a6].some(ip => PRIVATE_IP_RE.test(ip));
-    _dnsCache.set(hostname, { isPrivate, expires: now + DNS_TTL_MS });
-    return isPrivate;
-  } catch {
-    _dnsCache.set(hostname, { isPrivate: true, expires: now + DNS_TTL_MS });
-    return true; // unresolvable → fail closed
-  }
+    const { protocol, hostname, host } = new URL(url);
+    if (protocol !== 'https:') return false;
+    if (PRIVATE_IP_RE.test(host)) return false;
+    return ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h));
+  } catch { return false; }
 }
 
 function extractUrls(obj: unknown, urls: string[] = []): string[] {
   if (typeof obj === 'string') { urls.push(obj); return urls; }
   if (Array.isArray(obj)) { obj.forEach(v => extractUrls(v, urls)); return urls; }
   if (obj && typeof obj === 'object') {
-    for (const v of Object.values(obj as Record<string, unknown>)) extractUrls(v, urls);
+    for (const v of Object.values(obj)) extractUrls(v, urls);
   }
   return urls;
 }
 
 function validateStyleJsonUrls(styleJson: object): string | null {
-  for (const url of extractUrls(styleJson)) {
-    if (!url.startsWith('http')) continue;
+  const urls = extractUrls(styleJson).filter(u => u.startsWith('http'));
+  for (const url of urls) {
     try {
-      const { protocol, hostname } = new URL(url);
-      if (protocol !== 'https:') return `Non-HTTPS URL rejected: ${url}`;
-      const allowed = ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h));
-      if (!allowed) return `Tile host not in allowlist: ${hostname}`;
-    } catch { return `Malformed URL in styleJson: ${url}`; }
+      const { hostname } = new URL(url);
+      if (!ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
+        return `Tile host not in allowlist: ${hostname}`;
+      }
+    } catch { return `Invalid URL in styleJson: ${url}`; }
   }
   return null;
 }
 
-// v2.2: raised 1 → 2 to prevent cascade 503s when two users render simultaneously.
-let activeRenders = 0;
-const MAX_CONCURRENT = 2;
+// ── Font cache ───────────────────────────────────────────────────────────────
+const FONT_CACHE_DIR = '/tmp/mapvibe-fonts';
+const registeredFonts = new Set<string>();
 
-let MAPLIBRE_SCRIPT = '';
-try {
-  const js = readFileSync(join(__dirname, '..', 'node_modules', 'maplibre-gl', 'dist', 'maplibre-gl.js'), 'utf8');
-  MAPLIBRE_SCRIPT = `<script>${js}</script>`;
-  console.log(`[render] maplibre-gl.js loaded (${(js.length/1024).toFixed(0)} KB)`);
-} catch {
-  MAPLIBRE_SCRIPT = `<script src="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.js"></script>`;
-  console.warn('[render] maplibre-gl.js not in node_modules — fallback to CDN');
-}
-
-let browser: Browser | null = null;
-async function getBrowser(): Promise<Browser> {
-  if (!browser || !browser.isConnected()) {
-    browser = await chromium.launch({
-      args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--use-gl=swiftshader','--enable-webgl','--ignore-gpu-blocklist'],
-    });
+/** Register system fallback fonts at startup so poster text renders without network calls. */
+function registerSystemFonts(): void {
+  const candidates: Array<{ path: string; family: string; weight?: string; style?: string }> = [
+    // Liberation fonts (fonts-liberation apt package)
+    { path: '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',    family: 'Space Grotesk' },
+    { path: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',    family: 'IBM Plex Mono' },
+    // Open Sans (fonts-open-sans)
+    { path: '/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf',           family: 'Space Grotesk' },
+    // DejaVu fallbacks
+    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                    family: 'Space Grotesk' },
+    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',                family: 'IBM Plex Mono' },
+  ];
+  for (const c of candidates) {
+    if (existsSync(c.path) && !registeredFonts.has(c.family)) {
+      try {
+        registerFont(c.path, { family: c.family, weight: c.weight ?? 'regular', style: c.style ?? 'normal' });
+        registeredFonts.add(c.family);
+        console.log(`[fonts] Registered ${c.family} from ${basename(c.path)}`);
+      } catch (err) {
+        console.warn(`[fonts] Could not register ${c.path}:`, err);
+      }
+    }
   }
-  return browser;
 }
 
-app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '2.3.3', activeRenders }));
+/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
+async function ensureFont(fontFamily: string): Promise<void> {
+  if (!fontFamily || registeredFonts.has(fontFamily)) return;
+  mkdirSync(FONT_CACHE_DIR, { recursive: true });
+  const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
+  try {
+    let ttfBuf: Buffer | null = existsSync(fontPath) ? await import('fs').then(f => f.promises.readFile(fontPath)) : null;
+    if (!ttfBuf) {
+      // Fetch CSS from Google Fonts requesting TTF (older UA)
+      const cssUrl = `https://fonts.googleapis.com/css?family=${encodeURIComponent(fontFamily)}:300,400,700`;
+      const cssRes = await fetch(cssUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!cssRes.ok) throw new Error(`Google Fonts CSS ${cssRes.status}`);
+      const css = await cssRes.text();
+      const match = css.match(/src:\s*url\((https?:\/\/[^)]+\.(?:ttf|woff))\)/i);
+      if (!match) throw new Error('No TTF URL in Google Fonts CSS');
+      const fontRes = await fetch(match[1], { signal: AbortSignal.timeout(15_000) });
+      if (!fontRes.ok) throw new Error(`Font download ${fontRes.status}`);
+      ttfBuf = Buffer.from(await fontRes.arrayBuffer());
+      writeFileSync(fontPath, ttfBuf);
+    }
+    registerFont(fontPath, { family: fontFamily });
+    registeredFonts.add(fontFamily);
+    console.log(`[fonts] Registered ${fontFamily} from Google Fonts`);
+  } catch (err) {
+    console.warn(`[fonts] ${fontFamily} unavailable, falling back to system font:`, err);
+  }
+}
 
+// Register system fonts once at startup
+registerSystemFonts();
+
+// ── Compositing constants (match COMPOSITING_JS header in v2.x) ─────────────
+const _DR = 2400, _AB = .0085, _EM = .012, _CB = .085, _CM = .04;
+const _CS  = .06,  _CTB = .028, _CTS = .03, _COB = .022, _COS = .015;
+
+// ── Compositing functions — Canvas 2D API; identical logic to v2.x ──────────
+function _wa(hex: any, a: any){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
+function _ph(hex: any){var h=(hex||'#808080').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return{r:parseInt(h.slice(0,2),16)||0,g:parseInt(h.slice(2,4),16)||0,b:parseInt(h.slice(4,6),16)||0};}
+function _dr(ctx: any, rx: any, ry: any, w: any, h: any, i?: any){i=i||4;var rw=Math.round(w),rh=Math.round(h);if(rw<=0||rh<=0)return;var t=ctx.getTransform(),ax=Math.round(rx+t.e),ay=Math.round(ry+t.f),id=ctx.getImageData(ax,ay,rw,rh),d=id.data,B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];for(var py=0;py<rh;py++){var rb=py*rw,br=(py&3)*4;for(var px=0;px<rw;px++){var ii=(rb+px)*4,dv=Math.round(((B[br+(px&3)]/15)-0.5)*2*i);d[ii]=Math.max(0,Math.min(255,d[ii]+dv));d[ii+1]=Math.max(0,Math.min(255,d[ii+1]+dv));d[ii+2]=Math.max(0,Math.min(255,d[ii+2]+dv));}}ctx.putImageData(id,ax,ay);}
+function applyFades(ctx: any, W: any, H: any, color: any, fs: any){if(fs==='none')return;var tH=Math.round(H*0.25),tg=ctx.createLinearGradient(0,0,0,tH);tg.addColorStop(0,_wa(color,1));tg.addColorStop(.4,_wa(color,.45));tg.addColorStop(.7,_wa(color,.12));tg.addColorStop(1,_wa(color,0));ctx.fillStyle=tg;ctx.fillRect(0,0,W,tH);_dr(ctx,0,0,W,tH);if(fs==='text'){var fH=Math.round(H*.125),gH=Math.round(H*.10),fT=H-fH-gH,fg=ctx.createLinearGradient(0,fT,0,fT+gH);fg.addColorStop(0,_wa(color,0));fg.addColorStop(.18,_wa(color,.04));fg.addColorStop(.34,_wa(color,.14));fg.addColorStop(.5,_wa(color,.34));fg.addColorStop(.65,_wa(color,.6));fg.addColorStop(.8,_wa(color,.84));fg.addColorStop(.92,_wa(color,.97));fg.addColorStop(1,color);ctx.fillStyle=fg;ctx.fillRect(0,fT,W,gH);ctx.fillStyle=color;ctx.fillRect(0,H-fH,W,fH);_dr(ctx,0,fT,W,gH+fH);}else{var bH=Math.round(H*.25),bY=H-bH,bg=ctx.createLinearGradient(0,H,0,bY);bg.addColorStop(0,_wa(color,1));bg.addColorStop(.4,_wa(color,.45));bg.addColorStop(.7,_wa(color,.12));bg.addColorStop(1,_wa(color,0));ctx.fillStyle=bg;ctx.fillRect(0,bY,W,bH);_dr(ctx,0,bY,W,bH);}}
+function fmtCoords(lat: any, lon: any){return Math.abs(lat).toFixed(4)+'\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\u00b0 '+(lon>=0?'E':'W');}
+function fmtCity(c: any){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\u00C0-\u024F]/.test(ch)){lc++;ac++;}else if(/\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}
+function shrinkFont(base: any, min: any, len: any, sp: any){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}
+function textMetrics(w: any, h: any, layout: any){if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.82,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.92,al:'left',dW:120};}var cx=w*.5;return{cX:cx,cY:h*.885,dX:cx,dY:h*.905,coX:cx,coY:h*.925,crX:cx,crY:h*.945,al:'center',dW:w*.2};}
+function drawSpaced(ctx: any, text: any, x: any, y: any, sp: any, fs: any, al: any){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
+function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Space Grotesk",sans-serif':'"Space Grotesk",sans-serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var m=textMetrics(W,H,layout||'centered'),cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds;ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
+
+// ── OverlayParams type ───────────────────────────────────────────────────────
 interface OverlayParams {
   displayCity:    string;
   displayCountry: string;
@@ -170,40 +204,7 @@ interface OverlayParams {
   theme:          unknown;
 }
 
-// ── Minified canvas compositing helpers (unchanged from v2.2) ──────────────
-// Browser-context constants — defined at runtime via COMPOSITING_JS string;
-// declared here only to satisfy TypeScript strict mode.
-/* eslint-disable @typescript-eslint/no-unused-vars */
-declare const _DR: number, _AB: number, _EM: number, _CB: number;
-declare const _CM: number, _CS: number, _CTB: number, _CTS: number;
-declare const _COB: number, _COS: number;
-/* eslint-enable */
-function _wa(hex: any, a: any){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
-function _ph(hex: any){var h=(hex||'#808080').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return{r:parseInt(h.slice(0,2),16)||0,g:parseInt(h.slice(2,4),16)||0,b:parseInt(h.slice(4,6),16)||0};}
-function _dr(ctx: any, rx: any, ry: any, w: any, h: any, i?: any){i=i||4;var rw=Math.round(w),rh=Math.round(h);if(rw<=0||rh<=0)return;var t=ctx.getTransform(),ax=Math.round(rx+t.e),ay=Math.round(ry+t.f),id=ctx.getImageData(ax,ay,rw,rh),d=id.data,B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];for(var py=0;py<rh;py++){var rb=py*rw,br=(py&3)*4;for(var px=0;px<rw;px++){var ii=(rb+px)*4,dv=Math.round(((B[br+(px&3)]/15)-0.5)*2*i);d[ii]=Math.max(0,Math.min(255,d[ii]+dv));d[ii+1]=Math.max(0,Math.min(255,d[ii+1]+dv));d[ii+2]=Math.max(0,Math.min(255,d[ii+2]+dv));}}ctx.putImageData(id,ax,ay);}
-function applyFades(ctx: any, W: any, H: any, color: any, fs: any){if(fs==='none')return;var tH=Math.round(H*0.25),tg=ctx.createLinearGradient(0,0,0,tH);tg.addColorStop(0,_wa(color,1));tg.addColorStop(.4,_wa(color,.45));tg.addColorStop(.7,_wa(color,.12));tg.addColorStop(1,_wa(color,0));ctx.fillStyle=tg;ctx.fillRect(0,0,W,tH);_dr(ctx,0,0,W,tH);if(fs==='text'){var fH=Math.round(H*.125),gH=Math.round(H*.10),fT=H-fH-gH,fg=ctx.createLinearGradient(0,fT,0,fT+gH);fg.addColorStop(0,_wa(color,0));fg.addColorStop(.18,_wa(color,.04));fg.addColorStop(.34,_wa(color,.14));fg.addColorStop(.5,_wa(color,.34));fg.addColorStop(.65,_wa(color,.6));fg.addColorStop(.8,_wa(color,.84));fg.addColorStop(.92,_wa(color,.97));fg.addColorStop(1,color);ctx.fillStyle=fg;ctx.fillRect(0,fT,W,gH);ctx.fillStyle=color;ctx.fillRect(0,H-fH,W,fH);_dr(ctx,0,fT,W,gH+fH);}else{var bH=Math.round(H*.25),bY=H-bH,bg=ctx.createLinearGradient(0,H,0,bY);bg.addColorStop(0,_wa(color,1));bg.addColorStop(.4,_wa(color,.45));bg.addColorStop(.7,_wa(color,.12));bg.addColorStop(1,_wa(color,0));ctx.fillStyle=bg;ctx.fillRect(0,bY,W,bH);_dr(ctx,0,bY,W,bH);}}
-
-function fmtCoords(lat: any, lon: any){return Math.abs(lat).toFixed(4)+'\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\u00b0 '+(lon>=0?'E':'W');}
-function fmtCity(c: any){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\u00C0-\u024F]/.test(ch)){lc++;ac++;}else if(/\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}
-function shrinkFont(base: any, min: any, len: any, sp: any){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}
-function textMetrics(w: any, h: any, layout: any){if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.82,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.92,al:'left',dW:120};}var cx=w*.5;return{cX:cx,cY:h*.885,dX:cx,dY:h*.905,coX:cx,coY:h*.925,crX:cx,crY:h*.945,al:'center',dW:w*.2};}
-function drawSpaced(ctx: any, text: any, x: any, y: any, sp: any, fs: any, al: any){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
-function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Space Grotesk",sans-serif':'"Space Grotesk",sans-serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var m=textMetrics(W,H,layout||'centered'),cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds;ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
-
-function buildRenderHtml(
-  styleJson: object, lng: number, lat: number, zoom: number, bearing: number, pitch: number,
-  overlay?: OverlayParams,
-): string {
-  const overlayJson = overlay ? JSON.stringify(overlay) : 'null';
-  const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
-  const fontTag = overlay?.fontFamily
-    ? `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=${encodeURIComponent(overlay.fontFamily)}:wght@300;400;700&display=swap" rel="stylesheet">`
-    : '';
-  const COMPOSITING_JS = `var _DR=2400,_AB=.0085,_EM=.012,_CB=.085,_CM=.04,_CS=.06,_CTB=.028,_CTS=.03,_COB=.022,_COS=.015;${_wa.toString()}${_ph.toString()}${_dr.toString()}${applyFades.toString()}${fmtCoords.toString()}${fmtCity.toString()}${shrinkFont.toString()}${textMetrics.toString()}${drawSpaced.toString()}${drawPosterText.toString()}`;
-  return `<!DOCTYPE html>\n<html><head><meta charset="utf-8" />\n<style>*{margin:0;padding:0;box-sizing:border-box;}html,body{width:100%;height:100%;overflow:hidden;}#map{width:100%;height:100%;}#composite{display:none;position:absolute;top:0;left:0;width:100%;height:100%;}</style>\n${fontTag}\n<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.3.2/dist/maplibre-gl.css"/>\n${MAPLIBRE_SCRIPT}\n</head><body>\n<div id="map"></div><canvas id="composite"></canvas>\n<script>\n${COMPOSITING_JS}\nwindow.__mapIdle=false;window.__mapIdleTime=0;window.__compositeReady=false;window.__tileCount=0;\nvar __ov=${overlayJson};\nmaplibregl.workerCount=0;const map=new maplibregl.Map({container:'map',style:${htmlSafeJson(styleJson)},center:[${lng},${lat}],zoom:${zoom},bearing:${bearing},pitch:${pitch},interactive:false,attributionControl:false,fadeDuration:0,preserveDrawingBuffer:true,canvasContextAttributes:{antialias:true}});\nmap.on('render',()=>{window.__mapIdle=false;});\nmap.on('idle',()=>{window.__mapIdle=true;window.__mapIdleTime=Date.now();});\nmap.on('data',(e)=>{if(e.dataType==='tile')window.__tileCount++;});\nwindow.__runComposite=async function(){\n  if(document.fonts&&document.fonts.ready)await document.fonts.ready;\n  var mc=map.getCanvas(),w=mc.width,h=mc.height;\n  var cv=document.getElementById('composite');cv.width=w;cv.height=h;\n  var ctx=cv.getContext('2d',{colorSpace:'srgb'});\n  ctx.fillStyle=${JSON.stringify(bgColor)};ctx.fillRect(0,0,w,h);\n  ctx.drawImage(mc,0,0);\n  if(__ov){var fc=(__ov.theme&&__ov.theme.ui&&__ov.theme.ui.bg)||${JSON.stringify(bgColor)};applyFades(ctx,w,h,fc,__ov.fadeStyle||'default');drawPosterText(ctx,w,h,__ov.theme||{},${lat},${lng},__ov.displayCity||'',__ov.displayCountry||'',__ov.fontFamily||'',__ov.showPosterText!==false,__ov.includeCredits!==false,__ov.textLayout||'centered');}\n  document.getElementById('map').style.display='none';cv.style.display='block';\n  window.__compositeReady=true;\n};\n</script></body></html>`;
-}
-
-// ── Core browser render — shared by /render and /fulfill ───────────────────
+// ── Native render pipeline ───────────────────────────────────────────────────
 interface RenderParams {
   styleJson:     object;
   center:        [number, number];
@@ -216,110 +217,116 @@ interface RenderParams {
   overlay?:      OverlayParams;
 }
 
+/**
+ * Render a MapLibre GL style to PNG using the native renderer.
+ * Replaces the Playwright/SwiftShader browser pipeline from v2.x.
+ * Works at any zoom level; no browser or WebGL limitations.
+ */
 async function renderPngInternal(params: RenderParams): Promise<Buffer> {
-  const {
-    styleJson, center, zoom,
-    bearing = 0, pitch = 0,
-    printMode = false, overlay,
-  } = params;
-
+  const { styleJson, center, zoom, bearing = 0, pitch = 0, overlay } = params;
   const [lng, lat] = center;
-  let w = Math.max(100, Math.min(Math.floor(Number(params.width  ?? 2400)), 12288));
-  let h = Math.max(100, Math.min(Math.floor(Number(params.height ?? 2400)), 12288));
-  const DEVICE_SCALE = printMode ? 3 : 2;
-  const MAX_PX       = 80_000_000;
-  const ps           = Math.sqrt(MAX_PX / (w * h));
+
+  // Clamp output dimensions
+  let w = Math.max(100, Math.min(Math.floor(Number(params.width  ?? 2400)), MAX_RENDER_PX_WH));
+  let h = Math.max(100, Math.min(Math.floor(Number(params.height ?? 2400)), MAX_RENDER_PX_WH));
+  const MAX_PX = 80_000_000;
+  const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
-  const vpW     = Math.ceil(w / DEVICE_SCALE);
-  const vpH     = Math.ceil(h / DEVICE_SCALE);
-  const IDLE_MS = DEVICE_SCALE > 1 ? 150 : 100;
 
-  const FULL_IDLE_MS      = 55_000;
-  const PARTIAL_AFTER_MS  = 30_000;
+  // Device scale (pixelRatio) — keeps geographic area identical to v2.x browser render
+  const DEVICE_SCALE = params.printMode ? 3 : 2;
+  const vpW = Math.ceil(w / DEVICE_SCALE);
+  const vpH = Math.ceil(h / DEVICE_SCALE);
 
-  let context: BrowserContext | null = null;
+  // Ensure fonts needed by overlay are available
+  if (overlay?.fontFamily) await ensureFont(overlay.fontFamily);
+
   const renderStart = Date.now();
 
-  try {
-    const renderAsync = async () => {
-      const b = await getBrowser();
-      context = await b.newContext({ viewport: { width: vpW, height: vpH }, deviceScaleFactor: DEVICE_SCALE });
-      const page = await context.newPage();
-
-      await page.route('**/*', async (route) => {
-        const preq  = route.request();
-        const url   = preq.url();
-        const rtype = preq.resourceType();
-        if (!url.startsWith('http')) { await route.continue(); return; }
-        try {
-          const { protocol, hostname } = new URL(url);
-          if (['script', 'stylesheet', 'font'].includes(rtype)) {
-            if (ALLOWED_ASSET_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
-              await route.continue(); return;
-            }
-            console.warn(`[render] Blocked ${rtype} from unlisted asset host: ${hostname}`);
-            await route.abort('blockedbyclient'); return;
-          }
-          if (protocol !== 'https:') { await route.abort('blockedbyclient'); return; }
-          if (!ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
-            console.warn(`[render] Blocked request to unlisted host: ${hostname}`);
-            await route.abort('blockedbyclient'); return;
-          }
-          if (await isPrivateHost(hostname)) {
-            console.warn(`[render] Blocked request to private IP for host: ${hostname}`);
-            await route.abort('blockedbyclient'); return;
-          }
-          await route.continue();
-        } catch (e) {
-          console.warn('[render] Route intercept error — aborting:', e);
-          await route.abort('blockedbyclient');
-        }
-      });
-
-      await page.setContent(buildRenderHtml(styleJson, lng, lat, zoom, bearing, pitch, overlay), { waitUntil: 'domcontentloaded' });
-
-      let isPartialRender = false;
-      try {
-        await page.waitForFunction(
-          `window.__mapIdle===true&&(Date.now()-window.__mapIdleTime)>=${IDLE_MS}`,
-          { timeout: FULL_IDLE_MS, polling: 150 },
-        );
-      } catch (idleErr: unknown) {
-        const tilesLoaded = await page.evaluate<number>('window.__tileCount || 0');
-        const elapsed = Date.now() - renderStart;
-        if (tilesLoaded > 0 && elapsed >= PARTIAL_AFTER_MS) {
-          console.warn(`[render] Partial render fallback: full idle not reached after ${Math.round(elapsed/1000)}s, tileCount=${tilesLoaded} — proceeding`);
-          isPartialRender = true;
-          await page.waitForTimeout(500);
-        } else {
-          throw new Error(`Map tiles not loaded after ${Math.round(elapsed/1000)}s (tileCount=${tilesLoaded})`);
-        }
+  // Create native map instance
+  const map = new mbgl.Map({
+    request(req: { url: string }, callback: (err: Error | null, res?: { data: Buffer }) => void) {
+      const { url } = req;
+      if (!isAllowedUrl(url)) {
+        try { const { hostname } = new URL(url); console.warn(`[render] Blocked: ${hostname}`); } catch {}
+        callback(new Error(`Blocked URL: ${url}`));
+        return;
       }
+      fetch(url, { signal: AbortSignal.timeout(20_000) })
+        .then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+          return r.arrayBuffer();
+        })
+        .then(buf => callback(null, { data: Buffer.from(buf) }))
+        .catch(err => callback(err as Error));
+    },
+    ratio: DEVICE_SCALE,
+  });
 
-      await page.evaluate('window.__runComposite()');
-      await page.waitForFunction('window.__compositeReady===true', { timeout: 15000, polling: 100 });
-      const screenshot = await page.screenshot({ type: 'png', scale: 'device' });
-      console.log(`[render] Done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px${isPartialRender?' (partial)':''}`);
-      return screenshot;
-    };
+  let rawRgba: Buffer;
+  try {
+    map.load(styleJson);
 
-    const timeoutP = new Promise<never>((_,rej) => setTimeout(() => rej(new Error('Render timeout (58s)')), 58_000));
-    return await Promise.race([renderAsync(), timeoutP]);
+    rawRgba = await new Promise<Buffer>((resolve, reject) => {
+      const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
+      map.render(
+        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        (err: Error | null, buf: Buffer) => {
+          clearTimeout(timeoutId);
+          if (err) reject(err);
+          else resolve(buf);
+        },
+      );
+    });
   } finally {
-    await (context as BrowserContext | null)?.close().catch((e: unknown) => console.error('context.close():', e));
+    try { map.release(); } catch {}
   }
+
+  // rawRgba is DEVICE_SCALE-upscaled: vpW*DEVICE_SCALE × vpH*DEVICE_SCALE = w × h
+  // Composite onto node-canvas with identical logic to v2.x browser compositing
+  const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
+  const cv = createCanvas(w, h);
+  const ctx = cv.getContext('2d') as any;
+
+  // 1. Fill background
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, w, h);
+
+  // 2. Draw rendered map (RGBA buffer → ImageData)
+  const imageData = ctx.createImageData(w, h);
+  imageData.data.set(rawRgba.slice(0, w * h * 4));
+  ctx.putImageData(imageData, 0, 0);
+
+  // 3. Fades + poster text
+  if (overlay) {
+    const fc = (overlay.theme as any)?.ui?.bg || bgColor;
+    applyFades(ctx, w, h, fc, overlay.fadeStyle || 'default');
+    drawPosterText(ctx, w, h, overlay.theme || {},
+      lat, lng,
+      overlay.displayCity    || '',
+      overlay.displayCountry || '',
+      overlay.fontFamily     || '',
+      overlay.showPosterText !== false,
+      overlay.includeCredits !== false,
+      overlay.textLayout     || 'centered',
+    );
+  }
+
+  const pngBuf = cv.toBuffer('image/png');
+  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px`);
+  return pngBuf;
 }
 
-// ── Printful helpers ────────────────────────────────────────────────────────
+// ── Printful helpers ─────────────────────────────────────────────────────────
 interface PrintfulRecipient {
-  name:          string;
-  address1:      string;
-  address2?:     string;
-  city:          string;
-  state_code:    string;
-  country_code:  string;
-  zip:           string;
-  phone?:        string;
+  name:         string;
+  address1:     string;
+  address2?:    string;
+  city:         string;
+  state_code:   string;
+  country_code: string;
+  zip:          string;
+  phone?:       string;
 }
 
 async function findExistingPrintfulOrder(externalId: string): Promise<string | null> {
@@ -336,8 +343,6 @@ async function findExistingPrintfulOrder(externalId: string): Promise<string | n
     if (!res.ok) return null;
     const data: any = await res.json();
     const orders: Array<{ id: number; external_id: string | null }> = data?.data ?? data?.result ?? [];
-    // IMPORTANT: Printful v1 may ignore the ?external_id filter and return all orders.
-    // Must verify the returned order actually matches our externalId.
     const match = orders.find(o => o.external_id === externalId);
     return match ? String(match.id) : null;
   } catch {
@@ -345,7 +350,7 @@ async function findExistingPrintfulOrder(externalId: string): Promise<string | n
   }
 }
 
-// ── MapvibeConfigSnapshot type (mirrors Vercel) ─────────────────────────────
+// ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
 interface MapvibeConfigSnapshot {
   styleJson:      unknown;
   center:         [number, number];
@@ -365,9 +370,8 @@ interface MapvibeConfigSnapshot {
 }
 
 /**
- * Download config snapshot from Vercel Blob, render PNG at 300 DPI, upload result back to Blob.
- * Returns the Blob URL of the uploaded PNG, or null on any failure.
- * 300 DPI is hard-enforced — no PNG export is ever produced at lower resolution.
+ * Download config snapshot, render PNG at 300 DPI, upload to Vercel Blob.
+ * 300 DPI hard-enforced — never lower.
  */
 async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> {
   // 1. Download config snapshot
@@ -383,14 +387,14 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
   }
 
   // 2. Compute pixel dims at 300 DPI — HARD RULE: never under 300 DPI
-  const DPI      = 300;
+  const DPI     = 300;
   const widthCm  = Number(cfg.widthCm)  || 40.64;
   const heightCm = Number(cfg.heightCm) || 50.80;
   const width    = Math.min(Math.round((widthCm  / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
   const height   = Math.min(Math.round((heightCm / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
   console.log(`[fulfill] Config render: ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${DPI} DPI`);
 
-  // 3. Patch style: inject MapTiler, absolutize relative URLs
+  // 3. Patch style: inject tile/glyph sources, absolutize relative URLs
   let styleJson: Record<string, unknown>;
   try {
     styleJson = JSON.parse(JSON.stringify(cfg.styleJson)) as Record<string, unknown>;
@@ -400,7 +404,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
         if (typeof src?.url === 'string') {
           const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/');
           if (needsPatch) {
-            src.url = `https://tiles.openfreemap.org/planet`;  // OpenFreeMap: free, no key, same OMT schema
+            src.url = `https://tiles.openfreemap.org/planet`;
           }
         }
       }
@@ -408,7 +412,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
       styleJson.glyphs = MAPTILER_API_KEY
         ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
-        : `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`;  // free, no key
+        : `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`;
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
       styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
@@ -420,7 +424,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
   const dominantPx = Math.max(width, height, PREVIEW_CANVAS_PX);
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom + Math.log2(dominantPx / PREVIEW_CANVAS_PX));
 
-  // 5. Render via internal browser pipeline
+  // 5. Render via native pipeline
   let pngBuffer: Buffer;
   try {
     pngBuffer = await renderPngInternal({
@@ -431,7 +435,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
       pitch:          cfg.pitch          ?? 0,
       width,
       height,
-      printMode:      true, // high-DPI path always uses printMode
+      printMode:      true,
       overlay: {
         displayCity:    cfg.displayCity    ?? '',
         displayCountry: cfg.displayCountry ?? '',
@@ -459,10 +463,9 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
   try {
     const hash = Math.random().toString(36).slice(2, 10);
     const blob = await put(`poster-${Date.now()}-${hash}.png`, pngBuffer, {
-      access: 'public',
-      contentType: 'image/png',
+      access: 'public', contentType: 'image/png',
     });
-    console.log(`[fulfill] Config-rendered PNG uploaded: ${blob.url} (${width}x${height}px)`);
+    console.log(`[fulfill] PNG uploaded: ${blob.url} (${width}x${height}px)`);
     return blob.url;
   } catch (err) {
     console.error('[fulfill] Blob upload failed:', err);
@@ -470,7 +473,11 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
   }
 }
 
-// ── POST /render (unchanged behaviour — wraps renderPngInternal) ─────────────
+// ── Routes ───────────────────────────────────────────────────────────────────
+
+app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '3.0.0' }));
+
+// POST /render — synchronous render, returns PNG
 app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
   if (activeRenders >= MAX_CONCURRENT) {
@@ -504,12 +511,10 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   activeRenders++;
   const renderStart = Date.now();
   try {
-    const screenshot = await renderPngInternal({
-      styleJson, center, zoom, bearing, pitch, width, height, printMode, overlay,
-    });
+    const png = await renderPngInternal({ styleJson, center, zoom, bearing, pitch, width, height, printMode, overlay });
     res.setHeader('Content-Type', 'image/png');
     if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.end(screenshot);
+    res.end(png);
   } catch (err: any) {
     const elapsed = Math.round((Date.now()-renderStart)/1000);
     console.error(`[render] Error after ${elapsed}s:`, err.message || err);
@@ -519,22 +524,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// ── POST /fulfill — Printful fulfillment (Railway-owned) ────────────────────
-/**
- * Receives a fulfillment job from the Vercel webhook dispatcher.
- * Handles: PNG resolution (config render OR direct pngUrl), Printful dedup,
- * order creation (v2 + v1 fallback), and race-condition dedup resolution.
- *
- * Body:
- *   externalId      string  — shopify-{orderId}-{sku} idempotency key
- *   recipient       object  — Printful-format shipping address
- *   variantId       number  — Printful variant ID (v1 fallback)
- *   catalogVariantId number — Printful catalog variant ID (v2)
- *   label           string  — Human-readable product label for order name
- *   quantity        number  — Item quantity
- *   pngUrl?         string  — Pre-resolved PNG URL (skip render if provided)
- *   configUrl?      string  — Config snapshot Blob URL (render + upload if pngUrl absent)
- */
+// POST /fulfill — async Printful fulfillment
 interface FulfillBody {
   externalId:       string;
   recipient:        PrintfulRecipient;
@@ -549,12 +539,8 @@ interface FulfillBody {
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
 
-  const {
-    externalId, recipient, variantId, catalogVariantId, label, quantity,
-    pngUrl, configUrl,
-  } = req.body as FulfillBody;
+  const { externalId, recipient, variantId, catalogVariantId, label, quantity, pngUrl, configUrl } = req.body as FulfillBody;
 
-  // Input validation
   if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
     res.status(400).json({ error: 'Missing required fields: externalId, recipient, variantId, catalogVariantId, label, quantity' });
     return;
@@ -569,120 +555,84 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // ACK immediately — Vercel serverless functions cannot reliably await
-  // a 30-60s render. Railway is a persistent server so void Promise is safe.
   res.status(202).json({ success: true, accepted: true, externalId });
 
-  // Process fulfillment async — Railway will complete this after ACK
   void (async () => {
-  // 1. Resolve final PNG URL
-  let finalPngUrl: string | null = pngUrl ?? null;
+    let finalPngUrl: string | null = pngUrl ?? null;
 
-  if (!finalPngUrl && configUrl) {
-    console.log(`[fulfill] Config path — rendering config snapshot for ${externalId}`);
-    activeRenders++;
-    try {
-      finalPngUrl = await renderConfigToBlobUrl(configUrl);
-    } finally {
-      activeRenders--;
-    }
-    if (!finalPngUrl) {
-      console.error(`[fulfill] Config render FAILED for ${externalId}`);
-      return;
-    }
-  }
-
-  // 2. Dedup check — survives Railway restarts; Printful stores truth
-  const existingId = await findExistingPrintfulOrder(externalId);
-  if (existingId) {
-    console.log(`[fulfill] Duplicate: Printful order ${existingId} already exists for ${externalId} — skipping`);
-    return;
-  }
-
-  // 3. Create Printful order — v2 first, v1 fallback
-  const v2Payload = {
-    external_id: externalId,
-    shipping: 'STANDARD',
-    recipient,
-    confirm: true,
-    items: [{
-      source: 'catalog',
-      catalog_variant_id: catalogVariantId,
-      quantity,
-      name: `MapVibe — ${label}`,
-      files: [{ type: 'default', url: finalPngUrl }],
-    }],
-  };
-
-  const pfHeaders: Record<string, string> = {
-    Authorization: `Bearer ${PRINTFUL_KEY}`,
-    'Content-Type': 'application/json',
-  };
-  if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
-
-  try {
-    let pfRes = await fetch(`${PRINTFUL_API_V2}/orders`, {
-      method: 'POST',
-      headers: pfHeaders,
-      body: JSON.stringify(v2Payload),
-    });
-    let pfData: any = await pfRes.json();
-    let apiVersion = 'v2';
-
-    // Fallback to v1 if v2 fails
-    if (!pfRes.ok) {
-      console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
-      const v1Payload = {
-        external_id: externalId,
-        shipping: 'STANDARD',
-        recipient,
-        confirm: true,
-        items: [{
-          variant_id: variantId,
-          quantity,
-          name: `MapVibe — ${label}`,
-          files: [{ type: 'default', url: finalPngUrl }],
-        }],
-      };
-      pfRes = await fetch(`${PRINTFUL_API_V1}/orders`, {
-        method: 'POST',
-        headers: pfHeaders,
-        body: JSON.stringify(v1Payload),
-      });
-      pfData = await pfRes.json();
-      apiVersion = 'v1-fallback';
-    }
-
-    if (pfRes.ok) {
-      const orderId = pfData.result?.id ?? pfData.data?.id;
-      console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${externalId}`);
-      return;
-    }
-
-    // Race condition: two deliveries both passed dedup before either created an order
-    const errMsg: string = (pfData.result ?? pfData.error?.message ?? pfData.code ?? '') + '';
-    const isDuplicate = errMsg.toLowerCase().includes('external_id')
-      || errMsg.toLowerCase().includes('already exists')
-      || errMsg.toLowerCase().includes('duplicate');
-
-    if (isDuplicate) {
-      const existingAfterRace = await findExistingPrintfulOrder(externalId);
-      if (existingAfterRace) {
-        console.log(`[fulfill] Race dedup resolved: Printful order ${existingAfterRace} for ${externalId}`);
+    if (!finalPngUrl && configUrl) {
+      console.log(`[fulfill] Config path — rendering for ${externalId}`);
+      activeRenders++;
+      try {
+        finalPngUrl = await renderConfigToBlobUrl(configUrl);
+      } finally {
+        activeRenders--;
+      }
+      if (!finalPngUrl) {
+        console.error(`[fulfill] Config render FAILED for ${externalId}`);
         return;
       }
-      console.error(`[fulfill] Race dedup failed for ${externalId}:`, pfData);
+    }
+
+    const existingId = await findExistingPrintfulOrder(externalId);
+    if (existingId) {
+      console.log(`[fulfill] Duplicate: Printful order ${existingId} already exists for ${externalId} — skipping`);
       return;
     }
 
-    const errDetail = pfData.result || pfData.error?.message || 'Printful error';
-    console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
-  } catch (err: any) {
-    const msg = err instanceof Error ? err.message : 'Network error';
-    console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
-  }
-  })(); // end void async IIFE
+    const v2Payload = {
+      external_id: externalId, shipping: 'STANDARD', recipient, confirm: true,
+      items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
+                name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
+    };
+    const pfHeaders: Record<string, string> = {
+      Authorization: `Bearer ${PRINTFUL_KEY}`, 'Content-Type': 'application/json',
+    };
+    if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
+
+    try {
+      let pfRes = await fetch(`${PRINTFUL_API_V2}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v2Payload) });
+      let pfData: any = await pfRes.json();
+      let apiVersion = 'v2';
+
+      if (!pfRes.ok) {
+        console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
+        const v1Payload = {
+          external_id: externalId, shipping: 'STANDARD', recipient, confirm: true,
+          items: [{ variant_id: variantId, quantity,
+                    name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
+        };
+        pfRes = await fetch(`${PRINTFUL_API_V1}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v1Payload) });
+        pfData = await pfRes.json();
+        apiVersion = 'v1-fallback';
+      }
+
+      if (pfRes.ok) {
+        const orderId = pfData.result?.id ?? pfData.data?.id;
+        console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${externalId}`);
+        return;
+      }
+
+      const errMsg: string = (pfData.result ?? pfData.error?.message ?? pfData.code ?? '') + '';
+      const isDuplicate = errMsg.toLowerCase().includes('external_id')
+        || errMsg.toLowerCase().includes('already exists')
+        || errMsg.toLowerCase().includes('duplicate');
+
+      if (isDuplicate) {
+        const existingAfterRace = await findExistingPrintfulOrder(externalId);
+        if (existingAfterRace) {
+          console.log(`[fulfill] Race dedup resolved: Printful order ${existingAfterRace} for ${externalId}`);
+          return;
+        }
+        console.error(`[fulfill] Race dedup failed for ${externalId}:`, pfData);
+        return;
+      }
+
+      console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
+    } catch (err: any) {
+      console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
+    }
+  })();
 });
 
-process.on('SIGTERM', async () => { if (browser) await browser.close(); process.exit(0); });
-app.listen(PORT, () => console.log(`MapVibe Render Service v2.3.1 on port ${PORT}`));
+app.listen(PORT, () => console.log(`MapVibe Render Service v3.0.0 on port ${PORT}`));
