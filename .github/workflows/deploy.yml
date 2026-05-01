@@ -19,6 +19,25 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Fix Railway root directory (set to repo root)
+        run: |
+          # Query for service ID named "render" in any project
+          SERVICE_ID=$(curl -sf -X POST https://backboard.railway.app/graphql/v2 \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"query { me { projects { edges { node { id name services { edges { node { id name } } } } } } } }"}' \
+            | jq -r '.data.me.projects.edges[].node.services.edges[] | select(.node.name == "render") | .node.id' | head -1)
+          echo "Service ID: $SERVICE_ID"
+
+          # Update rootDirectory to empty string (= repo root)
+          RESULT=$(curl -sf -X POST https://backboard.railway.app/graphql/v2 \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { serviceUpdate(id: \\\"$SERVICE_ID\\\", input: { source: { rootDirectory: \\\"\\\", repo: \\\"insforca/mapvibe-render-service\\\" } }) { id name } }\"}")
+          echo "Update result: $RESULT"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
       - name: Deploy to Railway
         run: railway up --detach --service render
         env:
