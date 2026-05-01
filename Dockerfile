@@ -2,7 +2,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
-# ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 (LIBJPEG_8.0) — exact ABI match for mbgl prebuilt
+# ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
   && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && apt-get install -y nodejs \
@@ -20,19 +20,6 @@ RUN npm install
 
 COPY src/ ./src/
 RUN npx tsc
-
-# ldd scan
-RUN find /app/node_modules/@maplibre -name '*.node' | head -1 | xargs ldd 2>&1 | grep 'not found' || echo 'ldd: all libs resolved'
-
-# mbgl safety test via subprocess — detects segfaults vs JS errors
-RUN node -e "\
-  const {spawnSync}=require('child_process');\
-  const r=spawnSync('node',['-e','require(\"@maplibre/maplibre-gl-native\");console.log(\"mbgl OK\")'],{timeout:8000});\
-  console.log('mbgl exit:'+r.status+' signal:'+r.signal+' out:'+String(r.stdout).trim()+' err:'+String(r.stderr).trim());\
-" || true
-
-# canvas safety test
-RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
