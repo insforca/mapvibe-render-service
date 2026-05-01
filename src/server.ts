@@ -400,9 +400,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
         if (typeof src?.url === 'string') {
           const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/');
           if (needsPatch) {
-            src.url = MAPTILER_API_KEY
-              ? `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_API_KEY}`
-              : `https://tiles.openfreemap.org/planet`;
+            src.url = `https://tiles.openfreemap.org/planet`;  // OpenFreeMap: free, no key, same OMT schema
           }
         }
       }
@@ -410,7 +408,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
       styleJson.glyphs = MAPTILER_API_KEY
         ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
-        : SITE_ORIGIN + styleJson.glyphs;
+        : `https://glyphs.openfreemap.org/{fontstack}/{range}.pbf`;
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
       styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
