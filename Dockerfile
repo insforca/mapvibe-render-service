@@ -21,8 +21,18 @@ RUN npm install
 COPY src/ ./src/
 RUN npx tsc
 
+# ldd scan
 RUN find /app/node_modules/@maplibre -name '*.node' | head -1 | xargs ldd 2>&1 | grep 'not found' || echo 'ldd: all libs resolved'
-RUN node -e "try{require('@maplibre/maplibre-gl-native');console.log('mbgl OK')}catch(e){console.error('mbgl FAIL:',e.message)}" || true
+
+# mbgl safety test via subprocess — detects segfaults vs JS errors
+RUN node -e "\
+  const {spawnSync}=require('child_process');\
+  const r=spawnSync('node',['-e','require(\"@maplibre/maplibre-gl-native\");console.log(\"mbgl OK\")'],{timeout:8000});\
+  console.log('mbgl exit:'+r.status+' signal:'+r.signal+' out:'+String(r.stdout).trim()+' err:'+String(r.stderr).trim());\
+" || true
+
+# canvas safety test
+RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 
 EXPOSE 3000
 CMD ["node", "dist/server.js"]
