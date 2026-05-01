@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
     pkg-config build-essential python3 \
     libgl1 libgl1-mesa-dri libopengl0 libegl1 libegl-mesa0 libgles2 \
-    libuv1 libicu-dev \
+    libuv1 libicu72 \
     fonts-liberation fonts-dejavu-core \
     curl ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
