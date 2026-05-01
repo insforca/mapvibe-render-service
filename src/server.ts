@@ -498,6 +498,42 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
+
+// ── Temporary E2E validation endpoint (no auth required) ─────────────────────
+app.get('/test-render', async (_req: Request, res: Response) => {
+  const TEST_STYLE: Record<string, unknown> = {
+    version: 8,
+    sources: { openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' } },
+    glyphs: `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`,
+    layers: [
+      { id: 'bg', type: 'background', paint: { 'background-color': '#f5f5f0' } },
+      { id: 'water', type: 'fill', source: 'openmaptiles', 'source-layer': 'water', paint: { 'fill-color': '#a8c8e8' } },
+      { id: 'roads', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+        paint: { 'line-color': '#888', 'line-width': 1 } },
+    ],
+  };
+  try {
+    const buf = await renderPngInternal({
+      styleJson: TEST_STYLE,
+      center:    [-77.0369, 38.9072],  // Washington DC
+      zoom:      12,
+      bearing:   0, pitch: 0,
+      width:     400, height: 500,
+      printMode: false,
+    });
+    // Count non-background pixels (anything not #f5f5f0 = rgb(245,245,240))
+    let coloredPixels = 0;
+    for (let i = 0; i < buf.length - 8; i += 4) {
+      const [r, g, b] = [buf[i], buf[i+1], buf[i+2]];
+      if (!(r === 245 && g === 245 && b === 240)) coloredPixels++;
+    }
+    res.json({ ok: true, width: 400, height: 500, fileSize: buf.length, coloredPixels,
+               hasMapContent: coloredPixels > 5000 });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '3.0.0' }));
 
 // POST /render — synchronous render, returns PNG
