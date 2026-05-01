@@ -398,22 +398,20 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     if (sources) {
       for (const src of Object.values(sources)) {
         if (typeof src?.url === 'string') {
-          if (src.url.includes('openfreemap.org')) {
-            // Replace external OpenFreeMap with MapTiler (better reliability from Railway)
+          const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/');
+          if (needsPatch) {
             src.url = MAPTILER_API_KEY
               ? `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_API_KEY}`
               : `https://tiles.openfreemap.org/planet`;
-          } else if (src.url.startsWith('/')) {
-            // Absolutize relative tile URLs using SITE_ORIGIN — preserves MapVibe tile server
-            // layer IDs which the style layers are built against (e.g. /api/tilejson →
-            // https://mapvibestudio.com/api/tilejson, which is in ALLOWED_TILE_HOSTS).
-            src.url = VERCEL_APP_ORIGIN + src.url;
+          }
           }
         }
       }
     }
     if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
-      styleJson.glyphs = VERCEL_APP_ORIGIN + styleJson.glyphs;
+      styleJson.glyphs = MAPTILER_API_KEY
+        ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
+        : SITE_ORIGIN + styleJson.glyphs;
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
       styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
