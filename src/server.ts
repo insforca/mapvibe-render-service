@@ -404,7 +404,6 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
               ? `https://api.maptiler.com/tiles/v3/tiles.json?key=${MAPTILER_API_KEY}`
               : `https://tiles.openfreemap.org/planet`;
           }
-          }
         }
       }
     }
