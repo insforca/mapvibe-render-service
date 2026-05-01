@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: Deploy
+  fix-root-and-deploy:
+    name: Fix rootDir + Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -16,14 +16,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Mirror repo root into main/ (rootDirectory=/main workaround)
+      - name: Install Railway CLI + jq
         run: |
-          mkdir -p main
-          rsync -a --exclude=main/ --exclude=.git/ . main/
-          echo "Files in main/:" && ls main/
+          npm install -g @railway/cli
+          sudo apt-get install -q -y jq
+
+      - name: Introspect Railway API + fix rootDirectory
+        run: |
+          GQL="https://backboard.railway.app/graphql/v2"
+          SERVICE_ID="528ad888-a091-459b-be4b-ad1b509eb766"
+
+          # Introspect ServiceUpdateInput type to find the right field for rootDirectory
+          SCHEMA=$(curl -s -X POST "$GQL" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{ __type(name: "ServiceUpdateInput") { fields { name type { name kind ofType { name } } } } }"}')
+          echo "ServiceUpdateInput fields: $SCHEMA"
+
+          # Try serviceInstanceUpdateV2 or serviceSourceUpdate
+          for MUT in serviceInstanceUpdate serviceSourceUpdate serviceUpdateV2; do
+            RESULT=$(curl -s -X POST "$GQL" \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{"query":"{ __type(name: \"$(echo $MUT)Input\") { fields { name } } }"}")
+            echo "$MUT Input: $RESULT"
+          done
+
+          # List all mutations containing "service" and "root"
+          ALL_MUTS=$(curl -s -X POST "$GQL" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{ __schema { mutationType { fields { name args { name type { name kind } } } } } }"}')
+          echo "$ALL_MUTS" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          fields = data.get('"'"'data'"'"', {}).get('"'"'__schema'"'"', {}).get('"'"'mutationType'"'"', {}).get('"'"'fields'"'"', [])
+          service_fields = [f['"'"'name'"'"'] for f in fields if '"'"'service'"'"' in f['"'"'name'"'"'].lower() or '"'"'source'"'"' in f['"'"'name'"'"'].lower()]
+          print('"'"'Service mutations:'"'"', service_fields)
+          " 2>/dev/null || echo "Parse error, raw:" && echo "$ALL_MUTS" | head -c 2000
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
       - name: Deploy to Railway
         run: railway up --detach --service render
