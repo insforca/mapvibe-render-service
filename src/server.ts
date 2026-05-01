@@ -499,6 +499,30 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
+
+// ── Temporary /preview-dc endpoint — returns real-map PNG, no auth ───────────
+app.get('/preview-dc', async (_req: Request, res: Response) => {
+  try {
+    const cfgRaw = await (await fetch('https://c2nuyjycl7eaqmpn.public.blob.vercel-storage.com/mapvibe-config/cfg-1777675226460-sh10r6rz.json')).json() as Record<string,unknown>;
+    const cfg = (cfgRaw.snapshot ?? cfgRaw) as Record<string,unknown>;
+    const buf = await renderPngInternal({
+      styleJson: cfg.styleJson as object,
+      center:    cfg.center    as [number,number],
+      zoom:      cfg.zoom      as number,
+      bearing:   (cfg.bearing  as number) ?? 0,
+      pitch:     (cfg.pitch    as number) ?? 0,
+      width:     800, height: 1000,
+      printMode: false,
+    });
+    res.set('Content-Type', 'image/png');
+    res.set('Content-Disposition', 'inline; filename="dc-preview.png"');
+    res.set('Cache-Control', 'no-store');
+    res.send(buf);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '3.0.0' }));
 
 // POST /render — synchronous render, returns PNG
