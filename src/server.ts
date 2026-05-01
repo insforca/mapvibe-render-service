@@ -439,10 +439,13 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     styleJson = cfg.styleJson as Record<string, unknown>;
   }
 
-  // 4. Compute adjusted zoom
+  // 4. Use the user's design zoom directly (no boost).
+  // Print render must show the SAME geographic area as the user designed.
+  // Zoom-boosting changes the geographic extent, causes tile timeouts at z17,
+  // and produces blank renders. The higher pixel count (4800×6000) gives
+  // print-quality output at the user's chosen zoom without changing the view.
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
-  const dominantPx = Math.max(width, height, PREVIEW_CANVAS_PX);
-  const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom + Math.log2(dominantPx / PREVIEW_CANVAS_PX));
+  const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
   // 5. Render via native pipeline
   let pngBuffer: Buffer;
