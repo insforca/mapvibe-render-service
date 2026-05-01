@@ -333,8 +333,11 @@ async function findExistingPrintfulOrder(externalId: string): Promise<string | n
     );
     if (!res.ok) return null;
     const data: any = await res.json();
-    const orders: Array<{ id: number }> = data?.data ?? data?.result ?? [];
-    return orders.length > 0 ? String(orders[0].id) : null;
+    const orders: Array<{ id: number; external_id: string | null }> = data?.data ?? data?.result ?? [];
+    // IMPORTANT: Printful v1 may ignore the ?external_id filter and return all orders.
+    // Must verify the returned order actually matches our externalId.
+    const match = orders.find(o => o.external_id === externalId);
+    return match ? String(match.id) : null;
   } catch {
     return null;
   }
