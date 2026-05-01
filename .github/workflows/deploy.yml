@@ -7,35 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  fix-root-dir:
-    name: Fix rootDirectory
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set rootDirectory to repo root via Railway API
-        run: |
-          GQL="https://backboard.railway.app/graphql/v2"
-          SERVICE_ID="528ad888-a091-459b-be4b-ad1b509eb766"
-
-          # Try serviceUpdate mutation with source.rootDirectory
-          RESULT=$(curl -s -X POST "$GQL" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"query":"mutation { serviceUpdate(id: \"528ad888-a091-459b-be4b-ad1b509eb766\", input: { source: { rootDirectory: \"\", repo: \"insforca/mapvibe-render-service\" } }) { id name } }"}')
-          echo "serviceUpdate result: $RESULT"
-
-          # Fallback: try serviceInstanceUpdate
-          ENV_RESULT=$(curl -s -X POST "$GQL" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{"query":"query { service(id: \"528ad888-a091-459b-be4b-ad1b509eb766\") { id name serviceInstances { edges { node { id environmentId rootDirectory } } } } }"}')
-          echo "service query: $ENV_RESULT"
-        env:
-          RAILWAY_TOKEN: ${ secrets.RAILWAY_TOKEN }
-
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    needs: fix-root-dir
     timeout-minutes: 15
 
     steps:
@@ -45,13 +19,13 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Mirror repo root into main/ (rootDirectory workaround until fixed)
+      - name: Mirror repo root into main/ (rootDirectory=/main workaround)
         run: |
           mkdir -p main
           rsync -a --exclude=main/ --exclude=.git/ . main/
-          ls main/
+          echo "Files in main/:" && ls main/
 
       - name: Deploy to Railway
         run: railway up --detach --service render
         env:
-          RAILWAY_TOKEN: ${ secrets.RAILWAY_TOKEN }
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
