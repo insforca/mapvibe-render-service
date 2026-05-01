@@ -408,7 +408,7 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
       styleJson.glyphs = MAPTILER_API_KEY
         ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
-        : `https://glyphs.openfreemap.org/{fontstack}/{range}.pbf`;
+        : `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`;  // free, no key
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
       styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
