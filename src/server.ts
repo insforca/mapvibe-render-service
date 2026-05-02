@@ -591,7 +591,10 @@ interface MapvibeConfigSnapshot {
  * Download config snapshot, render PNG at 300 DPI, upload to Vercel Blob.
  * 300 DPI hard-enforced — never lower.
  */
-async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> {
+async function renderConfigToBlobUrl(
+  configUrl: string,
+  dimsOverride?: { widthCm: number; heightCm: number },
+): Promise<string | null> {
   // 1. Download config snapshot
   let cfg: MapvibeConfigSnapshot;
   try {
@@ -604,13 +607,17 @@ async function renderConfigToBlobUrl(configUrl: string): Promise<string | null> 
     return null;
   }
 
-  // 2. Compute pixel dims at 300 DPI — HARD RULE: never under 300 DPI
-  const DPI     = 300;
-  const widthCm  = Number(cfg.widthCm)  || 40.64;
-  const heightCm = Number(cfg.heightCm) || 50.80;
+  // 2. Compute pixel dims at 300 DPI — HARD RULE: never under 300 DPI.
+  //    dimsOverride (from SKU) takes priority over config snapshot — guarantees
+  //    the render matches the ordered print size even if the snapshot was saved
+  //    at a different size (e.g. user designed at 16×20 but ordered 18×24).
+  const DPI      = 300;
+  const widthCm  = dimsOverride?.widthCm  ?? Number(cfg.widthCm)  || 40.64;
+  const heightCm = dimsOverride?.heightCm ?? Number(cfg.heightCm) || 50.80;
   const width    = Math.min(Math.round((widthCm  / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
   const height   = Math.min(Math.round((heightCm / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
-  console.log(`[fulfill] Config render: ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${DPI} DPI`);
+  const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
+  console.log(`[fulfill] Config render (${dimSource}): ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${DPI} DPI`);
 
   // 3. Patch style: inject tile/glyph sources, absolutize relative URLs
   let styleJson: Record<string, unknown>;
@@ -756,13 +763,21 @@ interface FulfillBody {
   quantity:         number;
   pngUrl?:          string;
   configUrl?:       string;
-  confirm?:         boolean;  // per-request override; falls back to PRINTFUL_AUTO_CONFIRM env var
+  confirm?:         boolean;   // per-request override; falls back to PRINTFUL_AUTO_CONFIRM env var
+  // Optional dimension override from SKU — ensures correct 300 DPI pixel count
+  // regardless of what was saved in the config snapshot. Hard rule: 300 DPI minimum.
+  widthCm?:         number;
+  heightCm?:        number;
 }
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
 
-  const { externalId, recipient, variantId, catalogVariantId, label, quantity, pngUrl, configUrl, confirm: confirmOverride } = req.body as FulfillBody;
+  const {
+    externalId, recipient, variantId, catalogVariantId, label, quantity,
+    pngUrl, configUrl, confirm: confirmOverride,
+    widthCm: widthCmOverride, heightCm: heightCmOverride,
+  } = req.body as FulfillBody;
 
   if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
     res.status(400).json({ error: 'Missing required fields: externalId, recipient, variantId, catalogVariantId, label, quantity' });
@@ -787,7 +802,10 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       console.log(`[fulfill] Config path — rendering for ${externalId}`);
       activeRenders++;
       try {
-        finalPngUrl = await renderConfigToBlobUrl(configUrl);
+        const dimsOverride = (widthCmOverride && heightCmOverride)
+        ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
+        : undefined;
+      finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride);
       } finally {
         activeRenders--;
       }
