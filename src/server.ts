@@ -197,8 +197,8 @@ async function ensureFont(fontFamily: string): Promise<void> {
 registerSystemFonts();
 
 // ── Compositing constants (match COMPOSITING_JS header in v2.x) ─────────────
-const _DR = 2400, _AB = .0085, _EM = .012, _CB = .085, _CM = .04;
-const _CS  = .06,  _CTB = .028, _CTS = .03, _COB = .022, _COS = .015;
+const _DR = 2400, _AB = 20.4,  _EM = .012, _CB = 204,  _CM = 96;
+const _CS  = .06,  _CTB = 67.2, _CTS = .03, _COB = 52.8, _COS = .015;
 
 // ── Compositing functions — Canvas 2D API; identical logic to v2.x ──────────
 function _wa(hex: any, a: any){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
