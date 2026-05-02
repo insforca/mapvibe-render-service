@@ -194,7 +194,33 @@ async function ensureFont(fontFamily: string): Promise<void> {
   }
 }
 
-// Register system fonts once at startup
+/** Register design-system fonts bundled in ./fonts/ at Docker build time.
+ *  This eliminates the Google Fonts download dependency — fonts are always
+ *  available regardless of outbound network access.
+ */
+function registerBundledFonts(): void {
+  const FONTS_DIR = join(__dirname, '..', 'fonts');
+  const bundled = [
+    { file: 'PlayfairDisplay-Regular.ttf', family: 'Playfair Display' },
+    { file: 'DMSans-Regular.ttf',          family: 'DM Sans' },
+  ];
+  for (const { file, family } of bundled) {
+    const fontPath = join(FONTS_DIR, file);
+    if (existsSync(fontPath) && !registeredFonts.has(family)) {
+      try {
+        registerFont(fontPath, { family });
+        registeredFonts.add(family);
+        console.log(`[fonts] Bundled font registered: ${family} from ${file}`);
+      } catch (err) {
+        console.warn(`[fonts] Could not register bundled font ${file}:`, err);
+      }
+    }
+  }
+}
+
+// Register bundled design fonts first (no network required)
+registerBundledFonts();
+// Register available system fonts as fallbacks
 registerSystemFonts();
 
 // ── Compositing constants (match COMPOSITING_JS header in v2.x) ─────────────
@@ -352,7 +378,15 @@ interface PrintfulRecipient {
   phone?:       string;
 }
 
-async function findExistingPrintfulOrder(externalId: string): Promise<string | null> {
+const PRINTFUL_TERMINAL_STATUSES = new Set(['canceled', 'cancelled', 'archived', 'failed']);
+
+interface PrintfulOrderMatch {
+  id: string;
+  status: string;
+  isTerminal: boolean;
+}
+
+async function findExistingPrintfulOrder(externalId: string): Promise<PrintfulOrderMatch | null> {
   try {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${PRINTFUL_KEY}`,
@@ -365,12 +399,37 @@ async function findExistingPrintfulOrder(externalId: string): Promise<string | n
     );
     if (!res.ok) return null;
     const data: any = await res.json();
-    const orders: Array<{ id: number; external_id: string | null }> = data?.data ?? data?.result ?? [];
+    const orders: Array<{ id: number; external_id: string | null; status: string }> = data?.data ?? data?.result ?? [];
     const match = orders.find(o => o.external_id === externalId);
-    return match ? String(match.id) : null;
+    if (!match) return null;
+    const status = (match.status ?? '').toLowerCase();
+    return { id: String(match.id), status, isTerminal: PRINTFUL_TERMINAL_STATUSES.has(status) };
   } catch {
     return null;
   }
+}
+
+/** Resolve a stable externalId for Printful order creation.
+ *  If the candidate ID has an existing ACTIVE order → return null (skip creation).
+ *  If the candidate ID has a TERMINAL (cancelled/archived) order → auto-append -rN suffix.
+ *  Returns the externalId to use, or null if an active order already exists.
+ */
+async function resolveExternalId(baseId: string): Promise<string | null> {
+  let candidate = baseId;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const existing = await findExistingPrintfulOrder(candidate);
+    if (!existing) return candidate;                          // no order → use this ID
+    if (!existing.isTerminal) {
+      console.log(`[fulfill] Active Printful order ${existing.id} (${existing.status}) already exists for ${candidate} — skipping`);
+      return null;                                            // active order → skip
+    }
+    // Terminal order (cancelled/archived) → try next suffix
+    console.log(`[fulfill] Terminal order ${existing.id} (${existing.status}) for ${candidate} — trying next suffix`);
+    const suffix = `-r${attempt + 2}`;
+    candidate = (baseId + suffix).slice(0, 32);
+  }
+  console.error(`[fulfill] Could not find a free externalId after 10 attempts for base ${baseId}`);
+  return null;
 }
 
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
@@ -601,14 +660,13 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    const existingId = await findExistingPrintfulOrder(externalId);
-    if (existingId) {
-      console.log(`[fulfill] Duplicate: Printful order ${existingId} already exists for ${externalId} — skipping`);
-      return;
-    }
+    const resolvedId = await resolveExternalId(externalId);
+    if (!resolvedId) return;  // active order exists — skip
+    const effectiveExternalId = resolvedId;
 
-    const v2Payload = {
-      external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
+    const autoConfirm = process.env.PRINTFUL_AUTO_CONFIRM === 'true';
+  const v2Payload = {
+      external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
                 name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
     };
@@ -625,7 +683,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       if (!pfRes.ok) {
         console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
         const v1Payload = {
-          external_id: externalId, shipping: 'STANDARD', recipient, confirm: false,
+          external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
           items: [{ variant_id: variantId, quantity,
                     name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
         };
@@ -636,7 +694,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 
       if (pfRes.ok) {
         const orderId = pfData.result?.id ?? pfData.data?.id;
-        console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${externalId}`);
+        console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${effectiveExternalId} (base: ${externalId})`);
         return;
       }
 
