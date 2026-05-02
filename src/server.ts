@@ -231,6 +231,7 @@ function registerBundledFonts(): void {
         if (weight) opts.weight = weight;
         registerFont(fontPath, opts);
         registeredFonts.add(fontKey);
+        registeredFonts.add(family);  // plain family name — ensureFont() lookup key
         console.log(`[fonts] Bundled font registered: ${family} wt=${weight ?? 'any'} from ${file}`);
       } catch (err) {
         console.warn(`[fonts] Could not register bundled font ${file}:`, err);
