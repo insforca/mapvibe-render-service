@@ -612,8 +612,8 @@ async function renderConfigToBlobUrl(
   //    the render matches the ordered print size even if the snapshot was saved
   //    at a different size (e.g. user designed at 16×20 but ordered 18×24).
   const DPI      = 300;
-  const widthCm  = dimsOverride?.widthCm  ?? Number(cfg.widthCm)  || 40.64;
-  const heightCm = dimsOverride?.heightCm ?? Number(cfg.heightCm) || 50.80;
+  const widthCm  = dimsOverride?.widthCm  ?? (Number(cfg.widthCm)  || 40.64);
+  const heightCm = dimsOverride?.heightCm ?? (Number(cfg.heightCm) || 50.80);
   const width    = Math.min(Math.round((widthCm  / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
   const height   = Math.min(Math.round((heightCm / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
   const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
