@@ -165,8 +165,7 @@ function registerSystemFonts(): void {
 
 /** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
 async function ensureFont(fontFamily: string): Promise<void> {
-  if (!fontFamily) return;
-  if (registeredFonts.has(fontFamily) || registeredFonts.has(`${fontFamily}:400`) || registeredFonts.has(`${fontFamily}:700`)) return;
+  if (!fontFamily || registeredFonts.has(fontFamily)) return;
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
   try {
