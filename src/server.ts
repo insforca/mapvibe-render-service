@@ -216,11 +216,11 @@ async function ensureFont(fontFamily: string): Promise<void> {
  *  available regardless of outbound network access.
  */
 function registerBundledFonts(): void {
-  const FONTS_DIR = join(__dirname, '..', 'fonts');
+  // Variable TTFs bundled in assets/fonts/ — cover all weights, no network required
+  const FONTS_DIR = join(__dirname, '..', 'assets', 'fonts');
   const bundled: Array<{ file: string; family: string; weight?: string }> = [
-    { file: 'PlayfairDisplay-Regular.ttf', family: 'Playfair Display', weight: '400' },
-    { file: 'PlayfairDisplay-Bold.ttf',    family: 'Playfair Display', weight: '700' },
-    { file: 'DMSans-Regular.ttf',          family: 'DM Sans',           weight: '400' },
+    { file: 'PlayfairDisplay.ttf', family: 'Playfair Display' },
+    { file: 'DMSans.ttf',          family: 'DM Sans' },
   ];
   for (const { file, family, weight } of bundled) {
     const fontPath = join(FONTS_DIR, file);
