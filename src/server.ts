@@ -165,7 +165,8 @@ function registerSystemFonts(): void {
 
 /** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
 async function ensureFont(fontFamily: string): Promise<void> {
-  if (!fontFamily || registeredFonts.has(fontFamily)) return;
+  if (!fontFamily) return;
+  if (registeredFonts.has(fontFamily) || registeredFonts.has(`${fontFamily}:400`) || registeredFonts.has(`${fontFamily}:700`)) return;
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
   try {
@@ -216,6 +217,7 @@ function registerBundledFonts(): void {
         if (weight) opts.weight = weight;
         registerFont(fontPath, opts);
         registeredFonts.add(fontKey);
+        registeredFonts.add(family);  // also add without weight for ensureFont() lookup
         console.log(`[fonts] Bundled font registered: ${family} wt=${weight ?? 'any'} from ${file}`);
       } catch (err) {
         console.warn(`[fonts] Could not register bundled font ${file}:`, err);
