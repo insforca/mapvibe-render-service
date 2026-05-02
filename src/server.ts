@@ -620,12 +620,13 @@ interface FulfillBody {
   quantity:         number;
   pngUrl?:          string;
   configUrl?:       string;
+  confirm?:         boolean;  // per-request override; falls back to PRINTFUL_AUTO_CONFIRM env var
 }
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
 
-  const { externalId, recipient, variantId, catalogVariantId, label, quantity, pngUrl, configUrl } = req.body as FulfillBody;
+  const { externalId, recipient, variantId, catalogVariantId, label, quantity, pngUrl, configUrl, confirm: confirmOverride } = req.body as FulfillBody;
 
   if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
     res.status(400).json({ error: 'Missing required fields: externalId, recipient, variantId, catalogVariantId, label, quantity' });
@@ -664,7 +665,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     if (!resolvedId) return;  // active order exists — skip
     const effectiveExternalId = resolvedId;
 
-    const autoConfirm = process.env.PRINTFUL_AUTO_CONFIRM === 'true';
+    const autoConfirm = confirmOverride !== undefined ? confirmOverride : process.env.PRINTFUL_AUTO_CONFIRM === 'true';
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
