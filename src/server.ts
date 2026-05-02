@@ -380,19 +380,12 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // DEVICE_SCALE controls map render quality (labels/symbols crispness via the Map ratio option).
-  // maplibre-gl-native render() output is always width×height RGBA pixels; it does NOT upscale.
-  // We render at a smaller viewport (vpW×vpH = w/SCALE × h/SCALE) to stay within GL framebuffer
-  // limits (Mesa/llvmpipe max ~4096px), then drawImage-scale up to the full canvas size.
-  const DEVICE_SCALE = params.printMode ? 3 : 2;
-  const vpW = Math.ceil(w / DEVICE_SCALE);
-  const vpH = Math.ceil(h / DEVICE_SCALE);
-  // Snap w/h to exact multiples of DEVICE_SCALE so drawImage() upscale is always
-  // an integer ratio (e.g. 4795 → 4797 = 1599×3). Non-integer scale (4795/1599 = 2.9987×)
-  // causes row-by-row bilinear interpolation shimmer on map tile boundaries.
-  // Salamanca (w=4800, exact 3×) was clean; 16×20 (w=4795, 2.9987×) was not.
-  w = vpW * DEVICE_SCALE;
-  h = vpH * DEVICE_SCALE;
+  // Render directly at full output resolution — no DEVICE_SCALE downscale.
+  // Mesa GL_MAX_RENDERBUFFER_SIZE on Ubuntu 24.04 llvmpipe ≥16384, so 4800×6000 is fine.
+  // ratio=3 loads tiles at 3× density (crisp labels/symbols for print) while keeping the
+  // effective tile-selection viewport at w/3 × h/3 (correct map scale for print size).
+  // Prior downscale+drawImage path introduced 9-row bilinear artifacts on sparse content.
+  const DEVICE_SCALE = params.printMode ? 3 : 1;
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -428,7 +421,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        { zoom, center: [lng, lat], width: w, height: h, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -440,28 +433,15 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is vpW×vpH RGBA pixels (small render).
-  // Build a temp canvas at vpW×vpH, stamp the buffer, then drawImage-scale to full w×h.
+  // rawRgba is w×h RGBA pixels — native full-resolution render, no upscale needed.
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
 
-  // 1. Fill background
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, w, h);
-
-  // 2. Stamp map onto temp canvas at native vpW×vpH, then scale up
-  const mapCv  = createCanvas(vpW, vpH);
-  const mapCtx = mapCv.getContext('2d') as any;
-  const imageData = mapCtx.createImageData(vpW, vpH);
-  imageData.data.set(rawRgba.slice(0, vpW * vpH * 4));
-  mapCtx.putImageData(imageData, 0, 0);
-  // Nearest-neighbour upscale: maplibre has already applied its own sub-pixel AA.
-  // Adding bilinear interpolation on top (the default) double-blurs thin streets,
-  // especially at high zoom (e.g. Barcelona z12.86). NN preserves maplibre's AA exactly.
-  (ctx as any).imageSmoothingEnabled = false;
-  ctx.drawImage(mapCv as unknown as import('canvas').Canvas, 0, 0, w, h);
-  (ctx as any).imageSmoothingEnabled = true; // restore for subsequent text/fades
+  // Stamp maplibre output directly onto full-size canvas
+  const imageData = ctx.createImageData(w, h);
+  imageData.data.set(rawRgba.slice(0, w * h * 4));
+  ctx.putImageData(imageData, 0, 0);
 
   // 3. Fades + poster text
   if (overlay) {
