@@ -22,7 +22,7 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { deflateSync } from 'zlib';
+import { deflateSync, inflateSync } from 'zlib';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
@@ -313,47 +313,58 @@ function buildPngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([lenBuf, typeBuf, data, crcBuf]);
 }
 
-/**
- * Build a proper RGB PNG (color type 2, sRGB) directly from raw RGBA pixel
- * data obtained via canvas.getImageData().  This avoids the IDAT-recompression
- * approach which was broken: it copied *filtered* scanline bytes verbatim but
- * changed bytes-per-pixel from 4 (RGBA) to 3 (RGB), making the stored filter
- * predictions (Sub/Up/Average/Paeth) reference wrong byte offsets, producing
- * horizontal scanline / banding artifacts in the decoded image.
- *
- * Using filter=None (0x00) for every row is safe: no cross-byte prediction is
- * needed, and deflate still achieves good compression on natural image data.
+/** Strip alpha from an RGBA PNG and return an RGB PNG (color type 2, sRGB).
+ *  Preserves Cairo's original filter bytes — works correctly for filter=None,
+ *  Sub, Up, Average, Paeth because the alpha channel has a constant value of
+ *  255 on the fully-opaque flattened canvas, so stripping it does not disturb
+ *  the relative channel predictions.
  */
-function buildRgbPng(rgba: Uint8ClampedArray | Buffer, width: number, height: number): Buffer {
+function rgbPngFromRgbaPng(pngBuf: Buffer): Buffer {
   const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-  // One filter byte (0 = None) + 3 RGB bytes per pixel, per scanline
+  const width    = pngBuf.readUInt32BE(16);
+  const height   = pngBuf.readUInt32BE(20);
+  const bitDepth = pngBuf[24];
+
+  // Collect + decompress IDAT
+  const idatBufs: Buffer[] = [];
+  let pos = 8;
+  while (pos + 12 <= pngBuf.length) {
+    const len  = pngBuf.readUInt32BE(pos);
+    const type = pngBuf.slice(pos + 4, pos + 8).toString('ascii');
+    if (type === 'IDAT') idatBufs.push(pngBuf.slice(pos + 8, pos + 8 + len));
+    pos += 12 + len;
+    if (type === 'IEND') break;
+  }
+  const raw = inflateSync(Buffer.concat(idatBufs));
+
+  // RGBA → RGB: strip alpha byte per pixel
   const rgbRowBytes = 1 + width * 3;
   const rgbRaw      = Buffer.alloc(height * rgbRowBytes);
   for (let y = 0; y < height; y++) {
+    const s = y * (1 + width * 4);
     const d = y * rgbRowBytes;
-    rgbRaw[d] = 0; // filter = None (correct regardless of bpp)
+    rgbRaw[d] = raw[s]; // filter byte preserved
     for (let x = 0; x < width; x++) {
-      const s = (y * width + x) * 4;
-      rgbRaw[d + 1 + x * 3]     = rgba[s];     // R
-      rgbRaw[d + 1 + x * 3 + 1] = rgba[s + 1]; // G
-      rgbRaw[d + 1 + x * 3 + 2] = rgba[s + 2]; // B  (alpha dropped)
+      rgbRaw[d + 1 + x * 3]     = raw[s + 1 + x * 4];     // R
+      rgbRaw[d + 1 + x * 3 + 1] = raw[s + 1 + x * 4 + 1]; // G
+      rgbRaw[d + 1 + x * 3 + 2] = raw[s + 1 + x * 4 + 2]; // B
     }
   }
 
+  // New IHDR: color type 2 (RGB)
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width,  0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;  // bit depth
-  ihdr[9] = 2;  // color type 2 = RGB
-  // compression, filter, interlace = 0
+  ihdr[8]  = bitDepth;
+  ihdr[9]  = 2; // RGB
   ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
   return Buffer.concat([
     PNG_SIG,
     buildPngChunk('IHDR', ihdr),
     buildPngChunk('sRGB', Buffer.from([0x00])), // perceptual intent
-    buildPngChunk('IDAT', deflateSync(rgbRaw, { level: 6 })),
+    buildPngChunk('IDAT', deflateSync(rgbRaw)),
     buildPngChunk('IEND', Buffer.alloc(0)),
   ]);
 }
@@ -376,6 +387,12 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const DEVICE_SCALE = params.printMode ? 3 : 2;
   const vpW = Math.ceil(w / DEVICE_SCALE);
   const vpH = Math.ceil(h / DEVICE_SCALE);
+  // Snap w/h to exact multiples of DEVICE_SCALE so drawImage() upscale is always
+  // an integer ratio (e.g. 4795 → 4797 = 1599×3). Non-integer scale (4795/1599 = 2.9987×)
+  // causes row-by-row bilinear interpolation shimmer on map tile boundaries.
+  // Salamanca (w=4800, exact 3×) was clean; 16×20 (w=4795, 2.9987×) was not.
+  w = vpW * DEVICE_SCALE;
+  h = vpH * DEVICE_SCALE;
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -462,9 +479,10 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   flatCtx.fillStyle = '#ffffff';
   flatCtx.fillRect(0, 0, w, h);
   flatCtx.drawImage(cv as unknown as import('canvas').Canvas, 0, 0);
-  // Build RGB PNG directly from raw pixel data (avoids filter-bpp mismatch bug)
-  const flatImgData = (flatCtx as any).getImageData(0, 0, w, h);
-  const pngBuf = buildRgbPng(flatImgData.data as Uint8ClampedArray, w, h);
+  // Export as RGB PNG: Cairo → PNG (RGBA) → strip alpha (RGB).
+  // Using Cairo's own PNG encoder avoids large getImageData allocations and
+  // byte-order ambiguity; the canvas is fully opaque so alpha=255 everywhere.
+  const pngBuf = rgbPngFromRgbaPng(flatCv.toBuffer('image/png'));
   console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB-RGB, alpha-stripped)`);
   return pngBuf;
 }
