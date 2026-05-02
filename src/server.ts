@@ -291,6 +291,35 @@ interface RenderParams {
  * Replaces the Playwright/SwiftShader browser pipeline from v2.x.
  * Works at any zoom level; no browser or WebGL limitations.
  */
+
+// ── PNG post-processing helpers ──────────────────────────────────────────────
+
+/** Pure-JS CRC32 (used to build the sRGB PNG chunk). */
+function crc32(buf: Buffer): number {
+  let crc = 0xFFFFFFFF;
+  for (const byte of buf) {
+    let c = (crc ^ byte) & 0xFF;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    crc = c ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/**
+ * Inject an sRGB chunk immediately after IHDR so print services (Printful etc.)
+ * treat the file as sRGB.  PNG spec §11.3.3.1 — sRGB must precede PLTE/IDAT.
+ * Position 33 = 8-byte PNG sig + 25-byte IHDR chunk.
+ */
+function addSrgbChunk(pngBuf: Buffer): Buffer {
+  const chunkType = Buffer.from('sRGB');
+  const chunkData = Buffer.from([0x00]); // rendering intent: perceptual
+  const crcVal    = crc32(Buffer.concat([chunkType, chunkData]));
+  const lenBuf    = Buffer.allocUnsafe(4); lenBuf.writeUInt32BE(1, 0);
+  const crcBuf    = Buffer.allocUnsafe(4); crcBuf.writeUInt32BE(crcVal, 0);
+  const srgbChunk = Buffer.concat([lenBuf, chunkType, chunkData, crcBuf]);
+  return Buffer.concat([pngBuf.subarray(0, 33), srgbChunk, pngBuf.subarray(33)]);
+}
+
 async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const { styleJson, center, zoom, bearing = 0, pitch = 0, overlay } = params;
   const [lng, lat] = center;
@@ -383,8 +412,15 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     );
   }
 
-  const pngBuf = cv.toBuffer('image/png');
-  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px`);
+  // Flatten alpha onto white (Printful requires RGB, no transparency)
+  const flatCv  = createCanvas(w, h);
+  const flatCtx = flatCv.getContext('2d');
+  flatCtx.fillStyle = '#ffffff';
+  flatCtx.fillRect(0, 0, w, h);
+  flatCtx.drawImage(cv as unknown as import('canvas').Canvas, 0, 0);
+  // Inject sRGB chunk — Printful requires sRGB-tagged print files
+  const pngBuf = addSrgbChunk(flatCv.toBuffer('image/png'));
+  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB, white-bg)`);
   return pngBuf;
 }
 
