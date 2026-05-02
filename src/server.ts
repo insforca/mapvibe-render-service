@@ -391,17 +391,15 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // DEVICE_SCALE controls map render quality (labels/symbols crispness via the Map ratio option).
-  // maplibre-gl-native render() output is always width×height RGBA pixels; it does NOT upscale.
-  // We render at a smaller viewport (vpW×vpH = w/SCALE × h/SCALE) to stay within GL framebuffer
-  // limits (Mesa/llvmpipe max ~4096px), then drawImage-scale up to the full canvas size.
-  const DEVICE_SCALE = params.printMode ? 4 : 2;
+  // DEVICE_SCALE=3: maplibre sees a 1600px logical viewport for a 4800px print (16×20 at 300 DPI).
+  // ratio=3 causes maplibre to output physical pixels directly (vpW*3 × vpH*3 = w×h) —
+  // no Sharp upscale needed, rawRgba goes straight onto the canvas.
+  // Scale=3 matches the reference output (poster-1777713849153); scale=4 (1200px logical)
+  // makes roads/labels proportionally bolder — not the intended aesthetic.
+  // Standard sizes (16×20, 18×24) are multiples of 900px, so w/3 is always integer.
+  const DEVICE_SCALE = params.printMode ? 3 : 2;
   const vpW = Math.ceil(w / DEVICE_SCALE);
   const vpH = Math.ceil(h / DEVICE_SCALE);
-  // Snap w/h to exact multiples of DEVICE_SCALE so drawImage() upscale is always
-  // an integer ratio (e.g. 4795 → 4797 = 1599×3). Non-integer scale (4795/1599 = 2.9987×)
-  // causes row-by-row bilinear interpolation shimmer on map tile boundaries.
-  // Salamanca (w=4800, exact 3×) was clean; 16×20 (w=4795, 2.9987×) was not.
   w = vpW * DEVICE_SCALE;
   h = vpH * DEVICE_SCALE;
 
@@ -451,25 +449,14 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // BUG FIX (banding): maplibre-gl-native with ratio=DEVICE_SCALE outputs PHYSICAL
-  // pixels — the rawRgba buffer is already w×h (= vpW*DEVICE_SCALE × vpH*DEVICE_SCALE).
-  // The previous declaration of { width: vpW, height: vpH } caused Sharp to read only
-  // the first 1/DEVICE_SCALE² of the buffer and misinterpret row widths, producing
-  // DEVICE_SCALE²-row (= 9-row at DEVICE_SCALE=3) periodic banding on the final image.
-  // Fix: declare the correct physical dimensions; no resize needed (already at target).
-  const upscaledRgba = await sharp(rawRgba, {
-    raw: { width: w, height: h, channels: 4 },
-  })
-    .raw()
-    .toBuffer();
-
+  // rawRgba is already w×h (maplibre outputs physical pixels at ratio=DEVICE_SCALE).
+  // No Sharp pass-through needed — put directly onto canvas.
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
 
-  // Stamp sharp-upscaled RGBA directly onto full canvas
   const imageData = ctx.createImageData(w, h);
-  imageData.data.set(upscaledRgba.slice(0, w * h * 4));
+  imageData.data.set(rawRgba.slice(0, w * h * 4));
   ctx.putImageData(imageData, 0, 0);
 
   // 3. Fades + poster text
