@@ -690,13 +690,6 @@ async function renderConfigToBlobUrl(
   // 7. Upload to Vercel Blob
   try {
     const hash = Math.random().toString(36).slice(2, 10);
-    // Post-render sharpening: gentle unsharp mask improves edge clarity on roads,
-    // labels, and coastlines at print scale without introducing halos.
-    pngBuffer = await sharp(pngBuffer)
-      .sharpen({ sigma: 0.6, m1: 0.8, m2: 0.6 })
-      .png()
-      .toBuffer();
-
     const blob = await put(`poster-${Date.now()}-${hash}.png`, pngBuffer, {
       access: 'public', contentType: 'image/png',
     });
