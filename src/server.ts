@@ -22,6 +22,7 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { inflateSync, deflateSync } from 'zlib';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
@@ -294,7 +295,7 @@ interface RenderParams {
 
 // ── PNG post-processing helpers ──────────────────────────────────────────────
 
-/** Pure-JS CRC32 (used to build the sRGB PNG chunk). */
+/** Pure-JS CRC32 (PNG spec). */
 function crc32(buf: Buffer): number {
   let crc = 0xFFFFFFFF;
   for (const byte of buf) {
@@ -305,19 +306,71 @@ function crc32(buf: Buffer): number {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
+function buildPngChunk(type: string, data: Buffer): Buffer {
+  const typeBuf = Buffer.from(type);
+  const lenBuf  = Buffer.allocUnsafe(4); lenBuf.writeUInt32BE(data.length, 0);
+  const crcBuf  = Buffer.allocUnsafe(4); crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([lenBuf, typeBuf, data, crcBuf]);
+}
+
 /**
- * Inject an sRGB chunk immediately after IHDR so print services (Printful etc.)
- * treat the file as sRGB.  PNG spec §11.3.3.1 — sRGB must precede PLTE/IDAT.
- * Position 33 = 8-byte PNG sig + 25-byte IHDR chunk.
+ * Convert an RGBA PNG (node-canvas always outputs RGBA) to a proper RGB PNG
+ * with an sRGB chunk.  Printful requires color type 2 (RGB, no alpha channel)
+ * and an sRGB color-space declaration.
+ *
+ * Steps:
+ *  1. Decompress all IDAT chunks
+ *  2. Strip the alpha byte from each pixel in every scanline
+ *  3. Rebuild IHDR with color type 2, add sRGB chunk, recompress IDAT
  */
-function addSrgbChunk(pngBuf: Buffer): Buffer {
-  const chunkType = Buffer.from('sRGB');
-  const chunkData = Buffer.from([0x00]); // rendering intent: perceptual
-  const crcVal    = crc32(Buffer.concat([chunkType, chunkData]));
-  const lenBuf    = Buffer.allocUnsafe(4); lenBuf.writeUInt32BE(1, 0);
-  const crcBuf    = Buffer.allocUnsafe(4); crcBuf.writeUInt32BE(crcVal, 0);
-  const srgbChunk = Buffer.concat([lenBuf, chunkType, chunkData, crcBuf]);
-  return Buffer.concat([pngBuf.subarray(0, 33), srgbChunk, pngBuf.subarray(33)]);
+function rgbPngFromRgbaPng(pngBuf: Buffer): Buffer {
+  const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+  const width    = pngBuf.readUInt32BE(16);
+  const height   = pngBuf.readUInt32BE(20);
+  const bitDepth = pngBuf[24];
+
+  // Collect + decompress IDAT
+  const idatBufs: Buffer[] = [];
+  let pos = 8;
+  while (pos + 12 <= pngBuf.length) {
+    const len  = pngBuf.readUInt32BE(pos);
+    const type = pngBuf.slice(pos + 4, pos + 8).toString('ascii');
+    if (type === 'IDAT') idatBufs.push(pngBuf.slice(pos + 8, pos + 8 + len));
+    pos += 12 + len;
+    if (type === 'IEND') break;
+  }
+  const raw = inflateSync(Buffer.concat(idatBufs));
+
+  // RGBA → RGB: strip alpha byte per pixel
+  const rgbRowBytes = 1 + width * 3;
+  const rgbRaw      = Buffer.alloc(height * rgbRowBytes);
+  for (let y = 0; y < height; y++) {
+    const s = y * (1 + width * 4);
+    const d = y * rgbRowBytes;
+    rgbRaw[d] = raw[s]; // filter byte
+    for (let x = 0; x < width; x++) {
+      rgbRaw[d + 1 + x * 3]     = raw[s + 1 + x * 4];     // R
+      rgbRaw[d + 1 + x * 3 + 1] = raw[s + 1 + x * 4 + 1]; // G
+      rgbRaw[d + 1 + x * 3 + 2] = raw[s + 1 + x * 4 + 2]; // B
+    }
+  }
+
+  // New IHDR: color type 2 (RGB)
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width,  0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8]  = bitDepth;
+  ihdr[9]  = 2; // RGB
+  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+
+  return Buffer.concat([
+    PNG_SIG,
+    buildPngChunk('IHDR', ihdr),
+    buildPngChunk('sRGB', Buffer.from([0x00])), // perceptual intent
+    buildPngChunk('IDAT', deflateSync(rgbRaw)),
+    buildPngChunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 async function renderPngInternal(params: RenderParams): Promise<Buffer> {
@@ -419,8 +472,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   flatCtx.fillRect(0, 0, w, h);
   flatCtx.drawImage(cv as unknown as import('canvas').Canvas, 0, 0);
   // Inject sRGB chunk — Printful requires sRGB-tagged print files
-  const pngBuf = addSrgbChunk(flatCv.toBuffer('image/png'));
-  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB, white-bg)`);
+  const pngBuf = rgbPngFromRgbaPng(flatCv.toBuffer('image/png'));
+  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB-RGB, alpha-stripped)`);
   return pngBuf;
 }
 
