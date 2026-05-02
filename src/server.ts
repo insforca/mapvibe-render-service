@@ -179,7 +179,9 @@ async function ensureFont(fontFamily: string): Promise<void> {
       });
       if (!cssRes.ok) throw new Error(`Google Fonts CSS ${cssRes.status}`);
       const css = await cssRes.text();
-      const match = css.match(/src:\s*url\((https?:\/\/[^)]+\.(?:ttf|woff))\)/i);
+      // Match any Google Fonts URL (modern kit= URLs no longer end with .ttf/.woff extension)
+  const match = css.match(/src:\s*url\(([^)]+fonts\.gstatic\.com[^)]+)\)\s*format\(['\"](?:truetype|woff|opentype)['\"]\)/i)
+             || css.match(/src:\s*url\((https?:\/\/[^)]+\.(?:ttf|woff))\)/i);
       if (!match) throw new Error('No TTF URL in Google Fonts CSS');
       const fontRes = await fetch(match[1], { signal: AbortSignal.timeout(15_000) });
       if (!fontRes.ok) throw new Error(`Font download ${fontRes.status}`);
