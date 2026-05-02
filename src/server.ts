@@ -395,7 +395,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   // maplibre-gl-native render() output is always width×height RGBA pixels; it does NOT upscale.
   // We render at a smaller viewport (vpW×vpH = w/SCALE × h/SCALE) to stay within GL framebuffer
   // limits (Mesa/llvmpipe max ~4096px), then drawImage-scale up to the full canvas size.
-  const DEVICE_SCALE = params.printMode ? 3 : 2;
+  const DEVICE_SCALE = params.printMode ? 4 : 2;
   const vpW = Math.ceil(w / DEVICE_SCALE);
   const vpH = Math.ceil(h / DEVICE_SCALE);
   // Snap w/h to exact multiples of DEVICE_SCALE so drawImage() upscale is always
@@ -690,6 +690,13 @@ async function renderConfigToBlobUrl(
   // 7. Upload to Vercel Blob
   try {
     const hash = Math.random().toString(36).slice(2, 10);
+    // Post-render sharpening: gentle unsharp mask improves edge clarity on roads,
+    // labels, and coastlines at print scale without introducing halos.
+    pngBuffer = await sharp(pngBuffer)
+      .sharpen({ sigma: 0.6, m1: 0.8, m2: 0.6 })
+      .png()
+      .toBuffer();
+
     const blob = await put(`poster-${Date.now()}-${hash}.png`, pngBuffer, {
       access: 'public', contentType: 'image/png',
     });
