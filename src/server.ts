@@ -169,7 +169,22 @@ async function ensureFont(fontFamily: string): Promise<void> {
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
   try {
-    let ttfBuf: Buffer | null = existsSync(fontPath) ? readFileSync(fontPath) : null;
+    let ttfBuf: Buffer | null = null;
+  if (existsSync(fontPath)) {
+    const raw = readFileSync(fontPath);
+    // Validate TTF magic: 00 01 00 00 | 'true' (0x74727565) | 'OTTO' (0x4F54544F)
+    const validFont = raw.length > 4 && (
+      (raw[0] === 0x00 && raw[1] === 0x01) ||
+      (raw[0] === 0x74 && raw[1] === 0x72) ||
+      (raw[0] === 0x4F && raw[1] === 0x54)
+    );
+    if (validFont) {
+      ttfBuf = raw;
+    } else {
+      console.warn(`[ensureFont] Bad magic in cached ${fontPath} — purging and re-fetching`);
+      try { unlinkSync(fontPath); } catch {}
+    }
+  }
     if (!ttfBuf) {
       // Fetch CSS from Google Fonts requesting TTF (older UA)
       const cssUrl = `https://fonts.googleapis.com/css?family=${encodeURIComponent(fontFamily)}:300,400,700`;
