@@ -361,10 +361,20 @@ function rgbPngFromRgbaPng(pngBuf: Buffer): Buffer {
   ihdr[9]  = 2; // RGB
   ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
+  // pHYs chunk: physical pixel density = 300 DPI (11811 dots/metre).
+  // Required by Printful and most print RIPs to correctly interpret the image resolution.
+  // HARD RULE: PNG exports must never be under 300 DPI.
+  const DPI_300_DOTS_PER_METRE = 11811;
+  const physData = Buffer.alloc(9);
+  physData.writeUInt32BE(DPI_300_DOTS_PER_METRE, 0); // pixels per unit X
+  physData.writeUInt32BE(DPI_300_DOTS_PER_METRE, 4); // pixels per unit Y
+  physData[8] = 1;                                    // unit = metre
+
   return Buffer.concat([
     PNG_SIG,
     buildPngChunk('IHDR', ihdr),
     buildPngChunk('sRGB', Buffer.from([0x00])), // perceptual intent
+    buildPngChunk('pHYs', physData),             // 300 DPI — required for Printful
     buildPngChunk('IDAT', deflateSync(rgbRaw)),
     buildPngChunk('IEND', Buffer.alloc(0)),
   ]);
@@ -441,14 +451,15 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is vpW×vpH RGBA pixels (small render).
-  // Upscale to full w×h using sharp Lanczos3 — no periodic banding artifacts.
-  // Bilinear drawImage at 3× produced a 9-row periodic brightness artifact confirmed
-  // by Printful Siegerts FFT analysis. Lanczos3 is artifact-free for integer scale.
+  // BUG FIX (banding): maplibre-gl-native with ratio=DEVICE_SCALE outputs PHYSICAL
+  // pixels — the rawRgba buffer is already w×h (= vpW*DEVICE_SCALE × vpH*DEVICE_SCALE).
+  // The previous declaration of { width: vpW, height: vpH } caused Sharp to read only
+  // the first 1/DEVICE_SCALE² of the buffer and misinterpret row widths, producing
+  // DEVICE_SCALE²-row (= 9-row at DEVICE_SCALE=3) periodic banding on the final image.
+  // Fix: declare the correct physical dimensions; no resize needed (already at target).
   const upscaledRgba = await sharp(rawRgba, {
-    raw: { width: vpW, height: vpH, channels: 4 },
+    raw: { width: w, height: h, channels: 4 },
   })
-    .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
     .raw()
     .toBuffer();
 
