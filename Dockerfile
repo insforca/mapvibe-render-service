@@ -30,6 +30,7 @@ COPY package.json tsconfig.json ./
 RUN npm install
 
 COPY fonts/ ./fonts/
+COPY assets/ ./assets/
 COPY src/ ./src/
 RUN npx tsc
 
