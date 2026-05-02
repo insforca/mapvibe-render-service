@@ -25,6 +25,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from '
 import { deflateSync, inflateSync } from 'zlib';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
+import sharp from 'sharp';
 
 // Native renderer + compositing
 // Load native renderer — log error but keep service alive if GL is unavailable
@@ -441,27 +442,24 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   }
 
   // rawRgba is vpW×vpH RGBA pixels (small render).
-  // Build a temp canvas at vpW×vpH, stamp the buffer, then drawImage-scale to full w×h.
+  // Upscale to full w×h using sharp Lanczos3 — no periodic banding artifacts.
+  // Bilinear drawImage at 3× produced a 9-row periodic brightness artifact confirmed
+  // by Printful Siegerts FFT analysis. Lanczos3 is artifact-free for integer scale.
+  const upscaledRgba = await sharp(rawRgba, {
+    raw: { width: vpW, height: vpH, channels: 4 },
+  })
+    .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
+    .raw()
+    .toBuffer();
+
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
 
-  // 1. Fill background
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, w, h);
-
-  // 2. Stamp map onto temp canvas at native vpW×vpH, then scale up
-  const mapCv  = createCanvas(vpW, vpH);
-  const mapCtx = mapCv.getContext('2d') as any;
-  const imageData = mapCtx.createImageData(vpW, vpH);
-  imageData.data.set(rawRgba.slice(0, vpW * vpH * 4));
-  mapCtx.putImageData(imageData, 0, 0);
-  // Nearest-neighbour upscale: maplibre has already applied its own sub-pixel AA.
-  // Adding bilinear interpolation on top (the default) double-blurs thin streets,
-  // especially at high zoom (e.g. Barcelona z12.86). NN preserves maplibre's AA exactly.
-  (ctx as any).imageSmoothingEnabled = false;
-  ctx.drawImage(mapCv as unknown as import('canvas').Canvas, 0, 0, w, h);
-  (ctx as any).imageSmoothingEnabled = true; // restore for subsequent text/fades
+  // Stamp sharp-upscaled RGBA directly onto full canvas
+  const imageData = ctx.createImageData(w, h);
+  imageData.data.set(upscaledRgba.slice(0, w * h * 4));
+  ctx.putImageData(imageData, 0, 0);
 
   // 3. Fades + poster text
   if (overlay) {

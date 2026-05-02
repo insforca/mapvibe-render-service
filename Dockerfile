@@ -57,6 +57,7 @@ RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
     " || true
 
 RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
+RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
 
 COPY start.sh .
 RUN chmod +x start.sh
