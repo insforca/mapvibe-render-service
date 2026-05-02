@@ -202,17 +202,21 @@ async function ensureFont(fontFamily: string): Promise<void> {
  */
 function registerBundledFonts(): void {
   const FONTS_DIR = join(__dirname, '..', 'fonts');
-  const bundled = [
-    { file: 'PlayfairDisplay-Regular.ttf', family: 'Playfair Display' },
-    { file: 'DMSans-Regular.ttf',          family: 'DM Sans' },
+  const bundled: Array<{ file: string; family: string; weight?: string }> = [
+    { file: 'PlayfairDisplay-Regular.ttf', family: 'Playfair Display', weight: '400' },
+    { file: 'PlayfairDisplay-Bold.ttf',    family: 'Playfair Display', weight: '700' },
+    { file: 'DMSans-Regular.ttf',          family: 'DM Sans',           weight: '400' },
   ];
   for (const { file, family } of bundled) {
     const fontPath = join(FONTS_DIR, file);
-    if (existsSync(fontPath) && !registeredFonts.has(family)) {
+    const fontKey = f.weight ? `${family}:${f.weight}` : family;
+    if (existsSync(fontPath) && !registeredFonts.has(fontKey)) {
       try {
-        registerFont(fontPath, { family });
-        registeredFonts.add(family);
-        console.log(`[fonts] Bundled font registered: ${family} from ${file}`);
+        const opts: { family: string; weight?: string } = { family };
+        if (f.weight) opts.weight = f.weight;
+        registerFont(fontPath, opts);
+        registeredFonts.add(fontKey);
+        console.log(`[fonts] Bundled font registered: ${family} wt=${f.weight ?? 'any'} from ${file}`);
       } catch (err) {
         console.warn(`[fonts] Could not register bundled font ${file}:`, err);
       }
