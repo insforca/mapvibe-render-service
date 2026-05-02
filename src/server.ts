@@ -207,16 +207,16 @@ function registerBundledFonts(): void {
     { file: 'PlayfairDisplay-Bold.ttf',    family: 'Playfair Display', weight: '700' },
     { file: 'DMSans-Regular.ttf',          family: 'DM Sans',           weight: '400' },
   ];
-  for (const { file, family } of bundled) {
+  for (const { file, family, weight } of bundled) {
     const fontPath = join(FONTS_DIR, file);
-    const fontKey = f.weight ? `${family}:${f.weight}` : family;
+    const fontKey = weight ? `${family}:${weight}` : family;
     if (existsSync(fontPath) && !registeredFonts.has(fontKey)) {
       try {
         const opts: { family: string; weight?: string } = { family };
-        if (f.weight) opts.weight = f.weight;
+        if (weight) opts.weight = weight;
         registerFont(fontPath, opts);
         registeredFonts.add(fontKey);
-        console.log(`[fonts] Bundled font registered: ${family} wt=${f.weight ?? 'any'} from ${file}`);
+        console.log(`[fonts] Bundled font registered: ${family} wt=${weight ?? 'any'} from ${file}`);
       } catch (err) {
         console.warn(`[fonts] Could not register bundled font ${file}:`, err);
       }
