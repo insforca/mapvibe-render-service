@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
 COPY package.json tsconfig.json ./
 RUN npm install
 
+COPY fonts/ ./fonts/
 COPY src/ ./src/
 RUN npx tsc
 
