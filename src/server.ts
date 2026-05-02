@@ -141,13 +141,14 @@ const registeredFonts = new Set<string>();
 function registerSystemFonts(): void {
   const candidates: Array<{ path: string; family: string; weight?: string; style?: string }> = [
     // Liberation fonts (fonts-liberation apt package)
-    { path: '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',    family: 'Playfair Display' },
-    { path: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',    family: 'DM Sans' },
+    // NOTE: use neutral aliases so design fonts (Playfair Display / DM Sans) are always fetched from Google Fonts
+    { path: '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',    family: 'Liberation-Sans-Fallback' },
+    { path: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',    family: 'Liberation-Mono-Fallback' },
     // Open Sans (fonts-open-sans)
-    { path: '/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf',           family: 'Playfair Display' },
+    { path: '/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf',           family: 'OpenSans-Fallback' },
     // DejaVu fallbacks
-    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                    family: 'Playfair Display' },
-    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',                family: 'DM Sans' },
+    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',                    family: 'DejaVu-Sans-Fallback' },
+    { path: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',                family: 'DejaVu-Mono-Fallback' },
   ];
   for (const c of candidates) {
     if (existsSync(c.path) && !registeredFonts.has(c.family)) {
@@ -258,7 +259,9 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const vpW = Math.ceil(w / DEVICE_SCALE);
   const vpH = Math.ceil(h / DEVICE_SCALE);
 
-  // Ensure fonts needed by overlay are available
+  // Ensure design-system fonts are always loaded from Google Fonts
+  await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
+  // Also load any per-poster custom font override
   if (overlay?.fontFamily) await ensureFont(overlay.fontFamily);
 
   const renderStart = Date.now();
