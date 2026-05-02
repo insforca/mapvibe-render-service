@@ -384,11 +384,13 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // Device scale (pixelRatio) — keeps geographic area identical to v2.x browser render
-  // ratio on the Map constructor controls symbol/label quality (higher = crisper labels).
-  // It does NOT scale the render buffer — output is always width×height pixels.
-  // vpW/vpH were a misconception; render directly at target dimensions.
+  // DEVICE_SCALE controls map render quality (labels/symbols crispness via the Map ratio option).
+  // maplibre-gl-native render() output is always width×height RGBA pixels; it does NOT upscale.
+  // We render at a smaller viewport (vpW×vpH = w/SCALE × h/SCALE) to stay within GL framebuffer
+  // limits (Mesa/llvmpipe max ~4096px), then drawImage-scale up to the full canvas size.
   const DEVICE_SCALE = params.printMode ? 3 : 2;
+  const vpW = Math.ceil(w / DEVICE_SCALE);
+  const vpH = Math.ceil(h / DEVICE_SCALE);
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -424,7 +426,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: w, height: h, bearing, pitch },
+        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -436,8 +438,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is w×h RGBA pixels — render dimensions match canvas dimensions
-  // Composite onto node-canvas with identical logic to v2.x browser compositing
+  // rawRgba is vpW×vpH RGBA pixels (small render).
+  // Build a temp canvas at vpW×vpH, stamp the buffer, then drawImage-scale to full w×h.
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
@@ -446,10 +448,13 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, w, h);
 
-  // 2. Draw rendered map (RGBA buffer → ImageData)
-  const imageData = ctx.createImageData(w, h);
-  imageData.data.set(rawRgba.slice(0, w * h * 4));
-  ctx.putImageData(imageData, 0, 0);
+  // 2. Stamp map onto temp canvas at native vpW×vpH, then scale up
+  const mapCv  = createCanvas(vpW, vpH);
+  const mapCtx = mapCv.getContext('2d') as any;
+  const imageData = mapCtx.createImageData(vpW, vpH);
+  imageData.data.set(rawRgba.slice(0, vpW * vpH * 4));
+  mapCtx.putImageData(imageData, 0, 0);
+  ctx.drawImage(mapCv as unknown as import('canvas').Canvas, 0, 0, w, h);
 
   // 3. Fades + poster text
   if (overlay) {
