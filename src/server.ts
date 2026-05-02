@@ -22,7 +22,7 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { inflateSync, deflateSync } from 'zlib';
+import { deflateSync } from 'zlib';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
@@ -314,61 +314,46 @@ function buildPngChunk(type: string, data: Buffer): Buffer {
 }
 
 /**
- * Convert an RGBA PNG (node-canvas always outputs RGBA) to a proper RGB PNG
- * with an sRGB chunk.  Printful requires color type 2 (RGB, no alpha channel)
- * and an sRGB color-space declaration.
+ * Build a proper RGB PNG (color type 2, sRGB) directly from raw RGBA pixel
+ * data obtained via canvas.getImageData().  This avoids the IDAT-recompression
+ * approach which was broken: it copied *filtered* scanline bytes verbatim but
+ * changed bytes-per-pixel from 4 (RGBA) to 3 (RGB), making the stored filter
+ * predictions (Sub/Up/Average/Paeth) reference wrong byte offsets, producing
+ * horizontal scanline / banding artifacts in the decoded image.
  *
- * Steps:
- *  1. Decompress all IDAT chunks
- *  2. Strip the alpha byte from each pixel in every scanline
- *  3. Rebuild IHDR with color type 2, add sRGB chunk, recompress IDAT
+ * Using filter=None (0x00) for every row is safe: no cross-byte prediction is
+ * needed, and deflate still achieves good compression on natural image data.
  */
-function rgbPngFromRgbaPng(pngBuf: Buffer): Buffer {
+function buildRgbPng(rgba: Uint8ClampedArray | Buffer, width: number, height: number): Buffer {
   const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-  const width    = pngBuf.readUInt32BE(16);
-  const height   = pngBuf.readUInt32BE(20);
-  const bitDepth = pngBuf[24];
-
-  // Collect + decompress IDAT
-  const idatBufs: Buffer[] = [];
-  let pos = 8;
-  while (pos + 12 <= pngBuf.length) {
-    const len  = pngBuf.readUInt32BE(pos);
-    const type = pngBuf.slice(pos + 4, pos + 8).toString('ascii');
-    if (type === 'IDAT') idatBufs.push(pngBuf.slice(pos + 8, pos + 8 + len));
-    pos += 12 + len;
-    if (type === 'IEND') break;
-  }
-  const raw = inflateSync(Buffer.concat(idatBufs));
-
-  // RGBA → RGB: strip alpha byte per pixel
+  // One filter byte (0 = None) + 3 RGB bytes per pixel, per scanline
   const rgbRowBytes = 1 + width * 3;
   const rgbRaw      = Buffer.alloc(height * rgbRowBytes);
   for (let y = 0; y < height; y++) {
-    const s = y * (1 + width * 4);
     const d = y * rgbRowBytes;
-    rgbRaw[d] = raw[s]; // filter byte
+    rgbRaw[d] = 0; // filter = None (correct regardless of bpp)
     for (let x = 0; x < width; x++) {
-      rgbRaw[d + 1 + x * 3]     = raw[s + 1 + x * 4];     // R
-      rgbRaw[d + 1 + x * 3 + 1] = raw[s + 1 + x * 4 + 1]; // G
-      rgbRaw[d + 1 + x * 3 + 2] = raw[s + 1 + x * 4 + 2]; // B
+      const s = (y * width + x) * 4;
+      rgbRaw[d + 1 + x * 3]     = rgba[s];     // R
+      rgbRaw[d + 1 + x * 3 + 1] = rgba[s + 1]; // G
+      rgbRaw[d + 1 + x * 3 + 2] = rgba[s + 2]; // B  (alpha dropped)
     }
   }
 
-  // New IHDR: color type 2 (RGB)
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width,  0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8]  = bitDepth;
-  ihdr[9]  = 2; // RGB
+  ihdr[8] = 8;  // bit depth
+  ihdr[9] = 2;  // color type 2 = RGB
+  // compression, filter, interlace = 0
   ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
   return Buffer.concat([
     PNG_SIG,
     buildPngChunk('IHDR', ihdr),
     buildPngChunk('sRGB', Buffer.from([0x00])), // perceptual intent
-    buildPngChunk('IDAT', deflateSync(rgbRaw)),
+    buildPngChunk('IDAT', deflateSync(rgbRaw, { level: 6 })),
     buildPngChunk('IEND', Buffer.alloc(0)),
   ]);
 }
@@ -477,8 +462,9 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   flatCtx.fillStyle = '#ffffff';
   flatCtx.fillRect(0, 0, w, h);
   flatCtx.drawImage(cv as unknown as import('canvas').Canvas, 0, 0);
-  // Inject sRGB chunk — Printful requires sRGB-tagged print files
-  const pngBuf = rgbPngFromRgbaPng(flatCv.toBuffer('image/png'));
+  // Build RGB PNG directly from raw pixel data (avoids filter-bpp mismatch bug)
+  const flatImgData = (flatCtx as any).getImageData(0, 0, w, h);
+  const pngBuf = buildRgbPng(flatImgData.data as Uint8ClampedArray, w, h);
   console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB-RGB, alpha-stripped)`);
   return pngBuf;
 }
