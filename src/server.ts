@@ -527,9 +527,10 @@ async function resolveExternalId(baseId: string): Promise<string | null> {
       return null;                                            // active order → skip
     }
     // Terminal order (cancelled/archived) → try next suffix
+    // NOTE: baseId may already be 32 chars, so we must truncate it to make room for the suffix
     console.log(`[fulfill] Terminal order ${existing.id} (${existing.status}) for ${candidate} — trying next suffix`);
     const suffix = `-r${attempt + 2}`;
-    candidate = (baseId + suffix).slice(0, 32);
+    candidate = baseId.slice(0, 32 - suffix.length) + suffix;
   }
   console.error(`[fulfill] Could not find a free externalId after 10 attempts for base ${baseId}`);
   return null;
