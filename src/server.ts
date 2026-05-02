@@ -385,9 +385,10 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
   // Device scale (pixelRatio) — keeps geographic area identical to v2.x browser render
+  // ratio on the Map constructor controls symbol/label quality (higher = crisper labels).
+  // It does NOT scale the render buffer — output is always width×height pixels.
+  // vpW/vpH were a misconception; render directly at target dimensions.
   const DEVICE_SCALE = params.printMode ? 3 : 2;
-  const vpW = Math.ceil(w / DEVICE_SCALE);
-  const vpH = Math.ceil(h / DEVICE_SCALE);
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -423,7 +424,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        { zoom, center: [lng, lat], width: w, height: h, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -435,7 +436,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is DEVICE_SCALE-upscaled: vpW*DEVICE_SCALE × vpH*DEVICE_SCALE = w × h
+  // rawRgba is w×h RGBA pixels — render dimensions match canvas dimensions
   // Composite onto node-canvas with identical logic to v2.x browser compositing
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
