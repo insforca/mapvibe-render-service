@@ -22,7 +22,6 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { deflateSync, inflateSync } from 'zlib';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
@@ -294,92 +293,6 @@ interface RenderParams {
  * Works at any zoom level; no browser or WebGL limitations.
  */
 
-// ── PNG post-processing helpers ──────────────────────────────────────────────
-
-/** Pure-JS CRC32 (PNG spec). */
-function crc32(buf: Buffer): number {
-  let crc = 0xFFFFFFFF;
-  for (const byte of buf) {
-    let c = (crc ^ byte) & 0xFF;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-    crc = c ^ (crc >>> 8);
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-function buildPngChunk(type: string, data: Buffer): Buffer {
-  const typeBuf = Buffer.from(type);
-  const lenBuf  = Buffer.allocUnsafe(4); lenBuf.writeUInt32BE(data.length, 0);
-  const crcBuf  = Buffer.allocUnsafe(4); crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
-  return Buffer.concat([lenBuf, typeBuf, data, crcBuf]);
-}
-
-/** Strip alpha from an RGBA PNG and return an RGB PNG (color type 2, sRGB).
- *  Preserves Cairo's original filter bytes — works correctly for filter=None,
- *  Sub, Up, Average, Paeth because the alpha channel has a constant value of
- *  255 on the fully-opaque flattened canvas, so stripping it does not disturb
- *  the relative channel predictions.
- */
-function rgbPngFromRgbaPng(pngBuf: Buffer): Buffer {
-  const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-
-  const width    = pngBuf.readUInt32BE(16);
-  const height   = pngBuf.readUInt32BE(20);
-  const bitDepth = pngBuf[24];
-
-  // Collect + decompress IDAT
-  const idatBufs: Buffer[] = [];
-  let pos = 8;
-  while (pos + 12 <= pngBuf.length) {
-    const len  = pngBuf.readUInt32BE(pos);
-    const type = pngBuf.slice(pos + 4, pos + 8).toString('ascii');
-    if (type === 'IDAT') idatBufs.push(pngBuf.slice(pos + 8, pos + 8 + len));
-    pos += 12 + len;
-    if (type === 'IEND') break;
-  }
-  const raw = inflateSync(Buffer.concat(idatBufs));
-
-  // RGBA → RGB: strip alpha byte per pixel
-  const rgbRowBytes = 1 + width * 3;
-  const rgbRaw      = Buffer.alloc(height * rgbRowBytes);
-  for (let y = 0; y < height; y++) {
-    const s = y * (1 + width * 4);
-    const d = y * rgbRowBytes;
-    rgbRaw[d] = raw[s]; // filter byte preserved
-    for (let x = 0; x < width; x++) {
-      rgbRaw[d + 1 + x * 3]     = raw[s + 1 + x * 4];     // R
-      rgbRaw[d + 1 + x * 3 + 1] = raw[s + 1 + x * 4 + 1]; // G
-      rgbRaw[d + 1 + x * 3 + 2] = raw[s + 1 + x * 4 + 2]; // B
-    }
-  }
-
-  // New IHDR: color type 2 (RGB)
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width,  0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8]  = bitDepth;
-  ihdr[9]  = 2; // RGB
-  ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-
-  // pHYs chunk: physical pixel density = 300 DPI (11811 dots/metre).
-  // Required by Printful and most print RIPs to correctly interpret the image resolution.
-  // HARD RULE: PNG exports must never be under 300 DPI.
-  const DPI_300_DOTS_PER_METRE = 11811;
-  const physData = Buffer.alloc(9);
-  physData.writeUInt32BE(DPI_300_DOTS_PER_METRE, 0); // pixels per unit X
-  physData.writeUInt32BE(DPI_300_DOTS_PER_METRE, 4); // pixels per unit Y
-  physData[8] = 1;                                    // unit = metre
-
-  return Buffer.concat([
-    PNG_SIG,
-    buildPngChunk('IHDR', ihdr),
-    buildPngChunk('sRGB', Buffer.from([0x00])), // perceptual intent
-    buildPngChunk('pHYs', physData),             // 300 DPI — required for Printful
-    buildPngChunk('IDAT', deflateSync(rgbRaw)),
-    buildPngChunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
 async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const { styleJson, center, zoom, bearing = 0, pitch = 0, overlay } = params;
   const [lng, lat] = center;
@@ -474,17 +387,17 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     );
   }
 
-  // Flatten alpha onto white (Printful requires RGB, no transparency)
-  const flatCv  = createCanvas(w, h);
-  const flatCtx = flatCv.getContext('2d');
-  flatCtx.fillStyle = '#ffffff';
-  flatCtx.fillRect(0, 0, w, h);
-  flatCtx.drawImage(cv as unknown as import('canvas').Canvas, 0, 0);
-  // Export as RGB PNG: Cairo → PNG (RGBA) → strip alpha (RGB).
-  // Using Cairo's own PNG encoder avoids large getImageData allocations and
-  // byte-order ambiguity; the canvas is fully opaque so alpha=255 everywhere.
-  const pngBuf = rgbPngFromRgbaPng(flatCv.toBuffer('image/png'));
-  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (sRGB-RGB, alpha-stripped)`);
+  // Encode as sRGB RGB PNG via Sharp — flattens alpha onto white, embeds
+  // pHYs 300 DPI metadata. Replaces manual IDAT byte-strip (rgbPngFromRgbaPng).
+  // HARD RULE: PNG exports must never be under 300 DPI.
+  const rawData = (cv.getContext('2d') as any).getImageData(0, 0, w, h).data;
+  const pngBuf = await sharp(Buffer.from(rawData), { raw: { width: w, height: h, channels: 4 } })
+    .flatten({ background: '#ffffff' })
+    .withMetadata({ density: 300 })
+    .toColorspace('srgb')
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (Sharp-RGB, 300DPI sRGB)`);
   return pngBuf;
 }
 
