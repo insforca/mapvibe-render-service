@@ -456,7 +456,12 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const imageData = mapCtx.createImageData(vpW, vpH);
   imageData.data.set(rawRgba.slice(0, vpW * vpH * 4));
   mapCtx.putImageData(imageData, 0, 0);
+  // Nearest-neighbour upscale: maplibre has already applied its own sub-pixel AA.
+  // Adding bilinear interpolation on top (the default) double-blurs thin streets,
+  // especially at high zoom (e.g. Barcelona z12.86). NN preserves maplibre's AA exactly.
+  (ctx as any).imageSmoothingEnabled = false;
   ctx.drawImage(mapCv as unknown as import('canvas').Canvas, 0, 0, w, h);
+  (ctx as any).imageSmoothingEnabled = true; // restore for subsequent text/fades
 
   // 3. Fades + poster text
   if (overlay) {
