@@ -21,7 +21,7 @@
  */
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
-import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'fs';
+import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 
