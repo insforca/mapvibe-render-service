@@ -304,17 +304,14 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // DEVICE_SCALE=3: maplibre sees a 1600px logical viewport for a 4800px print (16×20 at 300 DPI).
-  // ratio=3 causes maplibre to output physical pixels directly (vpW*3 × vpH*3 = w×h) —
-  // no Sharp upscale needed, rawRgba goes straight onto the canvas.
-  // Scale=3 matches the reference output (poster-1777713849153); scale=4 (1200px logical)
-  // makes roads/labels proportionally bolder — not the intended aesthetic.
-  // Standard sizes (16×20, 18×24) are multiples of 900px, so w/3 is always integer.
-  const DEVICE_SCALE = params.printMode ? 3 : 2;
-  const vpW = Math.ceil(w / DEVICE_SCALE);
-  const vpH = Math.ceil(h / DEVICE_SCALE);
-  w = vpW * DEVICE_SCALE;
-  h = vpH * DEVICE_SCALE;
+  // Native-pixelRatio rendering — mirrors terraink's resolveExportRenderParams().
+  // pixelRatio = exportWidth / CONTAINER_W tells MapLibre how many physical pixels
+  // map to each CSS pixel. Passing full (w, h) to map.render() means the GL
+  // framebuffer IS the export canvas — no internal software upscale, no banding.
+  // CONTAINER_W = 1600 preserves the same tile-zoom / label-scale aesthetic as
+  // the previous DEVICE_SCALE=3 approach.
+  const CONTAINER_W = 1600;
+  const pixelRatio = Math.max(1, Math.round(w / CONTAINER_W));
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -340,7 +337,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
         .then(buf => callback(null, { data: Buffer.from(buf) }))
         .catch(err => callback(err as Error));
     },
-    ratio: DEVICE_SCALE,
+    ratio: pixelRatio,
   });
 
   let rawRgba: Buffer;
@@ -350,7 +347,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        { zoom, center: [lng, lat], width: w, height: h, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -362,8 +359,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is already w×h (maplibre outputs physical pixels at ratio=DEVICE_SCALE).
-  // No Sharp pass-through needed — put directly onto canvas.
+  // rawRgba is w×h×4 bytes — GL rendered natively at full export resolution.
+  // No scaling or Sharp pass-through needed — put directly onto canvas.
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
