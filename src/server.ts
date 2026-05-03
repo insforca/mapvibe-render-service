@@ -285,6 +285,34 @@ interface RenderParams {
   height?:       number;
   printMode?:    boolean;
   overlay?:      OverlayParams;
+  bounds?:       MapBounds;
+}
+
+
+// ── Bounds-based zoom helper ─────────────────────────────────────────────────
+/** Geographic bounding box stored in config snapshots. */
+interface MapBounds {
+  west:  number;
+  south: number;
+  east:  number;
+  north: number;
+}
+
+/**
+ * Derive the correct MapLibre zoom level for a given bounding box and canvas.
+ * Canvas-size-agnostic: same bounds always fills the same poster proportion
+ * regardless of paper size. Mirrors terraink.app / MapLibre cameraForBounds.
+ */
+function zoomForBounds(b: MapBounds, vpW: number, vpH: number, tileSize = 512): number {
+  const latToMerc = (lat: number) =>
+    Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  const lngRange = Math.abs(b.east - b.west) * (Math.PI / 180);
+  const latRange = Math.abs(latToMerc(b.north) - latToMerc(b.south));
+  // Guard against degenerate bounds (single point)
+  if (lngRange < 1e-9 || latRange < 1e-9) return MAX_ZOOM_RENDER;
+  const zW = Math.log2((vpW * 2 * Math.PI) / (lngRange * tileSize));
+  const zH = Math.log2((vpH * 2 * Math.PI) / (latRange * tileSize));
+  return Math.min(zW, zH, MAX_ZOOM_RENDER);
 }
 
 /**
@@ -294,7 +322,7 @@ interface RenderParams {
  */
 
 async function renderPngInternal(params: RenderParams): Promise<Buffer> {
-  const { styleJson, center, zoom, bearing = 0, pitch = 0, overlay } = params;
+  const { styleJson, center, zoom, bearing = 0, pitch = 0, overlay, bounds } = params;
   const [lng, lat] = center;
 
   // Clamp output dimensions
@@ -347,10 +375,13 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   try {
     map.load(styleJson);
 
+    // Use bounds-derived zoom if available — canvas-size-agnostic
+    const renderZoomForCanvas = bounds ? zoomForBounds(bounds, vpW, vpH) : zoom;
+
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        { zoom: renderZoomForCanvas, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -482,6 +513,7 @@ interface MapvibeConfigSnapshot {
   zoom:           number;
   bearing?:       number;
   pitch?:         number;
+  bounds?:        MapBounds;
   widthCm:        number;
   heightCm:       number;
   displayCity:    string;
@@ -568,6 +600,7 @@ async function renderConfigToBlobUrl(
       zoom:           renderZoom,
       bearing:        cfg.bearing        ?? 0,
       pitch:          cfg.pitch          ?? 0,
+      bounds:         cfg.bounds,
       width,
       height,
       printMode:      true,
@@ -622,7 +655,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   }
 
   const {
-    styleJson, center, zoom, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
+    styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
     displayCity, displayCountry, fontFamily, showPosterText, fadeStyle, includeCredits, textLayout, theme,
   } = req.body;
 
@@ -647,7 +680,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   activeRenders++;
   const renderStart = Date.now();
   try {
-    const png = await renderPngInternal({ styleJson, center, zoom, bearing, pitch, width, height, printMode, overlay });
+    const png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
     res.setHeader('Content-Type', 'image/png');
     if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
     res.end(png);
