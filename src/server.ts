@@ -332,13 +332,10 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // 2× upscale render — fixes GL framebuffer limit in Mesa/llvmpipe (~4096 px max).
-  // Render at vpW×vpH (half final size) with ratio=2 (tiles at 2× quality),
-  // then Sharp Lanczos3 upscale to w×h.  2× upscale produces far less banding
-  // than the old DEVICE_SCALE=3 approach (3× upscale from 1600×2000).
-  // Snap w/h to exact 2× multiples so Lanczos3 upscale is always integer-ratio
-  // (non-integer scale produces shimmer on tile boundaries — see bd46c10f).
-  const DEVICE_SCALE = 2;
+  // Full-resolution native GL render — Railway now has 4 GB RAM (Workstream A).
+  // DEVICE_SCALE defaults to 1 (full res, no upscale, no Lanczos blur).
+  // Emergency rollback without redeploy: set RENDER_DEVICE_SCALE=2 in Railway env.
+  const DEVICE_SCALE = parseInt(process.env.RENDER_DEVICE_SCALE ?? '1', 10) || 1;
   const vpW = Math.ceil(w / DEVICE_SCALE);
   const vpH = Math.ceil(h / DEVICE_SCALE);
   w = vpW * DEVICE_SCALE;
@@ -393,21 +390,21 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is vpW×vpH×4 bytes — GL rendered at half final size.
-  // Lanczos3 upscale 2× to w×h: integer scale eliminates shimmer on tile boundaries.
-  const upscaledRgba = await sharp(rawRgba, {
-    raw: { width: vpW, height: vpH, channels: 4 },
-  })
-    .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
-    .raw()
-    .toBuffer();
+  // When DEVICE_SCALE=1 (default), vpW=w and vpH=h — rawRgba IS the final buffer.
+  // When DEVICE_SCALE>1 (emergency revert path), Lanczos upscale to w×h.
+  const finalRgba = DEVICE_SCALE > 1
+    ? await sharp(rawRgba, { raw: { width: vpW, height: vpH, channels: 4 } })
+        .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
+        .raw()
+        .toBuffer()
+    : rawRgba;
 
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
 
   const imageData = ctx.createImageData(w, h);
-  imageData.data.set(upscaledRgba.slice(0, w * h * 4));
+  imageData.data.set(finalRgba.slice(0, w * h * 4));
   ctx.putImageData(imageData, 0, 0);
 
   // 3. Fades + poster text
@@ -435,7 +432,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     .toColorspace('srgb')
     .png({ compressionLevel: 6 })
     .toBuffer();
-  console.log(`[render] 2x-upscale render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${vpW}x${vpH}→${w}x${h}px (Sharp-RGB, 300DPI sRGB)`);
+  const modeLabel = DEVICE_SCALE > 1 ? `${vpW}x${vpH}→${w}x${h}px (Lanczos${DEVICE_SCALE}x)` : `${w}x${h}px (native-res)`;
+  console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, 300DPI sRGB)`);
   return pngBuf;
 }
 
