@@ -304,14 +304,17 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // Native-pixelRatio rendering — mirrors terraink's resolveExportRenderParams().
-  // pixelRatio = exportWidth / CONTAINER_W tells MapLibre how many physical pixels
-  // map to each CSS pixel. Passing full (w, h) to map.render() means the GL
-  // framebuffer IS the export canvas — no internal software upscale, no banding.
-  // CONTAINER_W = 1600 preserves the same tile-zoom / label-scale aesthetic as
-  // the previous DEVICE_SCALE=3 approach.
-  const CONTAINER_W = 1600;
-  const pixelRatio = Math.max(1, Math.round(w / CONTAINER_W));
+  // 2× upscale render — fixes GL framebuffer limit in Mesa/llvmpipe (~4096 px max).
+  // Render at vpW×vpH (half final size) with ratio=2 (tiles at 2× quality),
+  // then Sharp Lanczos3 upscale to w×h.  2× upscale produces far less banding
+  // than the old DEVICE_SCALE=3 approach (3× upscale from 1600×2000).
+  // Snap w/h to exact 2× multiples so Lanczos3 upscale is always integer-ratio
+  // (non-integer scale produces shimmer on tile boundaries — see bd46c10f).
+  const DEVICE_SCALE = 2;
+  const vpW = Math.ceil(w / DEVICE_SCALE);
+  const vpH = Math.ceil(h / DEVICE_SCALE);
+  w = vpW * DEVICE_SCALE;
+  h = vpH * DEVICE_SCALE;
 
   // Ensure design-system fonts are always loaded from Google Fonts
   await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
@@ -337,7 +340,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
         .then(buf => callback(null, { data: Buffer.from(buf) }))
         .catch(err => callback(err as Error));
     },
-    ratio: pixelRatio,
+    ratio: DEVICE_SCALE,
   });
 
   let rawRgba: Buffer;
@@ -347,7 +350,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom, center: [lng, lat], width: w, height: h, bearing, pitch },
+        { zoom, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -359,14 +362,21 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // rawRgba is w×h×4 bytes — GL rendered natively at full export resolution.
-  // No scaling or Sharp pass-through needed — put directly onto canvas.
+  // rawRgba is vpW×vpH×4 bytes — GL rendered at half final size.
+  // Lanczos3 upscale 2× to w×h: integer scale eliminates shimmer on tile boundaries.
+  const upscaledRgba = await sharp(rawRgba, {
+    raw: { width: vpW, height: vpH, channels: 4 },
+  })
+    .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
+    .raw()
+    .toBuffer();
+
   const bgColor = (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
   const ctx = cv.getContext('2d') as any;
 
   const imageData = ctx.createImageData(w, h);
-  imageData.data.set(rawRgba.slice(0, w * h * 4));
+  imageData.data.set(upscaledRgba.slice(0, w * h * 4));
   ctx.putImageData(imageData, 0, 0);
 
   // 3. Fades + poster text
@@ -394,7 +404,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     .toColorspace('srgb')
     .png({ compressionLevel: 6 })
     .toBuffer();
-  console.log(`[render] Native render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${w}x${h}px (Sharp-RGB, 300DPI sRGB)`);
+  console.log(`[render] 2x-upscale render done in ${Math.round((Date.now()-renderStart)/1000)}s — ${vpW}x${vpH}→${w}x${h}px (Sharp-RGB, 300DPI sRGB)`);
   return pngBuf;
 }
 
