@@ -706,6 +706,8 @@ interface FulfillBody {
   // regardless of what was saved in the config snapshot. Hard rule: 300 DPI minimum.
   widthCm?:         number;
   heightCm?:        number;
+  // Dedícalo — gift/dedication card message to print on Printful packing slip
+  gift?:            { message: string; para?: string };
 }
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
@@ -715,6 +717,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     externalId, recipient, variantId, catalogVariantId, label, quantity,
     pngUrl, configUrl, confirm: confirmOverride,
     widthCm: widthCmOverride, heightCm: heightCmOverride,
+    gift,
   } = req.body as FulfillBody;
 
   if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
@@ -758,8 +761,12 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     const effectiveExternalId = resolvedId;
 
     const autoConfirm = confirmOverride !== undefined ? confirmOverride : process.env.PRINTFUL_AUTO_CONFIRM === 'true';
+  const giftMessage = gift?.message
+      ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
+      : null;
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
+      ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
                 name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
     };
@@ -777,6 +784,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
         console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
         const v1Payload = {
           external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
+          ...(giftMessage ? { gift: { subject: 'A gift for you', message: giftMessage } } : {}),
           items: [{ variant_id: variantId, quantity,
                     name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
         };
