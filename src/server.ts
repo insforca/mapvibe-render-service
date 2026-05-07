@@ -540,9 +540,9 @@ async function tryUpdateExistingOrder(
       const errData = await updateRes.json();
       console.error(`[fulfill] Failed to update order ${existing.id}:`, errData);
 
-      // Pending orders can't be updated via PUT — try cancelling so
+      // Draft/pending orders may fail PUT — delete/cancel them so
       // resolveExternalId can assign a -rN suffix and create a fresh order.
-      if (existing.status === 'pending') {
+      if (existing.status === 'pending' || existing.status === 'draft') {
         console.log(`[fulfill] Attempting to cancel pending order ${existing.id} to allow re-creation`);
         try {
           const cancelRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
