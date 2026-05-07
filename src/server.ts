@@ -539,6 +539,25 @@ async function tryUpdateExistingOrder(
     if (!updateRes.ok) {
       const errData = await updateRes.json();
       console.error(`[fulfill] Failed to update order ${existing.id}:`, errData);
+
+      // Pending orders can't be updated via PUT — try cancelling so
+      // resolveExternalId can assign a -rN suffix and create a fresh order.
+      if (existing.status === 'pending') {
+        console.log(`[fulfill] Attempting to cancel pending order ${existing.id} to allow re-creation`);
+        try {
+          const cancelRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
+            method: 'DELETE', headers: pfHeaders,
+          });
+          if (cancelRes.ok) {
+            console.log(`[fulfill] Pending order ${existing.id} cancelled — fresh order will be created`);
+          } else {
+            const cancelErr = await cancelRes.json();
+            console.warn(`[fulfill] Could not cancel pending order ${existing.id}:`, cancelErr);
+          }
+        } catch (cancelErr: any) {
+          console.warn(`[fulfill] Cancel attempt threw for ${existing.id}:`, cancelErr);
+        }
+      }
       return false;
     }
     console.log(`[fulfill] Order ${existing.id} (${existing.status}) updated with new PNG: ${finalPngUrl}`);
