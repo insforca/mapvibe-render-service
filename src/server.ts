@@ -850,11 +850,14 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   const giftMessage = gift?.message
       ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
       : null;
+  // v2 uses `placements` (not `files`) inside each item.
+  // Verified: catalog_variant_id === variant_id for all MapVibe Printful products.
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
-                name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
+                name: `MapVibe — ${label}`,
+                placements: [{ placement: 'default', files: [{ url: finalPngUrl }] }] }],
     };
 
     try {
