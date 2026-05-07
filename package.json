@@ -10,9 +10,9 @@
   },
   "dependencies": {
     "@maplibre/maplibre-gl-native": "6.4.1",
-    "@vercel/blob": "^0.27.0",
+    "@vercel/blob": "^2.0.0",
     "canvas": "3.2.3",
-    "express": "^4.18.2",
+    "express": "^4.22.1",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
@@ -20,5 +20,11 @@
     "@types/node": "^20.12.0",
     "@types/sharp": "^0.31.1",
     "typescript": "^5.4.0"
+  },
+  "overrides": {
+    "node-fetch": "^2.7.0",
+    "whatwg-url": "^7.1.0",
+    "path-to-regexp": "^0.1.13",
+    "undici": ">=6.24.0"
   }
 }
