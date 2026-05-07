@@ -504,6 +504,63 @@ async function resolveExternalId(baseId: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Attempt to update an existing Printful draft/pending order with a new PNG.
+ * Returns true if the order was found and updated (caller should return/skip creation).
+ * Returns false if no updatable order exists (caller should proceed with creation).
+ */
+async function tryUpdateExistingOrder(
+  baseId: string,
+  finalPngUrl: string,
+  variantId: number,
+  quantity: number,
+  label: string,
+  autoConfirm: boolean,
+  pfHeaders: Record<string, string>,
+  gift?: { message: string; para?: string },
+): Promise<boolean> {
+  const existing = await findExistingPrintfulOrder(baseId);
+  if (!existing) return false;
+  if (existing.status !== 'draft' && existing.status !== 'pending') return false;
+
+  console.log(`[fulfill] Existing ${existing.status} order ${existing.id} for ${baseId} — updating with new PNG`);
+  const giftMessage = gift?.message
+    ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
+    : null;
+  const updatePayload: any = {
+    items: [{ variant_id: variantId, quantity, name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
+  };
+  if (giftMessage) updatePayload.gift = { subject: 'A gift for you', message: giftMessage };
+
+  try {
+    const updateRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
+      method: 'PUT', headers: pfHeaders, body: JSON.stringify(updatePayload),
+    });
+    if (!updateRes.ok) {
+      const errData = await updateRes.json();
+      console.error(`[fulfill] Failed to update order ${existing.id}:`, errData);
+      return false;
+    }
+    console.log(`[fulfill] Order ${existing.id} (${existing.status}) updated with new PNG: ${finalPngUrl}`);
+
+    if (autoConfirm && existing.status === 'draft') {
+      const confirmRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}/confirm`, {
+        method: 'POST', headers: pfHeaders,
+      });
+      if (confirmRes.ok) {
+        console.log(`[fulfill] Order ${existing.id} confirmed`);
+      } else {
+        const confirmErr = await confirmRes.json();
+        console.warn(`[fulfill] Order ${existing.id} updated but confirm failed:`, confirmErr);
+      }
+    }
+    return true;
+  } catch (err: any) {
+    console.error(`[fulfill] Error updating order ${existing.id}:`, err);
+    return false;
+  }
+}
+
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
 interface MapvibeConfigSnapshot {
   styleJson:      unknown;
@@ -756,11 +813,21 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
+    const autoConfirm = confirmOverride !== undefined ? confirmOverride : process.env.PRINTFUL_AUTO_CONFIRM === 'true';
+    const pfHeaders: Record<string, string> = {
+      Authorization: `Bearer ${PRINTFUL_KEY}`, 'Content-Type': 'application/json',
+    };
+    if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
+
+    // If a draft/pending Printful order already exists, update it with the new PNG
+    // instead of silently skipping (handles re-trigger after partial failures).
+    const wasUpdated = await tryUpdateExistingOrder(externalId, finalPngUrl!, variantId, quantity, label, autoConfirm, pfHeaders, gift);
+    if (wasUpdated) return;
+
     const resolvedId = await resolveExternalId(externalId);
-    if (!resolvedId) return;  // active order exists — skip
+    if (!resolvedId) return;  // locked active order — skip
     const effectiveExternalId = resolvedId;
 
-    const autoConfirm = confirmOverride !== undefined ? confirmOverride : process.env.PRINTFUL_AUTO_CONFIRM === 'true';
   const giftMessage = gift?.message
       ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
       : null;
@@ -770,10 +837,6 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
                 name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
     };
-    const pfHeaders: Record<string, string> = {
-      Authorization: `Bearer ${PRINTFUL_KEY}`, 'Content-Type': 'application/json',
-    };
-    if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
 
     try {
       let pfRes = await fetch(`${PRINTFUL_API_V2}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v2Payload) });
