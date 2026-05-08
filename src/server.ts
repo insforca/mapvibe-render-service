@@ -100,6 +100,7 @@ const ALLOWED_TILE_HOSTS = [
   'a.tile.openstreetmap.org','b.tile.openstreetmap.org','c.tile.openstreetmap.org',
   'basemaps.cartocdn.com','api.maptiler.com','maps.geoapify.com',
   'mapvibe-studio-alpha.vercel.app',
+  'mapvibestudio.com',
 ];
 const PRIVATE_IP_RE = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fd[0-9a-f]{2}:)/i;
 
