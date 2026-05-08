@@ -641,14 +641,14 @@ async function renderConfigToBlobUrl(
     if (sources) {
       for (const src of Object.values(sources)) {
         if (typeof src?.url === 'string') {
-          const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/');
+          const needsPatch = src.url.includes('openfreemap.org') || src.url.startsWith('/') || src.url.includes('mapvibestudio.com');
           if (needsPatch) {
             src.url = `https://tiles.openfreemap.org/planet`;
           }
         }
       }
     }
-    if (typeof styleJson.glyphs === 'string' && styleJson.glyphs.startsWith('/'))
+    if (typeof styleJson.glyphs === 'string' && (styleJson.glyphs.startsWith('/') || styleJson.glyphs.includes('mapvibestudio.com')))
       styleJson.glyphs = MAPTILER_API_KEY
         ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
         : `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`;
