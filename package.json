@@ -1,7 +1,7 @@
 {
   "name": "mapvibe-render-service",
-  "version": "3.0.0",
-  "description": "MapVibe map render + Printful fulfillment service (native renderer)",
+  "version": "3.1.0",
+  "description": "MapVibe map render + Printful fulfillment service (native renderer + render queue)",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
@@ -13,7 +13,8 @@
     "@vercel/blob": "^2.0.0",
     "canvas": "3.2.3",
     "express": "^4.22.1",
-    "sharp": "^0.33.5"
+    "sharp": "^0.33.5",
+    "p-queue": "^7.4.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

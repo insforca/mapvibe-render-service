@@ -1,5 +1,5 @@
 /**
- * MapVibe Render Service — server.ts v3.0.0
+ * MapVibe Render Service — server.ts v3.1.0
  *
  * v3.0.0: Replace Playwright/SwiftShader browser pipeline with
  *   @maplibre/maplibre-gl-native (native OpenGL/EGL, no browser).
@@ -10,8 +10,10 @@
  * Base image changed: mcr.microsoft.com/playwright → node:20-bookworm-slim
  *   (smaller image, explicit GL/EGL deps instead of bundled Chromium)
  *
- * Env vars (unchanged from v2.x):
+ * Env vars:
  *   RENDER_API_SECRET        — required; auth for /render and /fulfill
+ *   MAX_CONCURRENT           — max simultaneous renders (default: 4)
+ *   MAX_QUEUE_SIZE           — max requests waiting in queue before 503 (default: 20)
  *   PRINTFUL_API_KEY         — Printful OAuth token
  *   PRINTFUL_STORE_ID        — Printful store ID (default: 17897492)
  *   BLOB_READ_WRITE_TOKEN    — Vercel Blob write token
@@ -25,6 +27,7 @@ import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from '
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
+import PQueue from 'p-queue';
 
 // Native renderer + compositing
 // Load native renderer — log error but keep service alive if GL is unavailable
@@ -76,8 +79,9 @@ const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) |
 const CM_PER_INCH       = 2.54;
 const MAX_RENDER_PX_WH  = 12288;
 const MAX_ZOOM_RENDER   = 17;
-const MAX_CONCURRENT    = 4;
-let   activeRenders     = 0;
+const MAX_CONCURRENT    = parseInt(process.env.MAX_CONCURRENT    ?? '4',  10);
+const MAX_QUEUE_SIZE    = parseInt(process.env.MAX_QUEUE_SIZE    ?? '20', 10);
+const renderQueue       = new PQueue({ concurrency: MAX_CONCURRENT });
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 const COMPARE_KEY = Buffer.from('mapvibe-cte-v1');
@@ -720,15 +724,21 @@ async function renderConfigToBlobUrl(
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
-app.get('/health', (_req: Request, res: Response) => res.json({ status: 'ok', version: '3.0.0', blobConfigured: !!process.env.BLOB_READ_WRITE_TOKEN, mbglLoaded: !mbglLoadError }));
+app.get('/health', (_req: Request, res: Response) => res.json({
+  status: 'ok',
+  version: '3.0.0',
+  queue: {
+    size:           renderQueue.size,
+    pending:        renderQueue.pending,
+    maxConcurrent:  MAX_CONCURRENT,
+    maxQueueSize:   MAX_QUEUE_SIZE,
+  },
+  uptime: process.uptime(),
+}));
 
 // POST /render — synchronous render, returns PNG
 app.post('/render', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
-  if (activeRenders >= MAX_CONCURRENT) {
-    res.status(503).json({ error: 'Render service busy — try again shortly', activeRenders });
-    return;
-  }
 
   const {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
@@ -740,6 +750,17 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 
   const urlError = validateStyleJsonUrls(styleJson);
   if (urlError) { res.status(400).json({ error: urlError }); return; }
+
+  // Queue-depth check — reject immediately if queue is saturated
+  if (renderQueue.size >= MAX_QUEUE_SIZE) {
+    console.warn(`[render] Queue full (${renderQueue.size}/${MAX_QUEUE_SIZE}) — rejecting`);
+    res.status(503).json({
+      error: 'Render service busy — try again shortly',
+      queueSize: renderQueue.size,
+      maxQueueSize: MAX_QUEUE_SIZE,
+    });
+    return;
+  }
 
   const overlay: OverlayParams | undefined =
     (displayCity || displayCountry || showPosterText !== false) ? {
@@ -753,20 +774,20 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       theme:          theme          ?? {},
     } : undefined;
 
-  activeRenders++;
-  const renderStart = Date.now();
-  try {
-    const png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
-    res.setHeader('Content-Type', 'image/png');
-    if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.end(png);
-  } catch (err: any) {
-    const elapsed = Math.round((Date.now()-renderStart)/1000);
-    console.error(`[render] Error after ${elapsed}s:`, err.message || err);
-    res.status(500).json({ error: err.message || 'Render failed', elapsed });
-  } finally {
-    activeRenders--;
-  }
+  console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending}`);
+  await renderQueue.add(async () => {
+    const renderStart = Date.now();
+    try {
+      const png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
+      res.setHeader('Content-Type', 'image/png');
+      if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.end(png);
+    } catch (err: any) {
+      const elapsed = Math.round((Date.now()-renderStart)/1000);
+      console.error(`[render] Error after ${elapsed}s:`, err.message || err);
+      if (!res.headersSent) res.status(500).json({ error: err.message || 'Render failed', elapsed });
+    }
+  });
 });
 
 // POST /fulfill — async Printful fulfillment
@@ -819,15 +840,13 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 
     if (!finalPngUrl && configUrl) {
       console.log(`[fulfill] Config path — rendering for ${externalId}`);
-      activeRenders++;
-      try {
+      // Use render queue — config renders in fulfill compete with /render for concurrency slots
+      await renderQueue.add(async () => {
         const dimsOverride = (widthCmOverride && heightCmOverride)
-        ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
-        : undefined;
-      finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride);
-      } finally {
-        activeRenders--;
-      }
+          ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
+          : undefined;
+        finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride);
+      });
       if (!finalPngUrl) {
         console.error(`[fulfill] Config render FAILED for ${externalId}`);
         return;
