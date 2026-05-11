@@ -875,7 +875,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
-      items: [{ source: 'catalog', catalog_variant_id: catalogVariantId, quantity,
+      items: [{ source: 'store', sync_variant_id: variantId, quantity,
                 name: `MapVibe — ${label}`,
                 files: [{ type: 'default', url: finalPngUrl }] }],
     };
