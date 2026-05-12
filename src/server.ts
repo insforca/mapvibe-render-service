@@ -1,5 +1,5 @@
 /**
- * MapVibe Render Service — server.ts v3.1.0
+ * MapVibe Render Service — server.ts v3.2.0
  *
  * v3.0.0: Replace Playwright/SwiftShader browser pipeline with
  *   @maplibre/maplibre-gl-native (native OpenGL/EGL, no browser).
@@ -68,6 +68,68 @@ if (!API_SECRET) {
 // ── Printful constants ──────────────────────────────────────────────────────
 const PRINTFUL_API_V2   = 'https://api.printful.com/v2';
 const PRINTFUL_API_V1   = 'https://api.printful.com';
+
+/** Cache: catalogVariantId → { placement, technique } to avoid repeated catalog lookups. */
+const catalogPlacementCache = new Map<number, { placement: string; technique: string }>();
+
+/**
+ * Resolve the correct v2 placement key and technique for a given catalog variant.
+ * Calls /v2/catalog-variants/{id} then /v2/catalog-products/{productId} to discover
+ * the first available placement + technique. Results are cached per variantId.
+ * Falls back to { placement: 'default', technique: 'PRINTING' } on any failure.
+ */
+async function resolveCatalogPlacement(
+  catalogVariantId: number,
+  pfHeaders: Record<string, string>,
+): Promise<{ placement: string; technique: string }> {
+  if (catalogPlacementCache.has(catalogVariantId)) {
+    return catalogPlacementCache.get(catalogVariantId)!;
+  }
+  const fallback = { placement: 'default', technique: 'PRINTING' };
+  try {
+    const varRes = await fetch(
+      `${PRINTFUL_API_V2}/catalog-variants/${catalogVariantId}`,
+      { headers: pfHeaders },
+    );
+    if (!varRes.ok) {
+      console.warn(`[catalog] variant lookup ${catalogVariantId} HTTP ${varRes.status} — using fallback`);
+      catalogPlacementCache.set(catalogVariantId, fallback);
+      return fallback;
+    }
+    const varData: any = await varRes.json();
+    const productId: number | undefined = varData.data?.catalog_product_id;
+    if (!productId) {
+      catalogPlacementCache.set(catalogVariantId, fallback);
+      return fallback;
+    }
+
+    const prodRes = await fetch(
+      `${PRINTFUL_API_V2}/catalog-products/${productId}`,
+      { headers: pfHeaders },
+    );
+    if (!prodRes.ok) {
+      console.warn(`[catalog] product lookup ${productId} HTTP ${prodRes.status} — using fallback`);
+      catalogPlacementCache.set(catalogVariantId, fallback);
+      return fallback;
+    }
+    const prodData: any = await prodRes.json();
+    const placements: any[] = prodData.data?.placements ?? [];
+    const first = placements[0];
+    if (!first) {
+      catalogPlacementCache.set(catalogVariantId, fallback);
+      return fallback;
+    }
+
+    const result = { placement: String(first.placement), technique: String(first.technique) };
+    console.log(`[catalog] variant ${catalogVariantId} → placement '${result.placement}' technique '${result.technique}'`);
+    catalogPlacementCache.set(catalogVariantId, result);
+    return result;
+  } catch (err: any) {
+    console.warn(`[catalog] lookup error for variant ${catalogVariantId}: ${err?.message ?? err} — using fallback`);
+    catalogPlacementCache.set(catalogVariantId, fallback);
+    return fallback;
+  }
+}
 const PRINTFUL_KEY      = process.env.PRINTFUL_API_KEY      ?? '';
 const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 
@@ -871,13 +933,18 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   const giftMessage = gift?.message
       ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
       : null;
-  // v2 API: use files[] format (proven working May 2026; placements[] caused silent failures).
+  // v2 API: placements[].layers[] format required — Printful v2 rejects files[] with 400.
+  // resolveCatalogPlacement() discovers placement/technique via catalog endpoints (cached),
+  // falling back to { placement: 'default', technique: 'PRINTING' } if catalog auth fails.
+  const { placement: v2Placement, technique: v2Technique } =
+    await resolveCatalogPlacement(variantId, pfHeaders);
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
       items: [{ source: 'catalog', catalog_variant_id: variantId, quantity,
                 name: `MapVibe — ${label}`,
-                files: [{ type: 'default', url: finalPngUrl }] }],
+                placements: [{ placement: v2Placement, technique: v2Technique,
+                               layers: [{ type: 'file', url: finalPngUrl }] }] }],
     };
 
     try {
@@ -927,3 +994,4 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 });
 
 app.listen(PORT, () => console.log(`MapVibe Render Service v3.0.0 on port ${PORT}`));
+
