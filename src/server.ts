@@ -886,7 +886,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       let apiVersion = 'v2';
 
       if (!pfRes.ok) {
-        console.warn(`[fulfill] v2 failed for ${externalId} — trying v1 fallback`);
+        console.warn(`[fulfill] v2 failed for ${externalId} (HTTP ${pfRes.status}) — v2 body: ${JSON.stringify(pfData)} — trying v1 fallback`);
         const v1Payload = {
           external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
           ...(giftMessage ? { gift: { subject: 'A gift for you', message: giftMessage } } : {}),
