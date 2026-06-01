@@ -133,6 +133,10 @@ async function resolveCatalogPlacement(
 const PRINTFUL_KEY      = process.env.PRINTFUL_API_KEY      ?? '';
 const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 
+// ── Gelato constants ─────────────────────────────────────────────────────────
+const GELATO_API_V4 = 'https://order.gelatoapis.com/v4';
+const GELATO_KEY    = process.env.GELATO_API_KEY ?? '';
+
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
@@ -869,6 +873,64 @@ interface FulfillBody {
   heightCm?:        number;
   // Dedícalo — gift/dedication card message to print on Printful packing slip
   gift?:            { message: string; para?: string };
+  provider?:          'printful' | 'gelato';
+  gelatoProductUid?:   string;               // Gelato product UID from custom.gelato_uid
+}
+
+
+// ── Gelato fulfillment ───────────────────────────────────────────────────────
+
+function recipientToGelatoAddress(recipient: any): Record<string, string | undefined> {
+  const nameParts = (recipient.name ?? '').split(' ');
+  return {
+    firstName:    nameParts[0]  ?? '',
+    lastName:     nameParts.slice(1).join(' ') || nameParts[0] ?? '',
+    addressLine1: recipient.address1,
+    addressLine2: recipient.address2 ?? undefined,
+    city:         recipient.city,
+    stateCode:    recipient.state_code,
+    postCode:     recipient.zip,
+    countryCode:  recipient.country_code,
+    email:        recipient.email,
+    phone:        recipient.phone ?? undefined,
+  };
+}
+
+async function fulfillGelato(
+  externalId:   string,
+  recipient:    any,
+  productUid:   string,
+  quantity:     number,
+  label:        string,
+  finalPngUrl:  string,
+): Promise<void> {
+  if (!GELATO_KEY) {
+    console.error(`[fulfill/gelato] GELATO_API_KEY not configured — order ${externalId} not submitted`);
+    return;
+  }
+  const headers: Record<string, string> = {
+    'X-API-KEY':    GELATO_KEY,
+    'Content-Type': 'application/json',
+  };
+  const payload = {
+    orderType:           'order',
+    orderReferenceId:    externalId,
+    customerReferenceId: externalId,
+    currency:            'USD',
+    items: [{ itemReferenceId: 'item-1', productUid, files: [{ type: 'default', url: finalPngUrl }], quantity }],
+    shippingAddress: recipientToGelatoAddress(recipient),
+  };
+  try {
+    const res  = await fetch(`${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
+    const data: any = await res.json();
+    if (res.ok) {
+      console.log(`[fulfill/gelato] Order created: ${data.id ?? '?'} (${label}) for ${externalId}`);
+    } else {
+      console.error(`[fulfill/gelato] FAILED for ${externalId} HTTP ${res.status} — ${JSON.stringify(data).slice(0, 400)}`);
+    }
+  } catch (err: any) {
+    console.error(`[fulfill/gelato] Error for ${externalId}: ${err?.message ?? err}`);
+  }
 }
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
@@ -889,12 +951,21 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     res.status(400).json({ error: 'Either pngUrl or configUrl must be provided' });
     return;
   }
-  if (!PRINTFUL_KEY) {
+  const provider = ((req.body as FulfillBody).provider ?? 'printful').toLowerCase();
+  if (provider !== 'printful' && provider !== 'gelato') {
+    res.status(400).json({ error: `Unknown provider '${provider}'. Accepted: printful, gelato` });
+    return;
+  }
+  if (provider === 'printful' && !PRINTFUL_KEY) {
     console.error('[fulfill] PRINTFUL_API_KEY not configured');
     res.status(500).json({ error: 'PRINTFUL_API_KEY not configured on Railway' });
     return;
   }
-
+  if (provider === 'gelato' && !GELATO_KEY) {
+    console.error('[fulfill] GELATO_API_KEY not configured');
+    res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
+    return;
+  }
   res.status(202).json({ success: true, accepted: true, externalId });
 
   void (async () => {
@@ -915,6 +986,17 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
+    // ── Gelato branch ──────────────────────────────────────────────────────
+    if (provider === 'gelato') {
+      const gelatoProductUid = (req.body as FulfillBody).gelatoProductUid;
+      if (!gelatoProductUid) {
+        console.error(`[fulfill/gelato] Missing gelatoProductUid for ${externalId}`);
+        return;
+      }
+      await fulfillGelato(externalId, recipient, gelatoProductUid, quantity, label, finalPngUrl!);
+      return;
+    }
+    // ── Printful branch (default) ───────────────────────────────────────────
     const autoConfirm = confirmOverride !== undefined ? confirmOverride : process.env.PRINTFUL_AUTO_CONFIRM === 'true';
     const pfHeaders: Record<string, string> = {
       Authorization: `Bearer ${PRINTFUL_KEY}`, 'Content-Type': 'application/json',
