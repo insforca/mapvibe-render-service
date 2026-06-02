@@ -934,7 +934,7 @@ function recipientToGelatoAddress(recipient: any): Record<string, string | undef
   const nameParts = (recipient.name ?? '').split(' ');
   return {
     firstName:    nameParts[0]  ?? '',
-    lastName:     nameParts.slice(1).join(' ') || nameParts[0] ?? '',
+    lastName:     (nameParts.slice(1).join(' ') || nameParts[0]) ?? '',
     addressLine1: recipient.address1,
     addressLine2: recipient.address2 ?? undefined,
     city:         recipient.city,
