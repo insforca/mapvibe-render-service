@@ -160,23 +160,37 @@ const renderQueue       = new PQueue({ concurrency: MAX_CONCURRENT });
  * Preview renders (/render) are unchanged — the editor controls those.
  */
 const OPTION_C_LINE_WIDTH = 3.5;
+// All road/path layer id patterns
 const ROAD_LAYER_RE = /road|street|highway|motorway|trunk|primary|secondary|tertiary|residential|service|link|path|transit|rail/i;
+// Minor roads to suppress — tertiary + residential + service layers create visual noise
+// at poster scale; hiding them reveals major arterials clearly for a premium, clean output.
+const MINOR_ROAD_RE = /tertiary|residential|service|path|pedestrian|alley/i;
 const PARK_LAYER_RE = /park|green|grass|vegetation|wood|forest|nature|meadow|garden|scrub/i;
 
 function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
   const layers = style.layers as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(layers)) return style;
   let roadPatched = 0;
+  let roadHidden  = 0;
   let parkPatched = 0;
   for (const layer of layers) {
     const id   = String(layer.id   ?? '');
     const type = String(layer.type ?? '');
-    // Road / path line layers → enforce OPTION_C_LINE_WIDTH
+    // Road / path line layers
     if (type === 'line' && ROAD_LAYER_RE.test(id)) {
-      const paint = (layer.paint ?? {}) as Record<string, unknown>;
-      paint['line-width'] = OPTION_C_LINE_WIDTH;
-      layer.paint = paint;
-      roadPatched++;
+      if (MINOR_ROAD_RE.test(id)) {
+        // Hide minor roads (tertiary / residential / service / path) — reduces poster clutter
+        const layout = (layer.layout ?? {}) as Record<string, unknown>;
+        layout['visibility'] = 'none';
+        layer.layout = layout;
+        roadHidden++;
+      } else {
+        // Enforce bold line width on major arteries (motorway / trunk / primary / secondary)
+        const paint = (layer.paint ?? {}) as Record<string, unknown>;
+        paint['line-width'] = OPTION_C_LINE_WIDTH;
+        layer.paint = paint;
+        roadPatched++;
+      }
     }
     // Park / greenery fill layers → ensure visible
     if (type === 'fill' && PARK_LAYER_RE.test(id)) {
@@ -186,7 +200,7 @@ function patchStyleForOptionC(style: Record<string, unknown>): Record<string, un
       parkPatched++;
     }
   }
-  console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${parkPatched} park layers visible`);
+  console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${roadHidden} minor road layers hidden, ${parkPatched} park layers visible`);
   return style;
 }
 
