@@ -135,7 +135,8 @@ const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 
 // ── Gelato constants ─────────────────────────────────────────────────────────
 const GELATO_API_V4 = 'https://order.gelatoapis.com/v4';
-const GELATO_KEY    = process.env.GELATO_API_KEY ?? '';
+const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
+const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
 
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
@@ -938,9 +939,9 @@ function recipientToGelatoAddress(recipient: any): Record<string, string | undef
     addressLine1: recipient.address1,
     addressLine2: recipient.address2 ?? undefined,
     city:         recipient.city,
-    stateCode:    recipient.state_code,
+    state:        recipient.state_code,   // Gelato v4: 'state', not 'stateCode'
     postCode:     recipient.zip,
-    countryCode:  recipient.country_code,
+    country:      recipient.country_code, // Gelato v4: 'country', not 'countryCode'
     email:        recipient.email,
     phone:        recipient.phone ?? undefined,
   };
@@ -967,6 +968,7 @@ async function fulfillGelato(
     orderReferenceId:    externalId,
     customerReferenceId: externalId,
     currency:            'USD',
+    storeId:             GELATO_STORE_ID,
     items: [{ itemReferenceId: 'item-1', productUid, files: [{ type: 'default', url: finalPngUrl }], quantity }],
     shippingAddress: recipientToGelatoAddress(recipient),
   };
