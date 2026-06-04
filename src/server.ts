@@ -168,6 +168,7 @@ const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-
 const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
 const CM_PER_INCH       = 2.54;
 const MAX_RENDER_PX_WH  = 14400;  // raised: gives full 400 DPI up to Grand; Studio/Archival aspect-ratio-scaled
+const MAX_PX            = 150_000_000; // max single render/tile pixels; fits 400 DPI Grand (138 MP) and AR-scaled Studio/Archival
 const MAX_ZOOM_RENDER   = 17;
 const MAX_CONCURRENT    = parseInt(process.env.MAX_CONCURRENT    ?? '4',  10);
 const MAX_QUEUE_SIZE    = parseInt(process.env.MAX_QUEUE_SIZE    ?? '20', 10);
@@ -483,7 +484,6 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   // Clamp output dimensions
   let w = Math.max(100, Math.min(Math.floor(Number(params.width  ?? 2400)), MAX_RENDER_PX_WH));
   let h = Math.max(100, Math.min(Math.floor(Number(params.height ?? 2400)), MAX_RENDER_PX_WH));
-  const MAX_PX = 150_000_000;  // raised: fits 400 DPI Grand (138MP) and AR-scaled Studio/Archival
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
