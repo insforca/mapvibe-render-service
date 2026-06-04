@@ -1,5 +1,5 @@
 /**
- * MapVibe Render Service — server.ts v3.4.0
+ * MapVibe Render Service — server.ts v3.5.0
  *
  * v3.0.0: Replace Playwright/SwiftShader browser pipeline with
  *   @maplibre/maplibre-gl-native (native OpenGL/EGL, no browser).
@@ -739,6 +739,107 @@ async function tryUpdateExistingOrder(
   }
 }
 
+
+// ── Mercator helpers for tiled rendering ────────────────────────────────────────
+function mercLatToY(lat: number): number {
+  return Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+}
+function mercYToLat(y: number): number {
+  return ((2 * Math.atan(Math.exp(y))) - Math.PI / 2) * (180 / Math.PI);
+}
+
+/**
+ * Render a large poster in vertical tiles, stitch with Sharp, apply overlay post-stitch.
+ * Each tile renders via renderPngInternal (no overlay); tiles are stitched into a single
+ * Sharp buffer; fade gradient + text overlay applied on the full-resolution node-canvas.
+ *
+ * Archival 100×150 cm at 400 DPI: 3 tiles → 14,400×21,600 px total → ~366 DPI.
+ */
+async function renderTiledPng(
+  params: RenderParams,
+  totalW: number,
+  totalH: number,
+  numTiles: number,
+): Promise<Buffer> {
+  if (!params.bounds) {
+    throw new Error('[tiled] bounds required for tiled rendering');
+  }
+  const { overlay, bounds } = params;
+  const totalStart = Date.now();
+
+  const totalMercTop    = mercLatToY(bounds.north);
+  const totalMercBottom = mercLatToY(bounds.south);
+  const tileBaseH = Math.ceil(totalH / numTiles);
+
+  const rawTileBuffers: Array<{ buf: Buffer; top: number }> = [];
+  for (let i = 0; i < numTiles; i++) {
+    const tileTop   = i * tileBaseH;
+    const thisTileH = Math.min(tileBaseH, totalH - tileTop);
+    const fracTop    = tileTop    / totalH;
+    const fracBottom = (tileTop + thisTileH) / totalH;
+    const tileMercTop    = totalMercTop + (totalMercBottom - totalMercTop) * fracTop;
+    const tileMercBottom = totalMercTop + (totalMercBottom - totalMercTop) * fracBottom;
+    const tileNorth      = mercYToLat(tileMercTop);
+    const tileSouth      = mercYToLat(tileMercBottom);
+
+    console.log(`[tiled] tile ${i + 1}/${numTiles}: ${totalW}×${thisTileH}px (y ${tileTop}–${tileTop + thisTileH})`);
+    const tileBuf = await renderPngInternal({
+      ...params,
+      width:   totalW,
+      height:  thisTileH,
+      bounds:  { west: bounds.west, east: bounds.east, north: tileNorth, south: tileSouth },
+      overlay: undefined,
+      dpi:     undefined,
+    });
+    rawTileBuffers.push({ buf: tileBuf, top: tileTop });
+  }
+
+  console.log(`[tiled] stitching ${numTiles} tiles → ${totalW}×${totalH}px`);
+  const stitchedRaw = await sharp({
+    create: { width: totalW, height: totalH, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
+  })
+    .composite(rawTileBuffers.map(({ buf, top }) => ({ input: buf, top, left: 0 })))
+    .raw()
+    .toBuffer();
+
+  const cv  = createCanvas(totalW, totalH);
+  const ctx = cv.getContext('2d');
+  const imgData = ctx.createImageData(totalW, totalH);
+  imgData.data.set(new Uint8ClampedArray(stitchedRaw));
+  ctx.putImageData(imgData, 0, 0);
+
+  if (overlay && params.printMode) {
+    const theme = (overlay.theme ?? {}) as any;
+    const [lng, lat] = params.center;
+    applyFades(ctx, totalW, totalH, theme?.map?.fade ?? '#1B2A4A', overlay.fadeStyle ?? 'fullbleed', overlay.textLayout ?? 'centered');
+    drawPosterText(
+      ctx, totalW, totalH, theme, lat, lng,
+      overlay.displayCity    ?? '',
+      overlay.displayCountry ?? '',
+      overlay.fontFamily     ?? '',
+      overlay.showPosterText !== false,
+      overlay.includeCredits !== false,
+      overlay.textLayout     ?? 'centered',
+    );
+  }
+
+  const finalRaw      = (ctx.getImageData(0, 0, totalW, totalH) as any).data;
+  const actualDensity = params.dpi ?? 400;
+  const metaOpts: { density: number; icc?: string } = { density: actualDensity };
+  if (sRGBIccPath) metaOpts.icc = sRGBIccPath;
+
+  const pngBuf = await sharp(Buffer.from(finalRaw), { raw: { width: totalW, height: totalH, channels: 4 } })
+    .flatten({ background: '#ffffff' })
+    .withMetadata(metaOpts)
+    .toColorspace('srgb')
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+
+  console.log(`[tiled] done in ${Math.round((Date.now() - totalStart) / 1000)}s — ${totalW}×${totalH}px @ ${actualDensity} DPI`);
+  return pngBuf;
+}
+
+
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
 interface MapvibeConfigSnapshot {
   styleJson:      unknown;
@@ -781,25 +882,43 @@ async function renderConfigToBlobUrl(
   }
 
   // 2. Compute pixel dims at 400 DPI — HARD RULE: never under 300 DPI effective.
-  //    dimsOverride (from SKU) takes priority over config snapshot — guarantees
-  //    the render matches the ordered print size even if the snapshot was saved
-  //    at a different size.
+  //    dimsOverride (from SKU) takes priority over config snapshot.
   //
-  //    Aspect-ratio-preserving scale: if either raw dimension exceeds
-  //    MAX_RENDER_PX_WH, both axes are scaled down proportionally so the poster
-  //    keeps the correct w:h ratio. Previous behaviour (independent per-axis cap)
-  //    caused square renders for Archival/Studio at 300 DPI.
+  //    v3.5.0 Tiled path: if nominalH > MAX_RENDER_PX_WH and bounds are present,
+  //    we tile vertically (renderTiledPng). This gives Archival ~366 DPI vs 244 before.
+  //    Single-pass path: AR-preserving scale (unchanged for all smaller sizes).
   const DPI      = 400;
   const widthCm  = dimsOverride?.widthCm  ?? (Number(cfg.widthCm)  || 40.64);
   const heightCm = dimsOverride?.heightCm ?? (Number(cfg.heightCm) || 50.80);
-  const rawW     = Math.round((widthCm  / CM_PER_INCH) * DPI);
-  const rawH     = Math.round((heightCm / CM_PER_INCH) * DPI);
-  const dimScale = Math.min(1, MAX_RENDER_PX_WH / Math.max(rawW, rawH));
-  const width    = Math.round(rawW * dimScale);
-  const height   = Math.round(rawH * dimScale);
-  const actualDpi = Math.round(width / (widthCm / CM_PER_INCH));
+  const nominalW = Math.round((widthCm  / CM_PER_INCH) * DPI);
+  const nominalH = Math.round((heightCm / CM_PER_INCH) * DPI);
   const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
-  console.log(`[fulfill] Config render (${dimSource}): ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${actualDpi} DPI (nominal ${DPI} DPI)`);
+
+  // Tiled if height exceeds single-pass limit and we have geographic bounds for subdivision
+  const needsTiling = nominalH > MAX_RENDER_PX_WH && !!cfg.bounds;
+
+  let width: number;
+  let height: number;
+  let actualDpi: number;
+  let numTiles = 1;
+
+  if (needsTiling) {
+    // Width: cap to MAX_RENDER_PX_WH. Height: maintain AR (same scale as width).
+    const wScale = Math.min(1, MAX_RENDER_PX_WH / nominalW);
+    width        = Math.round(nominalW * wScale);
+    height       = Math.round(nominalH * wScale);
+    actualDpi    = Math.round(width / (widthCm / CM_PER_INCH));
+    const maxTileH = Math.floor(MAX_PX / width);
+    numTiles       = Math.ceil(height / maxTileH);
+    console.log(`[fulfill] Config render [TILED×${numTiles}] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
+  } else {
+    // AR-preserving single-pass
+    const dimScale = Math.min(1, MAX_RENDER_PX_WH / Math.max(nominalW, nominalH));
+    width          = Math.round(nominalW * dimScale);
+    height         = Math.round(nominalH * dimScale);
+    actualDpi      = Math.round(width / (widthCm / CM_PER_INCH));
+    console.log(`[fulfill] Config render [single-pass] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
+  }
 
   // 3. Patch style: inject tile/glyph sources, absolutize relative URLs
   let styleJson: Record<string, unknown>;
@@ -838,33 +957,35 @@ async function renderConfigToBlobUrl(
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
-  // 5. Render via native pipeline
+  // 5. Render via native pipeline — tiled or single-pass
+  const sharedParams: RenderParams = {
+    styleJson,
+    center:    cfg.center,
+    zoom:      renderZoom,
+    bearing:   cfg.bearing ?? 0,
+    pitch:     cfg.pitch   ?? 0,
+    bounds:    cfg.bounds,
+    printMode: true,
+    dpi:       actualDpi,
+    overlay: {
+      displayCity:    cfg.displayCity    ?? '',
+      displayCountry: cfg.displayCountry ?? '',
+      fontFamily:     cfg.fontFamily     ?? '',
+      showPosterText: cfg.showPosterText !== false,
+      fadeStyle:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
+      includeCredits: cfg.includeCredits !== false,
+      textLayout:     cfg.textLayout     ?? 'centered',
+      theme:          cfg.theme          ?? {},
+    },
+  };
+
   let pngBuffer: Buffer;
   try {
-    pngBuffer = await renderPngInternal({
-      styleJson,
-      center:         cfg.center,
-      zoom:           renderZoom,
-      bearing:        cfg.bearing        ?? 0,
-      pitch:          cfg.pitch          ?? 0,
-      bounds:         cfg.bounds,
-      width,
-      height,
-      dpi:            actualDpi,
-      printMode:      true,
-      overlay: {
-        displayCity:    cfg.displayCity    ?? '',
-        displayCountry: cfg.displayCountry ?? '',
-        fontFamily:     cfg.fontFamily     ?? '',
-        showPosterText: cfg.showPosterText !== false,
-        // Option 4 layout: print renders always use 'fullbleed' (bottom-only fade).
-        // Overrides legacy 'text' fadeStyle stored in older config snapshots.
-        fadeStyle:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
-        includeCredits: cfg.includeCredits !== false,
-        textLayout:     cfg.textLayout     ?? 'centered',
-        theme:          cfg.theme          ?? {},
-      },
-    });
+    if (needsTiling) {
+      pngBuffer = await renderTiledPng(sharedParams, width, height, numTiles);
+    } else {
+      pngBuffer = await renderPngInternal({ ...sharedParams, width, height });
+    }
   } catch (err) {
     console.error('[fulfill] Render error:', err);
     return null;
@@ -897,7 +1018,7 @@ async function renderConfigToBlobUrl(
 
 app.get('/health', (_req: Request, res: Response) => res.json({
   status: 'ok',
-  version: '3.4.0',
+  version: '3.5.0',
   queue: {
     size:           renderQueue.size,
     pending:        renderQueue.pending,
