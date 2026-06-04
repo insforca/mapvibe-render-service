@@ -1,5 +1,5 @@
 /**
- * MapVibe Render Service — server.ts v3.3.0
+ * MapVibe Render Service — server.ts v3.4.0
  *
  * v3.0.0: Replace Playwright/SwiftShader browser pipeline with
  *   @maplibre/maplibre-gl-native (native OpenGL/EGL, no browser).
@@ -24,10 +24,33 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
 import PQueue from 'p-queue';
+
+// ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
+let sRGBIccPath: string | null = null;
+(async () => {
+  try {
+    const iccPath = `${tmpdir()}/sRGB_v4_ICC.icc`;
+    const res = await fetch('https://www.color.org/sRGB_v4_ICC_preference.icc', {
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (res.ok) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      writeFileSync(iccPath, buf);
+      sRGBIccPath = iccPath;
+      console.log(`[startup] sRGB ICC v4 profile cached (${buf.length} bytes)`);
+    } else {
+      console.warn(`[startup] sRGB ICC fetch HTTP ${res.status} — PNG will export without explicit ICC`);
+    }
+  } catch (e: any) {
+    console.warn('[startup] sRGB ICC fetch failed — PNG will export without explicit ICC:', e?.message);
+  }
+})();
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Native renderer + compositing
 // Load native renderer — log error but keep service alive if GL is unavailable
@@ -144,7 +167,7 @@ const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibes
 const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-studio-alpha.vercel.app';
 const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
 const CM_PER_INCH       = 2.54;
-const MAX_RENDER_PX_WH  = 12288;
+const MAX_RENDER_PX_WH  = 14400;  // raised: gives full 400 DPI up to Grand; Studio/Archival aspect-ratio-scaled
 const MAX_ZOOM_RENDER   = 17;
 const MAX_CONCURRENT    = parseInt(process.env.MAX_CONCURRENT    ?? '4',  10);
 const MAX_QUEUE_SIZE    = parseInt(process.env.MAX_QUEUE_SIZE    ?? '20', 10);
@@ -416,6 +439,8 @@ interface RenderParams {
   printMode?:    boolean;
   overlay?:      OverlayParams;
   bounds?:       MapBounds;
+  /** Actual DPI to embed in PNG pHYs metadata. Defaults to 400. */
+  dpi?:          number;
 }
 
 
@@ -458,7 +483,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   // Clamp output dimensions
   let w = Math.max(100, Math.min(Math.floor(Number(params.width  ?? 2400)), MAX_RENDER_PX_WH));
   let h = Math.max(100, Math.min(Math.floor(Number(params.height ?? 2400)), MAX_RENDER_PX_WH));
-  const MAX_PX = 80_000_000;
+  const MAX_PX = 150_000_000;  // raised: fits 400 DPI Grand (138MP) and AR-scaled Studio/Archival
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
@@ -552,18 +577,22 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     );
   }
 
-  // Encode as sRGB RGB PNG via Sharp — flattens alpha onto white, embeds
-  // pHYs 300 DPI metadata. Replaces manual IDAT byte-strip (rgbPngFromRgbaPng).
-  // HARD RULE: PNG exports must never be under 300 DPI.
+  // Encode as sRGB RGB PNG via Sharp — flattens alpha onto white.
+  // pHYs density = actual DPI after dimension caps (passed via params.dpi; defaults to 400).
+  // compressionLevel 9 = maximum lossless compression (~10-15% smaller files vs 6).
+  // sRGB ICC v4 profile embedded when available (fetched once at startup).
   const rawData = (cv.getContext('2d') as any).getImageData(0, 0, w, h).data;
+  const actualDensity = params.dpi ?? 400;
+  const metadataOpts: { density: number; icc?: string } = { density: actualDensity };
+  if (sRGBIccPath) metadataOpts.icc = sRGBIccPath;
   const pngBuf = await sharp(Buffer.from(rawData), { raw: { width: w, height: h, channels: 4 } })
     .flatten({ background: '#ffffff' })
-    .withMetadata({ density: 300 })
+    .withMetadata(metadataOpts)
     .toColorspace('srgb')
-    .png({ compressionLevel: 6 })
+    .png({ compressionLevel: 9 })
     .toBuffer();
   const modeLabel = DEVICE_SCALE > 1 ? `${vpW}x${vpH}→${w}x${h}px (Lanczos${DEVICE_SCALE}x)` : `${w}x${h}px (native-res)`;
-  console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, 300DPI sRGB)`);
+  console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, ${actualDensity}DPI sRGB)`);
   return pngBuf;
 }
 
@@ -731,8 +760,9 @@ interface MapvibeConfigSnapshot {
 }
 
 /**
- * Download config snapshot, render PNG at 300 DPI, upload to Vercel Blob.
- * 300 DPI hard-enforced — never lower.
+ * Download config snapshot, render PNG at 400 DPI, upload to Vercel Blob.
+ * 400 DPI is the production standard. Dimensions are aspect-ratio-scaled when
+ * either axis would exceed MAX_RENDER_PX_WH — preserves poster proportions.
  */
 async function renderConfigToBlobUrl(
   configUrl: string,
@@ -750,17 +780,26 @@ async function renderConfigToBlobUrl(
     return null;
   }
 
-  // 2. Compute pixel dims at 300 DPI — HARD RULE: never under 300 DPI.
+  // 2. Compute pixel dims at 400 DPI — HARD RULE: never under 300 DPI effective.
   //    dimsOverride (from SKU) takes priority over config snapshot — guarantees
   //    the render matches the ordered print size even if the snapshot was saved
-  //    at a different size (e.g. user designed at 16×20 but ordered 18×24).
-  const DPI      = 300;
+  //    at a different size.
+  //
+  //    Aspect-ratio-preserving scale: if either raw dimension exceeds
+  //    MAX_RENDER_PX_WH, both axes are scaled down proportionally so the poster
+  //    keeps the correct w:h ratio. Previous behaviour (independent per-axis cap)
+  //    caused square renders for Archival/Studio at 300 DPI.
+  const DPI      = 400;
   const widthCm  = dimsOverride?.widthCm  ?? (Number(cfg.widthCm)  || 40.64);
   const heightCm = dimsOverride?.heightCm ?? (Number(cfg.heightCm) || 50.80);
-  const width    = Math.min(Math.round((widthCm  / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
-  const height   = Math.min(Math.round((heightCm / CM_PER_INCH) * DPI), MAX_RENDER_PX_WH);
+  const rawW     = Math.round((widthCm  / CM_PER_INCH) * DPI);
+  const rawH     = Math.round((heightCm / CM_PER_INCH) * DPI);
+  const dimScale = Math.min(1, MAX_RENDER_PX_WH / Math.max(rawW, rawH));
+  const width    = Math.round(rawW * dimScale);
+  const height   = Math.round(rawH * dimScale);
+  const actualDpi = Math.round(width / (widthCm / CM_PER_INCH));
   const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
-  console.log(`[fulfill] Config render (${dimSource}): ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${DPI} DPI`);
+  console.log(`[fulfill] Config render (${dimSource}): ${widthCm}x${heightCm}cm → ${width}x${height}px @ ${actualDpi} DPI (nominal ${DPI} DPI)`);
 
   // 3. Patch style: inject tile/glyph sources, absolutize relative URLs
   let styleJson: Record<string, unknown>;
@@ -811,6 +850,7 @@ async function renderConfigToBlobUrl(
       bounds:         cfg.bounds,
       width,
       height,
+      dpi:            actualDpi,
       printMode:      true,
       overlay: {
         displayCity:    cfg.displayCity    ?? '',
@@ -844,7 +884,7 @@ async function renderConfigToBlobUrl(
       access: 'public', contentType: 'image/png',
       ...(process.env.BLOB_READ_WRITE_TOKEN ? { token: process.env.BLOB_READ_WRITE_TOKEN } : {}),
     });
-    console.log(`[fulfill] PNG uploaded: ${blob.url} (${width}x${height}px)`);
+    console.log(`[fulfill] PNG uploaded: ${blob.url} (${width}x${height}px @ ${actualDpi} DPI)`);
     return blob.url;
   } catch (err) {
     console.error('[fulfill] Blob upload failed:', err);
@@ -857,7 +897,7 @@ async function renderConfigToBlobUrl(
 
 app.get('/health', (_req: Request, res: Response) => res.json({
   status: 'ok',
-  version: '3.3.0',
+  version: '3.4.0',
   queue: {
     size:           renderQueue.size,
     pending:        renderQueue.pending,
