@@ -164,9 +164,9 @@ const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-
 // ── Shopify Admin constants (for metafield-based provider auto-routing) ───────
 // Required for /fulfill to auto-detect pod_partner + gelato_uid without caller passing them.
 // SHOPIFY_ADMIN_TOKEN: Admin API token (Settings → Apps → develop apps → access token).
-// SHOPIFY_SHOP: myshopify domain, e.g. mapvibestudio.myshopify.com
+// SHOPIFY_SHOP: myshopify domain, e.g. mapvibe-studio.myshopify.com
 const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN ?? '';
-const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'mapvibestudio.myshopify.com';
+const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'mapvibe-studio.myshopify.com';
 
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
