@@ -186,9 +186,9 @@ const renderQueue       = new PQueue({ concurrency: MAX_CONCURRENT });
 const OPTION_C_LINE_WIDTH = 3.5;
 // All road/path layer id patterns
 const ROAD_LAYER_RE = /road|street|highway|motorway|trunk|primary|secondary|tertiary|residential|service|link|path|transit|rail/i;
-// Minor roads to suppress — tertiary + residential + service layers create visual noise
-// at poster scale; hiding them reveals major arterials clearly for a premium, clean output.
-const MINOR_ROAD_RE = /tertiary|residential|service|path|pedestrian|alley/i;
+// Secondary + minor roads to suppress — secondary through alley layers create visual noise
+// at poster scale; hiding them reveals motorway / trunk / primary clearly for a premium finish.
+const MINOR_ROAD_RE = /secondary|tertiary|residential|service|path|pedestrian|alley/i;
 const PARK_LAYER_RE = /park|green|grass|vegetation|wood|forest|nature|meadow|garden|scrub/i;
 
 function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
@@ -209,9 +209,11 @@ function patchStyleForOptionC(style: Record<string, unknown>): Record<string, un
         layer.layout = layout;
         roadHidden++;
       } else {
-        // Enforce bold line width on major arteries (motorway / trunk / primary / secondary)
+        // Enforce bold line width on major arteries (motorway / trunk / primary)
         const paint = (layer.paint ?? {}) as Record<string, unknown>;
         paint['line-width'] = OPTION_C_LINE_WIDTH;
+        // Replace pure-black line-color with warm near-black (sumi ink #1D1B1C) for visual warmth
+        if (paint['line-color'] === '#000000') paint['line-color'] = '#1D1B1C';
         layer.paint = paint;
         roadPatched++;
       }
@@ -224,7 +226,7 @@ function patchStyleForOptionC(style: Record<string, unknown>): Record<string, un
       parkPatched++;
     }
   }
-  console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${roadHidden} minor road layers hidden, ${parkPatched} park layers visible`);
+  console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${roadHidden} secondary+minor road layers hidden, ${parkPatched} park layers visible`);
   return style;
 }
 
