@@ -198,6 +198,99 @@ const ROAD_LAYER_RE = /road|street|highway|motorway|trunk|primary|secondary|tert
 const MINOR_ROAD_RE = /secondary|tertiary|residential|service|path|pedestrian|alley/i;
 const PARK_LAYER_RE = /park|green|grass|vegetation|wood|forest|nature|meadow|garden|scrub/i;
 
+
+// ── Print text-halo legibility system ────────────────────────────────────────
+// Self-contained CIELAB pipeline (mirrors themes.ts computeHaloColor, no import).
+// Applied to all symbol layers at print-render time so frame previews and Railway
+// output match the editor canvas halo system from PR #130.
+//
+// Delta rule (tuned for print / cream-poster context):
+//   L* >  85  →  L* − 8  (near-white: darken halo to avoid bleaching cream poster)
+//   L* <  20  →  L* − 4  (near-black: deepen ink substrate)
+//   20–85     →  no change (mid-tone: background IS the halo, zero visible ring)
+//
+// text-halo-width: print-optimised curve — max 3 px at z15 (editor max was 6 px).
+// 3 px is sufficient to lift labels at poster scale without adding road-corridor weight.
+function computeHaloColorForPrint(bgHex: string): string {
+  const toLin = (c: number) => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const fromLin = (v: number) => { const c = Math.max(0, Math.min(1, v)); return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; };
+  const hex2 = (c: number) => Math.round(Math.max(0, Math.min(255, fromLin(c) * 255))).toString(16).padStart(2, '0');
+
+  const ri = parseInt(bgHex.slice(1, 3), 16) / 255;
+  const gi = parseInt(bgHex.slice(3, 5), 16) / 255;
+  const bi = parseInt(bgHex.slice(5, 7), 16) / 255;
+  const rl = toLin(ri), gl = toLin(gi), bl = toLin(bi);
+
+  const X = rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375;
+  const Y = rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750;
+  const Z = rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041;
+
+  const Xn = 0.95047, Yn = 1.00000, Zn = 1.08883;
+  const f = (t: number) => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116;
+  const fx = f(X / Xn), fy = f(Y / Yn), fz = f(Z / Zn);
+  const Lstar = 116 * fy - 16;
+  const astar = 500 * (fx - fy);
+  const bstar = 200 * (fy - fz);
+
+  if (Lstar >= 20 && Lstar <= 85) return bgHex; // mid-tone: no ring
+
+  // Near-white: small L* drop + warm b* drift so halo reads as Rice White against
+  // cream poster (#F5EDE4) rather than a clinical neutral grey ring. [Traditional Colors]
+  // Near-black (L*≥10): ink-depth substrate (−3 L*). L*<10: use exact bg (avoids
+  // clamp to pure #000000 which is meaningless against near-black grounds). [TC: Ink Ground]
+  if (Lstar > 85) {
+    const Lnew = Math.max(0, Lstar - 4);
+    const aNew = astar + 0.5;    // barely visible warm bias
+    const bNew = bstar + 2.5;    // ivory pull toward cream poster substrate
+    const fy2 = (Lnew + 16) / 116;
+    const fx2 = aNew / 500 + fy2;
+    const fz2 = fy2 - bNew / 200;
+    const finv2 = (t: number) => t > 0.2068966 ? t * t * t : (t - 16 / 116) / 7.787;
+    const X2 = finv2(fx2) * Xn, Y2 = finv2(fy2) * Yn, Z2 = finv2(fz2) * Zn;
+    const rl2 =  X2 * 3.2404542 - Y2 * 1.5371385 - Z2 * 0.4985314;
+    const gl2 = -X2 * 0.9692660 + Y2 * 1.8760108 + Z2 * 0.0415560;
+    const bl2 =  X2 * 0.0556434 - Y2 * 0.2040259 + Z2 * 1.0572252;
+    return `#${hex2(rl2)}${hex2(gl2)}${hex2(bl2)}`;
+  }
+
+  if (Lstar < 10) return bgHex; // near-pure-black: exact bg avoids meaningless clamp
+
+  const Lnew = Math.max(0, Lstar - 3);  // ink depth, slightly less than L*-4 to avoid clamp
+  const fy2 = (Lnew + 16) / 116;
+  const fx2 = astar / 500 + fy2;
+  const fz2 = fy2 - bstar / 200;
+  const finv = (t: number) => t > 0.2068966 ? t * t * t : (t - 16 / 116) / 7.787;
+  const X2 = finv(fx2) * Xn, Y2 = finv(fy2) * Yn, Z2 = finv(fz2) * Zn;
+
+  const rl2 =  X2 * 3.2404542 - Y2 * 1.5371385 - Z2 * 0.4985314;
+  const gl2 = -X2 * 0.9692660 + Y2 * 1.8760108 + Z2 * 0.0415560;
+  const bl2 =  X2 * 0.0556434 - Y2 * 0.2040259 + Z2 * 1.0572252;
+  return `#${hex2(rl2)}${hex2(gl2)}${hex2(bl2)}`; // Ink Ground (near-black)
+}
+
+// Patch all symbol layers for print text-halo legibility.
+// Called after patchStyleForOptionC so Road/park patches are already applied.
+function patchStyleForHalo(style: Record<string, unknown>, bgHex?: string): Record<string, unknown> {
+  const layers = style.layers as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(layers)) return style;
+  const haloColor = bgHex ? computeHaloColorForPrint(bgHex) : '#EBEBEB';
+  // Print-optimised width curve: max 3 px at z15 — lifts labels without adding
+  // visual weight to road corridors. (Editor uses up to 6 px; too aggressive for print.)
+  const haloWidth = ['interpolate', ['linear'], ['zoom'], 10, 0.8, 12, 1.5, 14, 2.5, 15, 3];
+  let patched = 0;
+  for (const layer of layers) {
+    if (String(layer.type ?? '') !== 'symbol') continue;
+    const paint = (layer.paint ?? {}) as Record<string, unknown>;
+    paint['text-halo-color'] = haloColor;
+    paint['text-halo-width'] = haloWidth;
+    paint['text-halo-blur']  = 0.5;
+    layer.paint = paint;
+    patched++;
+  }
+  console.log(`[halo] ${patched} symbol layers patched — haloColor=${haloColor}`);
+  return style;
+}
+
 function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
   const layers = style.layers as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(layers)) return style;
@@ -956,6 +1049,8 @@ async function renderConfigToBlobUrl(
 
   // ── Option C print render: enforce 3.5 px roads + parks visible ──────────
   styleJson = patchStyleForOptionC(styleJson);
+  // ── Text-halo legibility: CIELAB-derived for all symbol layers ────────────
+  styleJson = patchStyleForHalo(styleJson, (cfg.theme as any)?.map?.background);
 
 
   // 4. Use the user's design zoom directly (no boost).
