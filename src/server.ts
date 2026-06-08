@@ -161,6 +161,13 @@ const GELATO_API_V4 = 'https://order.gelatoapis.com/v4';
 const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
 const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
 
+// ── Shopify Admin constants (for metafield-based provider auto-routing) ───────
+// Required for /fulfill to auto-detect pod_partner + gelato_uid without caller passing them.
+// SHOPIFY_ADMIN_TOKEN: Admin API token (Settings → Apps → develop apps → access token).
+// SHOPIFY_SHOP: myshopify domain, e.g. mapvibe-studio.myshopify.com
+const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN ?? '';
+const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'mapvibe-studio.myshopify.com';
+
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
@@ -1103,10 +1110,57 @@ interface FulfillBody {
   gift?:            { message: string; para?: string };
   provider?:          'printful' | 'gelato';
   gelatoProductUid?:   string;               // Gelato product UID from custom.gelato_uid
+  // When present, /fulfill auto-detects provider + gelatoProductUid from Shopify variant
+  // metafields (custom.pod_partner, custom.gelato_uid) — caller need not pass provider explicitly.
+  // Requires SHOPIFY_ADMIN_TOKEN env var to be set on Railway.
+  shopifyVariantId?:   number;               // Shopify numeric variant ID from order webhook
 }
 
 
 // ── Gelato fulfillment ───────────────────────────────────────────────────────
+
+/**
+ * Auto-routing: read custom.pod_partner and custom.gelato_uid metafields from
+ * a Shopify variant via the Admin REST API.
+ *
+ * Returns resolved provider ('gelato' or 'printful') and the Gelato product UID
+ * (null if not a Gelato variant or if lookup fails — caller should default to Printful).
+ *
+ * Requires SHOPIFY_ADMIN_TOKEN env var. If not set, always returns 'printful'.
+ * On any network or API failure, logs a warning and falls back to 'printful'.
+ */
+async function resolveGelatoRouting(
+  shopifyVariantId: number,
+): Promise<{ provider: 'printful' | 'gelato'; gelatoProductUid: string | null }> {
+  if (!SHOPIFY_ADMIN_TOKEN) {
+    console.warn('[fulfill/routing] SHOPIFY_ADMIN_TOKEN not set — cannot auto-route via Shopify metafields; defaulting to printful');
+    return { provider: 'printful', gelatoProductUid: null };
+  }
+  try {
+    const url = `https://${SHOPIFY_SHOP}/admin/api/2024-01/variants/${shopifyVariantId}/metafields.json?namespace=custom&limit=20`;
+    const res = await fetch(url, {
+      headers: {
+        'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
+        'Content-Type':           'application/json',
+      },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) {
+      console.warn(`[fulfill/routing] Shopify metafield fetch HTTP ${res.status} for variant ${shopifyVariantId} — defaulting to printful`);
+      return { provider: 'printful', gelatoProductUid: null };
+    }
+    const body: any = await res.json();
+    const mfs: any[] = body.metafields ?? [];
+    const podPartner   = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'pod_partner')?.value ?? null;
+    const gelatoUid    = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'gelato_uid')?.value  ?? null;
+    const provider: 'printful' | 'gelato' = podPartner === 'gelato' ? 'gelato' : 'printful';
+    console.log(`[fulfill/routing] variant ${shopifyVariantId} → pod_partner=${podPartner ?? 'null'} gelato_uid=${gelatoUid ?? 'null'} → ${provider}`);
+    return { provider, gelatoProductUid: gelatoUid };
+  } catch (err: any) {
+    console.error(`[fulfill/routing] Shopify metafield lookup error for variant ${shopifyVariantId}: ${err?.message ?? err} — defaulting to printful`);
+    return { provider: 'printful', gelatoProductUid: null };
+  }
+}
 
 function recipientToGelatoAddress(recipient: any): Record<string, string | undefined> {
   const nameParts = (recipient.name ?? '').split(' ');
@@ -1215,14 +1269,29 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
+    // ── Provider routing (auto-detect from Shopify metafields if not explicit) ──
+    let resolvedProvider = provider;
+    let resolvedGelatoUid: string | null = (req.body as FulfillBody).gelatoProductUid ?? null;
+
+    // Auto-routing: if caller did not explicitly specify provider and passed shopifyVariantId,
+    // query Shopify metafields to determine pod_partner + gelato_uid.
+    const shopifyVariantId = (req.body as FulfillBody).shopifyVariantId;
+    if (resolvedProvider === 'printful' && shopifyVariantId) {
+      const routing = await resolveGelatoRouting(shopifyVariantId);
+      if (routing.provider === 'gelato') {
+        resolvedProvider = 'gelato';
+        // Only override gelatoUid from metafield if not already supplied by caller
+        if (!resolvedGelatoUid && routing.gelatoProductUid) resolvedGelatoUid = routing.gelatoProductUid;
+      }
+    }
+
     // ── Gelato branch ──────────────────────────────────────────────────────
-    if (provider === 'gelato') {
-      const gelatoProductUid = (req.body as FulfillBody).gelatoProductUid;
-      if (!gelatoProductUid) {
-        console.error(`[fulfill/gelato] Missing gelatoProductUid for ${externalId}`);
+    if (resolvedProvider === 'gelato') {
+      if (!resolvedGelatoUid) {
+        console.error(`[fulfill/gelato] Missing gelatoProductUid for ${externalId} (not in request body and not found in Shopify metafields)`);
         return;
       }
-      await fulfillGelato(externalId, recipient, gelatoProductUid, quantity, label, finalPngUrl!);
+      await fulfillGelato(externalId, recipient, resolvedGelatoUid, quantity, label, finalPngUrl!);
       return;
     }
     // ── Printful branch (default) ───────────────────────────────────────────
