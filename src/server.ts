@@ -234,10 +234,28 @@ function computeHaloColorForPrint(bgHex: string): string {
 
   if (Lstar >= 20 && Lstar <= 85) return bgHex; // mid-tone: no ring
 
-  const Lnew = Lstar > 85
-    ? Math.max(0, Lstar - 8)   // near-white: darken to blend with poster, not bleach it
-    : Math.max(0, Lstar - 4);  // near-black: deepen ink substrate
+  // Near-white: small L* drop + warm b* drift so halo reads as Rice White against
+  // cream poster (#F5EDE4) rather than a clinical neutral grey ring. [Traditional Colors]
+  // Near-black (L*≥10): ink-depth substrate (−3 L*). L*<10: use exact bg (avoids
+  // clamp to pure #000000 which is meaningless against near-black grounds). [TC: Ink Ground]
+  if (Lstar > 85) {
+    const Lnew = Math.max(0, Lstar - 4);
+    const aNew = astar + 0.5;    // barely visible warm bias
+    const bNew = bstar + 2.5;    // ivory pull toward cream poster substrate
+    const fy2 = (Lnew + 16) / 116;
+    const fx2 = aNew / 500 + fy2;
+    const fz2 = fy2 - bNew / 200;
+    const finv2 = (t: number) => t > 0.2068966 ? t * t * t : (t - 16 / 116) / 7.787;
+    const X2 = finv2(fx2) * Xn, Y2 = finv2(fy2) * Yn, Z2 = finv2(fz2) * Zn;
+    const rl2 =  X2 * 3.2404542 - Y2 * 1.5371385 - Z2 * 0.4985314;
+    const gl2 = -X2 * 0.9692660 + Y2 * 1.8760108 + Z2 * 0.0415560;
+    const bl2 =  X2 * 0.0556434 - Y2 * 0.2040259 + Z2 * 1.0572252;
+    return `#${hex2(rl2)}${hex2(gl2)}${hex2(bl2)}`;
+  }
 
+  if (Lstar < 10) return bgHex; // near-pure-black: exact bg avoids meaningless clamp
+
+  const Lnew = Math.max(0, Lstar - 3);  // ink depth, slightly less than L*-4 to avoid clamp
   const fy2 = (Lnew + 16) / 116;
   const fx2 = astar / 500 + fy2;
   const fz2 = fy2 - bstar / 200;
@@ -247,7 +265,7 @@ function computeHaloColorForPrint(bgHex: string): string {
   const rl2 =  X2 * 3.2404542 - Y2 * 1.5371385 - Z2 * 0.4985314;
   const gl2 = -X2 * 0.9692660 + Y2 * 1.8760108 + Z2 * 0.0415560;
   const bl2 =  X2 * 0.0556434 - Y2 * 0.2040259 + Z2 * 1.0572252;
-  return `#${hex2(rl2)}${hex2(gl2)}${hex2(bl2)}`;
+  return `#${hex2(rl2)}${hex2(gl2)}${hex2(bl2)}`; // Ink Ground (near-black)
 }
 
 // Patch all symbol layers for print text-halo legibility.
