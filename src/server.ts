@@ -50,6 +50,22 @@ import {
   requestIdMiddleware,
   getRequestId,
 } from './request-id.js';
+import {
+  PRINTFUL_API_V1,
+  PRINTFUL_API_V2,
+  PRINTFUL_TERMINAL_STATUSES,
+  type PrintfulOrderMatch,
+  getPrintfulHeaders,
+  resolveCatalogPlacement,
+  findExistingPrintfulOrder,
+  resolveExternalId,
+  tryUpdateExistingOrder,
+} from './printful.js';
+import {
+  GELATO_API_V4,
+  recipientToGelatoAddress,
+  fulfillGelato,
+} from './gelato.js';
 
 // ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
 let sRGBIccPath: string | null = null;
@@ -114,78 +130,18 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ── Printful constants ──────────────────────────────────────────────────────
-const PRINTFUL_API_V2   = 'https://api.printful.com/v2';
-const PRINTFUL_API_V1   = 'https://api.printful.com';
+// ── Printful constants / client extracted to ./printful.ts ──────────────────
+// PRINTFUL_KEY / PRINTFUL_STORE_ID env vars are read lazily inside
+// getPrintfulHeaders() so vitest stubEnv works without dynamic re-imports.
 
-/** Cache: catalogVariantId → { placement, technique } to avoid repeated catalog lookups. */
-const catalogPlacementCache = new Map<number, { placement: string; technique: string }>();
-
-/**
- * Resolve the correct v2 placement key and technique for a given catalog variant.
- * Calls /v2/catalog-variants/{id} then /v2/catalog-products/{productId} to discover
- * the first available placement + technique. Results are cached per variantId.
- * Falls back to { placement: 'default', technique: 'PRINTING' } on any failure.
- */
-async function resolveCatalogPlacement(
-  catalogVariantId: number,
-  pfHeaders: Record<string, string>,
-): Promise<{ placement: string; technique: string }> {
-  if (catalogPlacementCache.has(catalogVariantId)) {
-    return catalogPlacementCache.get(catalogVariantId)!;
-  }
-  const fallback = { placement: 'default', technique: 'PRINTING' };
-  try {
-    const varRes = await fetch(
-      `${PRINTFUL_API_V2}/catalog-variants/${catalogVariantId}`,
-      { headers: pfHeaders },
-    );
-    if (!varRes.ok) {
-      console.warn(`[catalog] variant lookup ${catalogVariantId} HTTP ${varRes.status} — using fallback`);
-      catalogPlacementCache.set(catalogVariantId, fallback);
-      return fallback;
-    }
-    const varData: any = await varRes.json();
-    const productId: number | undefined = varData.data?.catalog_product_id;
-    if (!productId) {
-      catalogPlacementCache.set(catalogVariantId, fallback);
-      return fallback;
-    }
-
-    const prodRes = await fetch(
-      `${PRINTFUL_API_V2}/catalog-products/${productId}`,
-      { headers: pfHeaders },
-    );
-    if (!prodRes.ok) {
-      console.warn(`[catalog] product lookup ${productId} HTTP ${prodRes.status} — using fallback`);
-      catalogPlacementCache.set(catalogVariantId, fallback);
-      return fallback;
-    }
-    const prodData: any = await prodRes.json();
-    const placements: any[] = prodData.data?.placements ?? [];
-    const first = placements[0];
-    if (!first) {
-      catalogPlacementCache.set(catalogVariantId, fallback);
-      return fallback;
-    }
-
-    const result = { placement: String(first.placement), technique: String(first.technique) };
-    console.log(`[catalog] variant ${catalogVariantId} → placement '${result.placement}' technique '${result.technique}'`);
-    catalogPlacementCache.set(catalogVariantId, result);
-    return result;
-  } catch (err: any) {
-    console.warn(`[catalog] lookup error for variant ${catalogVariantId}: ${err?.message ?? err} — using fallback`);
-    catalogPlacementCache.set(catalogVariantId, fallback);
-    return fallback;
-  }
-}
 const PRINTFUL_KEY      = process.env.PRINTFUL_API_KEY      ?? '';
 const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 
-// ── Gelato constants ─────────────────────────────────────────────────────────
-const GELATO_API_V4 = 'https://order.gelatoapis.com/v4';
-const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
-const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
+// ── Gelato constants / client extracted to ./gelato.ts ─────────────────────
+// GELATO_API_KEY / GELATO_STORE_ID env vars are read lazily inside
+// fulfillGelato so vitest stubEnv works without dynamic re-imports.
+// Kept here as a local alias for the request-time API-key presence check.
+const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
 
 // ── Shopify Admin constants (for metafield-based provider auto-routing) ───────
 // Required for /fulfill to auto-detect pod_partner + gelato_uid without caller passing them.
@@ -697,136 +653,8 @@ interface PrintfulRecipient {
   phone?:       string;
 }
 
-const PRINTFUL_TERMINAL_STATUSES = new Set(['canceled', 'cancelled', 'archived', 'failed']);
-
-interface PrintfulOrderMatch {
-  id: string;
-  status: string;
-  isTerminal: boolean;
-}
-
-async function findExistingPrintfulOrder(externalId: string): Promise<PrintfulOrderMatch | null> {
-  try {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${PRINTFUL_KEY}`,
-      'Content-Type': 'application/json',
-    };
-    if (PRINTFUL_STORE_ID) headers['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
-    const res = await fetch(
-      `${PRINTFUL_API_V1}/orders?external_id=${encodeURIComponent(externalId)}`,
-      { headers },
-    );
-    if (!res.ok) return null;
-    const data: any = await res.json();
-    const orders: Array<{ id: number; external_id: string | null; status: string }> = data?.data ?? data?.result ?? [];
-    const match = orders.find(o => o.external_id === externalId);
-    if (!match) return null;
-    const status = (match.status ?? '').toLowerCase();
-    return { id: String(match.id), status, isTerminal: PRINTFUL_TERMINAL_STATUSES.has(status) };
-  } catch {
-    return null;
-  }
-}
-
-/** Resolve a stable externalId for Printful order creation.
- *  If the candidate ID has an existing ACTIVE order → return null (skip creation).
- *  If the candidate ID has a TERMINAL (cancelled/archived) order → auto-append -rN suffix.
- *  Returns the externalId to use, or null if an active order already exists.
- */
-async function resolveExternalId(baseId: string): Promise<string | null> {
-  let candidate = baseId;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const existing = await findExistingPrintfulOrder(candidate);
-    if (!existing) return candidate;                          // no order → use this ID
-    if (!existing.isTerminal) {
-      console.log(`[fulfill] Active Printful order ${existing.id} (${existing.status}) already exists for ${candidate} — skipping`);
-      return null;                                            // active order → skip
-    }
-    // Terminal order (cancelled/archived) → try next suffix
-    // NOTE: baseId may already be 32 chars, so we must truncate it to make room for the suffix
-    console.log(`[fulfill] Terminal order ${existing.id} (${existing.status}) for ${candidate} — trying next suffix`);
-    const suffix = `-r${attempt + 2}`;
-    candidate = baseId.slice(0, 32 - suffix.length) + suffix;
-  }
-  console.error(`[fulfill] Could not find a free externalId after 10 attempts for base ${baseId}`);
-  return null;
-}
-
-/**
- * Attempt to update an existing Printful draft/pending order with a new PNG.
- * Returns true if the order was found and updated (caller should return/skip creation).
- * Returns false if no updatable order exists (caller should proceed with creation).
- */
-async function tryUpdateExistingOrder(
-  baseId: string,
-  finalPngUrl: string,
-  variantId: number,
-  quantity: number,
-  label: string,
-  autoConfirm: boolean,
-  pfHeaders: Record<string, string>,
-  gift?: { message: string; para?: string },
-): Promise<boolean> {
-  const existing = await findExistingPrintfulOrder(baseId);
-  if (!existing) return false;
-  if (existing.status !== 'draft' && existing.status !== 'pending') return false;
-
-  console.log(`[fulfill] Existing ${existing.status} order ${existing.id} for ${baseId} — updating with new PNG`);
-  const giftMessage = gift?.message
-    ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
-    : null;
-  const updatePayload: any = {
-    items: [{ variant_id: variantId, quantity, name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
-  };
-  if (giftMessage) updatePayload.gift = { subject: 'A gift for you', message: giftMessage };
-
-  try {
-    const updateRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
-      method: 'PUT', headers: pfHeaders, body: JSON.stringify(updatePayload),
-    });
-    if (!updateRes.ok) {
-      const errData = await updateRes.json();
-      console.error(`[fulfill] Failed to update order ${existing.id}:`, errData);
-
-      // Draft/pending orders may fail PUT — delete/cancel them so
-      // resolveExternalId can assign a -rN suffix and create a fresh order.
-      if (existing.status === 'pending' || existing.status === 'draft') {
-        console.log(`[fulfill] Attempting to cancel pending order ${existing.id} to allow re-creation`);
-        try {
-          const cancelRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
-            method: 'DELETE', headers: pfHeaders,
-          });
-          if (cancelRes.ok) {
-            console.log(`[fulfill] Pending order ${existing.id} cancelled — fresh order will be created`);
-          } else {
-            const cancelErr = await cancelRes.json();
-            console.warn(`[fulfill] Could not cancel pending order ${existing.id}:`, cancelErr);
-          }
-        } catch (cancelErr: any) {
-          console.warn(`[fulfill] Cancel attempt threw for ${existing.id}:`, cancelErr);
-        }
-      }
-      return false;
-    }
-    console.log(`[fulfill] Order ${existing.id} (${existing.status}) updated with new PNG: ${finalPngUrl}`);
-
-    if (autoConfirm && existing.status === 'draft') {
-      const confirmRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}/confirm`, {
-        method: 'POST', headers: pfHeaders,
-      });
-      if (confirmRes.ok) {
-        console.log(`[fulfill] Order ${existing.id} confirmed`);
-      } else {
-        const confirmErr = await confirmRes.json();
-        console.warn(`[fulfill] Order ${existing.id} updated but confirm failed:`, confirmErr);
-      }
-    }
-    return true;
-  } catch (err: any) {
-    console.error(`[fulfill] Error updating order ${existing.id}:`, err);
-    return false;
-  }
-}
+// PRINTFUL_TERMINAL_STATUSES, findExistingPrintfulOrder, resolveExternalId,
+// tryUpdateExistingOrder — all in ./printful.ts (tested in __tests__/printful.test.ts).
 
 
 // ── Mercator helpers for tiled rendering ────────────────────────────────────────
@@ -1219,63 +1047,8 @@ interface FulfillBody {
 // STRICT_ROUTING_LOOKUP env-gate is read via isStrictRoutingLookup() at the
 // call site below so vitest can stub it without dynamic re-import.
 
-function recipientToGelatoAddress(recipient: any): Record<string, string | undefined> {
-  const nameParts = (recipient.name ?? '').split(' ');
-  return {
-    firstName:    nameParts[0]  ?? '',
-    lastName:     (nameParts.slice(1).join(' ') || nameParts[0]) ?? '',
-    addressLine1: recipient.address1,
-    addressLine2: recipient.address2 ?? undefined,
-    city:         recipient.city,
-    state:        recipient.state_code,   // Gelato v4: 'state', not 'stateCode'
-    postCode:     recipient.zip,
-    country:      recipient.country_code, // Gelato v4: 'country', not 'countryCode'
-    email:        recipient.email,
-    phone:        recipient.phone ?? undefined,
-  };
-}
-
+// recipientToGelatoAddress + fulfillGelato extracted to ./gelato.ts
 // notifyFulfillFail + ALERT_WEBHOOK_URL extracted to ./alerting.ts
-
-async function fulfillGelato(
-  externalId:   string,
-  recipient:    any,
-  productUid:   string,
-  quantity:     number,
-  label:        string,
-  finalPngUrl:  string,
-): Promise<void> {
-  if (!GELATO_KEY) {
-    console.error(`[fulfill/gelato] GELATO_API_KEY not configured — order ${externalId} not submitted`);
-    return;
-  }
-  const headers: Record<string, string> = {
-    'X-API-KEY':    GELATO_KEY,
-    'Content-Type': 'application/json',
-  };
-  const payload = {
-    orderType:           'order',
-    orderReferenceId:    externalId,
-    customerReferenceId: externalId,
-    currency:            'USD',
-    storeId:             GELATO_STORE_ID,
-    items: [{ itemReferenceId: 'item-1', productUid, files: [{ type: 'default', url: finalPngUrl }], quantity }],
-    shippingAddress: recipientToGelatoAddress(recipient),
-  };
-  try {
-    const res  = await fetch(`${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
-    const data: any = await res.json();
-    if (res.ok) {
-      console.log(`[fulfill/gelato] Order created: ${data.id ?? '?'} (${label}) for ${externalId}`);
-    } else {
-      console.error(`[fulfill/gelato] FAILED for ${externalId} HTTP ${res.status} — ${JSON.stringify(data).slice(0, 400)}`);
-      notifyFulfillFail(externalId, 'gelato-api', { http: res.status, body: data });
-    }
-  } catch (err: any) {
-    console.error(`[fulfill/gelato] Error for ${externalId}: ${err?.message ?? err}`);
-    notifyFulfillFail(externalId, 'gelato-uncaught', err);
-  }
-}
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
