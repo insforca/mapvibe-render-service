@@ -1329,6 +1329,106 @@ function recipientToGelatoAddress(recipient: any): Record<string, string | undef
   };
 }
 
+/**
+ * Structured terminal-failure signal for /fulfill.
+ *
+ * After Railway ACKs the inbound /fulfill with 202, all downstream errors
+ * are invisible to the caller — Shopify is gone, the editor webhook
+ * already returned. The only way an operator finds out is by reading
+ * Railway logs.
+ *
+ * `[FULFILL-FAIL] {json}` is the canonical structured tag. The editor's
+ * shopify-order-webhook uses the same tag (mapvibe-studio PR #139) so a
+ * single log-drain pattern catches both repos.
+ *
+ * If ALERT_WEBHOOK_URL is set, the helper additionally POSTs a one-line
+ * JSON payload to that URL — Slack/Discord/Sentry-Webhook-compatible
+ * (both accept `{ text }`). Fire-and-forget; webhook errors never
+ * propagate back into the request path.
+ */
+const ALERT_WEBHOOK_URL  = process.env.ALERT_WEBHOOK_URL  ?? '';
+const ALERT_EMAIL        = process.env.ALERT_EMAIL        ?? '';
+const RESEND_API_KEY     = process.env.RESEND_API_KEY     ?? '';
+const ALERT_FROM_EMAIL   = process.env.ALERT_FROM_EMAIL   ?? 'alerts@mapvibestudio.com';
+
+function notifyFulfillFail(
+  externalId: string,
+  reason:     | 'config-render'
+              | 'missing-gelato-uid'
+              | 'gelato-api'
+              | 'gelato-uncaught'
+              | 'printful-api'
+              | 'printful-uncaught',
+  detail:     unknown,
+): void {
+  const truncated = String(
+    detail instanceof Error ? detail.message : typeof detail === 'string' ? detail : JSON.stringify(detail),
+  ).slice(0, 400);
+  const event = { externalId, reason, detail: truncated, at: new Date().toISOString() };
+  console.error(`[FULFILL-FAIL] ${JSON.stringify(event)}`);
+
+  // ── Webhook (Slack, n8n, Zapier, custom) ──────────────────────────────────
+  if (ALERT_WEBHOOK_URL) {
+    void (async () => {
+      try {
+        await fetch(ALERT_WEBHOOK_URL, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            text: `[FULFILL-FAIL] externalId=${externalId} reason=${reason} detail=${truncated}`,
+            event,
+          }),
+          signal: AbortSignal.timeout(3_000),
+        });
+      } catch {
+        // intentionally swallowed (the [FULFILL-FAIL] log line above is
+        // the canonical record).
+      }
+    })();
+  }
+
+  // ── Email via Resend ───────────────────────────────────────────────────────
+  if (ALERT_EMAIL && RESEND_API_KEY) {
+    void (async () => {
+      try {
+        await fetch('https://api.resend.com/emails', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${RESEND_API_KEY}`,
+          },
+          body: JSON.stringify({
+            from:    `MapVibe Alerts <${ALERT_FROM_EMAIL}>`,
+            to:      [ALERT_EMAIL],
+            subject: `[FULFILL-FAIL] Order ${externalId} — ${reason}`,
+            html: `
+              <p style="font-family:sans-serif;color:#333">
+                A fulfillment failure was detected on <strong>MapVibe Studio</strong>.
+              </p>
+              <table style="font-family:sans-serif;border-collapse:collapse;width:100%;max-width:560px">
+                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600;width:30%">Order ID</td>
+                    <td style="padding:6px 12px">${externalId}</td></tr>
+                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Reason</td>
+                    <td style="padding:6px 12px">${reason}</td></tr>
+                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Detail</td>
+                    <td style="padding:6px 12px">${truncated}</td></tr>
+                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Time</td>
+                    <td style="padding:6px 12px">${event.at}</td></tr>
+              </table>
+              <p style="font-family:sans-serif;color:#888;font-size:12px;margin-top:16px">
+                Sent by MapVibe render-service · mapvibestudio.com
+              </p>
+            `,
+          }),
+          signal: AbortSignal.timeout(5_000),
+        });
+      } catch {
+        // Email sending is best-effort; non-fatal.
+      }
+    })();
+  }
+}
+
 async function fulfillGelato(
   externalId:   string,
   recipient:    any,
@@ -1361,9 +1461,11 @@ async function fulfillGelato(
       console.log(`[fulfill/gelato] Order created: ${data.id ?? '?'} (${label}) for ${externalId}`);
     } else {
       console.error(`[fulfill/gelato] FAILED for ${externalId} HTTP ${res.status} — ${JSON.stringify(data).slice(0, 400)}`);
+      notifyFulfillFail(externalId, 'gelato-api', { http: res.status, body: data });
     }
   } catch (err: any) {
     console.error(`[fulfill/gelato] Error for ${externalId}: ${err?.message ?? err}`);
+    notifyFulfillFail(externalId, 'gelato-uncaught', err);
   }
 }
 
@@ -1453,6 +1555,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       });
       if (!finalPngUrl) {
         console.error(`[fulfill] Config render FAILED for ${externalId}`);
+        notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
         return;
       }
     }
@@ -1474,6 +1577,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     if (resolvedProvider === 'gelato') {
       if (!resolvedGelatoUid) {
         console.error(`[fulfill/gelato] Missing gelatoProductUid for ${externalId} (not in request body and not found in Shopify metafields)`);
+        notifyFulfillFail(externalId, 'missing-gelato-uid', 'No gelatoProductUid in request body or Shopify metafield');
         return;
       }
       await fulfillGelato(externalId, recipient, resolvedGelatoUid, quantity, label, finalPngUrl!);
@@ -1552,8 +1656,10 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
 
       console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
+      notifyFulfillFail(externalId, 'printful-api', pfData);
     } catch (err: any) {
       console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
+      notifyFulfillFail(externalId, 'printful-uncaught', err);
     }
   })();
 });
