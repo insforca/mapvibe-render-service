@@ -29,6 +29,27 @@ import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
 import PQueue from 'p-queue';
+import {
+  ALLOWED_TILE_HOSTS,
+  PRIVATE_IP_RE,
+  isAllowedUrl,
+  extractUrls,
+  validateStyleJsonUrls,
+} from './url-allowlist.js';
+import {
+  type RoutingResult,
+  ROUTING_CACHE_TTL_MS,
+  isStrictRoutingLookup,
+  resolveGelatoRouting,
+} from './routing.js';
+import {
+  type FulfillFailReason,
+  notifyFulfillFail,
+} from './alerting.js';
+import {
+  requestIdMiddleware,
+  getRequestId,
+} from './request-id.js';
 
 // ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
 let sRGBIccPath: string | null = null;
@@ -78,6 +99,11 @@ const createCanvas: any = canvasModule?.createCanvas;
 const registerFont: any = canvasModule?.registerFont;
 
 const app = express();
+// Mint or accept x-request-id BEFORE bodyParser so every line of a request's
+// logs can carry the same join key. See ./request-id.ts. Capture via
+// getRequestId(res) inside handlers and concatenate into existing
+// [fulfill/*] log strings — no logger-wrapper refactor needed.
+app.use(requestIdMiddleware);
 app.use(express.json({ limit: '2mb' }));
 
 const PORT       = process.env.PORT || 3000;
@@ -347,46 +373,7 @@ function checkAuth(req: Request, res: Response): boolean {
   return ok;
 }
 
-// ── Tile / asset allowlist ──────────────────────────────────────────────────
-const ALLOWED_TILE_HOSTS = [
-  'tiles.openfreemap.org','tile.openstreetmap.org',
-  'a.tile.openstreetmap.org','b.tile.openstreetmap.org','c.tile.openstreetmap.org',
-  'basemaps.cartocdn.com','api.maptiler.com','maps.geoapify.com',
-  'mapvibe-studio-alpha.vercel.app',
-  'mapvibestudio.com',
-];
-const PRIVATE_IP_RE = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc00:|fd[0-9a-f]{2}:)/i;
-
-function isAllowedUrl(url: string): boolean {
-  try {
-    const { protocol, hostname, host } = new URL(url);
-    if (protocol !== 'https:') return false;
-    if (PRIVATE_IP_RE.test(host)) return false;
-    return ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h));
-  } catch { return false; }
-}
-
-function extractUrls(obj: unknown, urls: string[] = []): string[] {
-  if (typeof obj === 'string') { urls.push(obj); return urls; }
-  if (Array.isArray(obj)) { obj.forEach(v => extractUrls(v, urls)); return urls; }
-  if (obj && typeof obj === 'object') {
-    for (const v of Object.values(obj)) extractUrls(v, urls);
-  }
-  return urls;
-}
-
-function validateStyleJsonUrls(styleJson: object): string | null {
-  const urls = extractUrls(styleJson).filter(u => u.startsWith('http'));
-  for (const url of urls) {
-    try {
-      const { hostname } = new URL(url);
-      if (!ALLOWED_TILE_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h))) {
-        return `Tile host not in allowlist: ${hostname}`;
-      }
-    } catch { return `Invalid URL in styleJson: ${url}`; }
-  }
-  return null;
-}
+// Tile / asset allowlist + SSRF helpers extracted to ./url-allowlist.ts
 
 // ── Font cache ───────────────────────────────────────────────────────────────
 const FONT_CACHE_DIR = '/tmp/mapvibe-fonts';
@@ -1228,90 +1215,9 @@ interface FulfillBody {
  * Requires SHOPIFY_ADMIN_TOKEN env var. If not set, always returns 'printful'.
  * On any network or API failure, logs a warning and falls back to 'printful'.
  */
-type RoutingResult = {
-  /**
-   * 'ok'           : metafields read; provider + uid reflect them
-   * 'no-metafield' : lookup succeeded but no pod_partner set — legitimate
-   *                  Printful default for legacy variants
-   * 'lookup-error' : we couldn't reach Shopify (network, missing token,
-   *                  non-2xx, timeout). We do NOT know the right vendor.
-   *                  Whether to fail loud (422) or silently default to
-   *                  Printful is controlled by STRICT_ROUTING_LOOKUP.
-   */
-  status: 'ok' | 'no-metafield' | 'lookup-error';
-  provider: 'printful' | 'gelato';
-  gelatoProductUid: string | null;
-};
-
-/**
- * STRICT_ROUTING_LOOKUP gates the new 422 behaviour. Default OFF preserves
- * today's silent-Printful-on-lookup-error semantics so n8n flows + the editor
- * webhook keep working without code changes. Flip to "true" in the env once
- * all callers handle 422 by retrying or specifying provider explicitly.
- *
- * Observability runs in BOTH modes: 'lookup-error' is logged at ERROR level
- * either way, so misrouted Gelato variants surface in Railway logs even
- * with strict mode off.
- */
-const STRICT_ROUTING_LOOKUP = process.env.STRICT_ROUTING_LOOKUP === 'true';
-
-/**
- * Per-variant routing cache — repeat orders for the same variant skip the
- * Shopify Admin API call entirely. 10-minute TTL is generous given how
- * rarely pod_partner / gelato_uid metafields change. Only successful
- * lookups are cached; 'lookup-error' results are never cached so the
- * next request gets a fresh attempt.
- */
-const ROUTING_CACHE_TTL_MS = 10 * 60 * 1000;
-const routingCache = new Map<number, { result: RoutingResult; expiresAt: number }>();
-
-async function resolveGelatoRouting(shopifyVariantId: number): Promise<RoutingResult> {
-  const cached = routingCache.get(shopifyVariantId);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.result;
-  }
-
-  if (!SHOPIFY_ADMIN_TOKEN) {
-    console.error('[fulfill/routing] SHOPIFY_ADMIN_TOKEN not set — cannot auto-route');
-    return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
-  }
-  try {
-    const url = `https://${SHOPIFY_SHOP}/admin/api/2024-01/variants/${shopifyVariantId}/metafields.json?namespace=custom&limit=20`;
-    const res = await fetch(url, {
-      headers: {
-        'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
-        'Content-Type':           'application/json',
-      },
-      // 3s timeout: Shopify Admin is typically <500ms; 8s was too generous
-      // and put a noticeable worst-case latency on every /fulfill response.
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!res.ok) {
-      console.error(`[fulfill/routing] Shopify metafield fetch HTTP ${res.status} for variant ${shopifyVariantId}`);
-      return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
-    }
-    const body: any = await res.json();
-    const mfs: any[] = body.metafields ?? [];
-    const podPartner = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'pod_partner')?.value ?? null;
-    const gelatoUid  = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'gelato_uid')?.value  ?? null;
-
-    if (!podPartner) {
-      console.log(`[fulfill/routing] variant ${shopifyVariantId} → no pod_partner metafield (legacy → printful)`);
-      const result: RoutingResult = { status: 'no-metafield', provider: 'printful', gelatoProductUid: null };
-      routingCache.set(shopifyVariantId, { result, expiresAt: Date.now() + ROUTING_CACHE_TTL_MS });
-      return result;
-    }
-
-    const provider: 'printful' | 'gelato' = podPartner === 'gelato' ? 'gelato' : 'printful';
-    console.log(`[fulfill/routing] variant ${shopifyVariantId} → pod_partner=${podPartner} gelato_uid=${gelatoUid ?? 'null'} → ${provider}`);
-    const result: RoutingResult = { status: 'ok', provider, gelatoProductUid: gelatoUid };
-    routingCache.set(shopifyVariantId, { result, expiresAt: Date.now() + ROUTING_CACHE_TTL_MS });
-    return result;
-  } catch (err: any) {
-    console.error(`[fulfill/routing] Shopify metafield lookup error for variant ${shopifyVariantId}: ${err?.message ?? err}`);
-    return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
-  }
-}
+// Routing type, cache, and resolveGelatoRouting extracted to ./routing.ts
+// STRICT_ROUTING_LOOKUP env-gate is read via isStrictRoutingLookup() at the
+// call site below so vitest can stub it without dynamic re-import.
 
 function recipientToGelatoAddress(recipient: any): Record<string, string | undefined> {
   const nameParts = (recipient.name ?? '').split(' ');
@@ -1329,105 +1235,7 @@ function recipientToGelatoAddress(recipient: any): Record<string, string | undef
   };
 }
 
-/**
- * Structured terminal-failure signal for /fulfill.
- *
- * After Railway ACKs the inbound /fulfill with 202, all downstream errors
- * are invisible to the caller — Shopify is gone, the editor webhook
- * already returned. The only way an operator finds out is by reading
- * Railway logs.
- *
- * `[FULFILL-FAIL] {json}` is the canonical structured tag. The editor's
- * shopify-order-webhook uses the same tag (mapvibe-studio PR #139) so a
- * single log-drain pattern catches both repos.
- *
- * If ALERT_WEBHOOK_URL is set, the helper additionally POSTs a one-line
- * JSON payload to that URL — Slack/Discord/Sentry-Webhook-compatible
- * (both accept `{ text }`). Fire-and-forget; webhook errors never
- * propagate back into the request path.
- */
-const ALERT_WEBHOOK_URL  = process.env.ALERT_WEBHOOK_URL  ?? '';
-const ALERT_EMAIL        = process.env.ALERT_EMAIL        ?? '';
-const RESEND_API_KEY     = process.env.RESEND_API_KEY     ?? '';
-const ALERT_FROM_EMAIL   = process.env.ALERT_FROM_EMAIL   ?? 'alerts@mapvibestudio.com';
-
-function notifyFulfillFail(
-  externalId: string,
-  reason:     | 'config-render'
-              | 'missing-gelato-uid'
-              | 'gelato-api'
-              | 'gelato-uncaught'
-              | 'printful-api'
-              | 'printful-uncaught',
-  detail:     unknown,
-): void {
-  const truncated = String(
-    detail instanceof Error ? detail.message : typeof detail === 'string' ? detail : JSON.stringify(detail),
-  ).slice(0, 400);
-  const event = { externalId, reason, detail: truncated, at: new Date().toISOString() };
-  console.error(`[FULFILL-FAIL] ${JSON.stringify(event)}`);
-
-  // ── Webhook (Slack, n8n, Zapier, custom) ──────────────────────────────────
-  if (ALERT_WEBHOOK_URL) {
-    void (async () => {
-      try {
-        await fetch(ALERT_WEBHOOK_URL, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({
-            text: `[FULFILL-FAIL] externalId=${externalId} reason=${reason} detail=${truncated}`,
-            event,
-          }),
-          signal: AbortSignal.timeout(3_000),
-        });
-      } catch {
-        // intentionally swallowed (the [FULFILL-FAIL] log line above is
-        // the canonical record).
-      }
-    })();
-  }
-
-  // ── Email via Resend ───────────────────────────────────────────────────────
-  if (ALERT_EMAIL && RESEND_API_KEY) {
-    void (async () => {
-      try {
-        await fetch('https://api.resend.com/emails', {
-          method:  'POST',
-          headers: {
-            'Content-Type':  'application/json',
-            'Authorization': `Bearer ${RESEND_API_KEY}`,
-          },
-          body: JSON.stringify({
-            from:    `MapVibe Alerts <${ALERT_FROM_EMAIL}>`,
-            to:      [ALERT_EMAIL],
-            subject: `[FULFILL-FAIL] Order ${externalId} — ${reason}`,
-            html: `
-              <p style="font-family:sans-serif;color:#333">
-                A fulfillment failure was detected on <strong>MapVibe Studio</strong>.
-              </p>
-              <table style="font-family:sans-serif;border-collapse:collapse;width:100%;max-width:560px">
-                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600;width:30%">Order ID</td>
-                    <td style="padding:6px 12px">${externalId}</td></tr>
-                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Reason</td>
-                    <td style="padding:6px 12px">${reason}</td></tr>
-                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Detail</td>
-                    <td style="padding:6px 12px">${truncated}</td></tr>
-                <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Time</td>
-                    <td style="padding:6px 12px">${event.at}</td></tr>
-              </table>
-              <p style="font-family:sans-serif;color:#888;font-size:12px;margin-top:16px">
-                Sent by MapVibe render-service · mapvibestudio.com
-              </p>
-            `,
-          }),
-          signal: AbortSignal.timeout(5_000),
-        });
-      } catch {
-        // Email sending is best-effort; non-fatal.
-      }
-    })();
-  }
-}
+// notifyFulfillFail + ALERT_WEBHOOK_URL extracted to ./alerting.ts
 
 async function fulfillGelato(
   externalId:   string,
@@ -1524,7 +1332,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   let preflightRouting: RoutingResult | null = null;
   if (!callerProvidedProvider && preflightVariantId) {
     preflightRouting = await resolveGelatoRouting(preflightVariantId);
-    if (preflightRouting.status === 'lookup-error' && STRICT_ROUTING_LOOKUP) {
+    if (preflightRouting.status === 'lookup-error' && isStrictRoutingLookup()) {
       console.error(`[fulfill] STRICT_ROUTING_LOOKUP=true and lookup failed for variant ${preflightVariantId} — rejecting`);
       res.status(422).json({
         error: 'POD vendor routing unavailable for this variant',
