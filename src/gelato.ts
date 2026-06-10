@@ -77,6 +77,7 @@ export async function fulfillGelato(
     storeId:             GELATO_STORE_ID,
     items: [{ itemReferenceId: 'item-1', productUid, files: [{ type: 'default', url: finalPngUrl }], quantity }],
     shippingAddress: recipientToGelatoAddress(recipient),
+    preventDuplicate: true,
   };
   try {
     const res  = await fetch(`${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
