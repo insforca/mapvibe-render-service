@@ -110,6 +110,20 @@ The same `[FULFILL-FAIL]` tag is used by `mapvibe-studio`'s `shopify-order-webho
 - 2 MB JSON body cap, 55 s render timeout, queue 503 at 20 pending.
 - `/render` 500 responses do NOT include `err.message` (no internal-path leakage).
 
+## Request correlation
+
+Every inbound request gets an `x-request-id`. If the caller sent one, it's echoed (after light validation: ≤64 chars, `[A-Za-z0-9._-]` only); otherwise a fresh UUID is minted. The same value is sent back as the `x-request-id` response header and exposed to handlers via `getRequestId(res)` so log lines can carry the join key. Inside the async IIFE that runs after `/fulfill` returns 202, capture the value once at closure scope — `res.locals` is gone by then.
+
+## Tests
+
+```
+npm install
+npm test            # one-shot
+npm run test:watch  # vitest watcher
+```
+
+`src/__tests__/` covers the pure modules: `routing` (the three-state result + cache + strict-mode env gate), `alerting` (tag format + webhook hook), and `url-allowlist` (SSRF defence). `server.ts` is not exercised directly — its native deps (MapLibre / canvas / sharp) make it expensive to load in tests; the testable logic has been extracted to standalone modules so vitest never touches them.
+
 ## Deploy
 
 Connect this repo to Railway — it auto-detects the Dockerfile. Container healthcheck targets `/health`.
