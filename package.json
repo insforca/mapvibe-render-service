@@ -6,21 +6,25 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "ts-node src/server.ts"
+    "dev": "ts-node src/server.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-native": "6.4.1",
     "@vercel/blob": "^2.0.0",
     "canvas": "3.2.3",
     "express": "^4.22.1",
+    "p-queue": "^7.4.1",
     "sharp": "^0.33.5",
-    "p-queue": "^7.4.1"
+    "resend": "^4.5.1"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.12.0",
     "@types/sharp": "^0.31.1",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "node-fetch": "^2.7.0",
