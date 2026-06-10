@@ -77,10 +77,30 @@ Both vendors receive the same PNG at the same DPI. There is no per-vendor bleed/
 | `SHOPIFY_ADMIN_TOKEN`   | If using metafield routing | Shopify Admin REST token |
 | `SHOPIFY_SHOP`          | No      | `your-store.myshopify.com` (defaults to known value) |
 | `STRICT_ROUTING_LOOKUP` | No      | `"true"` to return 422 on metafield-lookup failure; default off (log + silent Printful default) — see "Vendor routing" above |
+| `ALERT_WEBHOOK_URL`     | No      | Optional Slack/Discord/Sentry-Webhook URL. When set, `/fulfill` terminal failures POST a `{ text, event }` JSON payload there in addition to the `[FULFILL-FAIL]` log line. Best-effort; webhook errors are swallowed. |
 | `BLOB_READ_WRITE_TOKEN` | If using `configUrl` path | Vercel Blob token for uploads |
 | `MAPTILER_API_KEY`      | No      | Tile fallback when style references MapTiler |
 | `MAX_CONCURRENT`        | No      | Concurrent renders (default 4) |
 | `MAX_QUEUE_SIZE`        | No      | Pending renders before 503 (default 20) |
+
+## Fulfillment failure signal
+
+After Railway ACKs `/fulfill` with 202, downstream errors are invisible to the caller. The service emits a structured `[FULFILL-FAIL] {json}` log line on every terminal failure:
+
+```
+[FULFILL-FAIL] {"externalId":"mapvibe-1234-MVS-18x24-BLACK","reason":"printful-api","detail":"...","at":"2026-..."}
+```
+
+Reasons:
+
+- `config-render` — `configUrl` was given but `renderConfigToBlobUrl` returned null
+- `missing-gelato-uid` — routed to Gelato but no `gelatoProductUid` available (not in request, not in metafields)
+- `gelato-api` — Gelato v4 returned non-2xx
+- `gelato-uncaught` — exception thrown inside the Gelato fetch
+- `printful-api` — Printful v2/v1 returned a non-success body
+- `printful-uncaught` — exception thrown inside the Printful path
+
+The same `[FULFILL-FAIL]` tag is used by `mapvibe-studio`'s `shopify-order-webhook.ts` so a single log-drain pattern catches both repos. Set `ALERT_WEBHOOK_URL` to additionally POST each event to Slack/Discord/Sentry-Webhook — both accept `{ text }` and the JSON `event` payload is available for richer alerting.
 
 ## Security model
 
