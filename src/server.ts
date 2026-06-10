@@ -1181,7 +1181,11 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     } catch (err: any) {
       const elapsed = Math.round((Date.now()-renderStart)/1000);
       console.error(`[render] Error after ${elapsed}s:`, err.message || err);
-      if (!res.headersSent) res.status(500).json({ error: err.message || 'Render failed', elapsed });
+      // Sanitize: never surface err.message in the response body — it can
+      // carry file paths, MapLibre/canvas/sharp internals. Full error stays
+      // in the Railway log via console.error above; wire only carries the
+      // generic phrase.
+      if (!res.headersSent) res.status(500).json({ error: 'Render failed', elapsed });
     }
   });
 });
@@ -1224,12 +1228,52 @@ interface FulfillBody {
  * Requires SHOPIFY_ADMIN_TOKEN env var. If not set, always returns 'printful'.
  * On any network or API failure, logs a warning and falls back to 'printful'.
  */
-async function resolveGelatoRouting(
-  shopifyVariantId: number,
-): Promise<{ provider: 'printful' | 'gelato'; gelatoProductUid: string | null }> {
+type RoutingResult = {
+  /**
+   * 'ok'           : metafields read; provider + uid reflect them
+   * 'no-metafield' : lookup succeeded but no pod_partner set — legitimate
+   *                  Printful default for legacy variants
+   * 'lookup-error' : we couldn't reach Shopify (network, missing token,
+   *                  non-2xx, timeout). We do NOT know the right vendor.
+   *                  Whether to fail loud (422) or silently default to
+   *                  Printful is controlled by STRICT_ROUTING_LOOKUP.
+   */
+  status: 'ok' | 'no-metafield' | 'lookup-error';
+  provider: 'printful' | 'gelato';
+  gelatoProductUid: string | null;
+};
+
+/**
+ * STRICT_ROUTING_LOOKUP gates the new 422 behaviour. Default OFF preserves
+ * today's silent-Printful-on-lookup-error semantics so n8n flows + the editor
+ * webhook keep working without code changes. Flip to "true" in the env once
+ * all callers handle 422 by retrying or specifying provider explicitly.
+ *
+ * Observability runs in BOTH modes: 'lookup-error' is logged at ERROR level
+ * either way, so misrouted Gelato variants surface in Railway logs even
+ * with strict mode off.
+ */
+const STRICT_ROUTING_LOOKUP = process.env.STRICT_ROUTING_LOOKUP === 'true';
+
+/**
+ * Per-variant routing cache — repeat orders for the same variant skip the
+ * Shopify Admin API call entirely. 10-minute TTL is generous given how
+ * rarely pod_partner / gelato_uid metafields change. Only successful
+ * lookups are cached; 'lookup-error' results are never cached so the
+ * next request gets a fresh attempt.
+ */
+const ROUTING_CACHE_TTL_MS = 10 * 60 * 1000;
+const routingCache = new Map<number, { result: RoutingResult; expiresAt: number }>();
+
+async function resolveGelatoRouting(shopifyVariantId: number): Promise<RoutingResult> {
+  const cached = routingCache.get(shopifyVariantId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
   if (!SHOPIFY_ADMIN_TOKEN) {
-    console.warn('[fulfill/routing] SHOPIFY_ADMIN_TOKEN not set — cannot auto-route via Shopify metafields; defaulting to printful');
-    return { provider: 'printful', gelatoProductUid: null };
+    console.error('[fulfill/routing] SHOPIFY_ADMIN_TOKEN not set — cannot auto-route');
+    return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
   }
   try {
     const url = `https://${SHOPIFY_SHOP}/admin/api/2024-01/variants/${shopifyVariantId}/metafields.json?namespace=custom&limit=20`;
@@ -1238,22 +1282,34 @@ async function resolveGelatoRouting(
         'X-Shopify-Access-Token': SHOPIFY_ADMIN_TOKEN,
         'Content-Type':           'application/json',
       },
-      signal: AbortSignal.timeout(8_000),
+      // 3s timeout: Shopify Admin is typically <500ms; 8s was too generous
+      // and put a noticeable worst-case latency on every /fulfill response.
+      signal: AbortSignal.timeout(3_000),
     });
     if (!res.ok) {
-      console.warn(`[fulfill/routing] Shopify metafield fetch HTTP ${res.status} for variant ${shopifyVariantId} — defaulting to printful`);
-      return { provider: 'printful', gelatoProductUid: null };
+      console.error(`[fulfill/routing] Shopify metafield fetch HTTP ${res.status} for variant ${shopifyVariantId}`);
+      return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
     }
     const body: any = await res.json();
     const mfs: any[] = body.metafields ?? [];
-    const podPartner   = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'pod_partner')?.value ?? null;
-    const gelatoUid    = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'gelato_uid')?.value  ?? null;
+    const podPartner = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'pod_partner')?.value ?? null;
+    const gelatoUid  = mfs.find((m: any) => m.namespace === 'custom' && m.key === 'gelato_uid')?.value  ?? null;
+
+    if (!podPartner) {
+      console.log(`[fulfill/routing] variant ${shopifyVariantId} → no pod_partner metafield (legacy → printful)`);
+      const result: RoutingResult = { status: 'no-metafield', provider: 'printful', gelatoProductUid: null };
+      routingCache.set(shopifyVariantId, { result, expiresAt: Date.now() + ROUTING_CACHE_TTL_MS });
+      return result;
+    }
+
     const provider: 'printful' | 'gelato' = podPartner === 'gelato' ? 'gelato' : 'printful';
-    console.log(`[fulfill/routing] variant ${shopifyVariantId} → pod_partner=${podPartner ?? 'null'} gelato_uid=${gelatoUid ?? 'null'} → ${provider}`);
-    return { provider, gelatoProductUid: gelatoUid };
+    console.log(`[fulfill/routing] variant ${shopifyVariantId} → pod_partner=${podPartner} gelato_uid=${gelatoUid ?? 'null'} → ${provider}`);
+    const result: RoutingResult = { status: 'ok', provider, gelatoProductUid: gelatoUid };
+    routingCache.set(shopifyVariantId, { result, expiresAt: Date.now() + ROUTING_CACHE_TTL_MS });
+    return result;
   } catch (err: any) {
-    console.error(`[fulfill/routing] Shopify metafield lookup error for variant ${shopifyVariantId}: ${err?.message ?? err} — defaulting to printful`);
-    return { provider: 'printful', gelatoProductUid: null };
+    console.error(`[fulfill/routing] Shopify metafield lookup error for variant ${shopifyVariantId}: ${err?.message ?? err}`);
+    return { status: 'lookup-error', provider: 'printful', gelatoProductUid: null };
   }
 }
 
@@ -1344,6 +1400,43 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
     return;
   }
+
+  // ── Pre-flight routing resolution ─────────────────────────────────────────
+  // When the caller did NOT pass `provider` explicitly AND we have a Shopify
+  // variant ID, look up the routing metafields SYNCHRONOUSLY so the result
+  // is known before we ACK with 202. Cached per variant (10-min TTL); typical
+  // call costs ~50ms on cache miss, ~0ms on hit.
+  //
+  // 'lookup-error' handling depends on STRICT_ROUTING_LOOKUP:
+  //   - default (off)  : log at ERROR level, fall through to legacy silent
+  //                      Printful default. Caller behaviour unchanged.
+  //   - "true" (on)    : return 422 so the caller can retry or specify
+  //                      provider explicitly. ONLY flip on once n8n + the
+  //                      editor's shopify-order-webhook handle 422.
+  //
+  // 'no-metafield' is always treated as a legitimate Printful default (the
+  // metafield genuinely isn't set for legacy variants); 'ok' uses the
+  // resolved provider directly.
+  const callerProvidedProvider = !!(req.body as FulfillBody).provider;
+  const preflightVariantId = (req.body as FulfillBody).shopifyVariantId;
+  let preflightRouting: RoutingResult | null = null;
+  if (!callerProvidedProvider && preflightVariantId) {
+    preflightRouting = await resolveGelatoRouting(preflightVariantId);
+    if (preflightRouting.status === 'lookup-error' && STRICT_ROUTING_LOOKUP) {
+      console.error(`[fulfill] STRICT_ROUTING_LOOKUP=true and lookup failed for variant ${preflightVariantId} — rejecting`);
+      res.status(422).json({
+        error: 'POD vendor routing unavailable for this variant',
+        hint:  'retry once Shopify is reachable, or pass provider explicitly (printful|gelato)',
+      });
+      return;
+    }
+    // STRICT_ROUTING_LOOKUP off + lookup-error → fall through; the loud
+    // ERROR log inside resolveGelatoRouting is the only signal you get
+    // until strict mode is enabled. preflightRouting remains a lookup-error
+    // result, which the async block below treats as "no routing info" and
+    // proceeds with the legacy Printful default.
+  }
+
   res.status(202).json({ success: true, accepted: true, externalId });
 
   void (async () => {
@@ -1364,19 +1457,16 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       }
     }
 
-    // ── Provider routing (auto-detect from Shopify metafields if not explicit) ──
+    // ── Provider routing (resolved pre-flight above) ──────────────────────
+    // Use preflightRouting from the synchronous block to avoid a duplicate
+    // Shopify call. preflightRouting is null when the caller passed provider
+    // explicitly OR no shopifyVariantId was supplied.
     let resolvedProvider = provider;
     let resolvedGelatoUid: string | null = (req.body as FulfillBody).gelatoProductUid ?? null;
-
-    // Auto-routing: if caller did not explicitly specify provider and passed shopifyVariantId,
-    // query Shopify metafields to determine pod_partner + gelato_uid.
-    const shopifyVariantId = (req.body as FulfillBody).shopifyVariantId;
-    if (resolvedProvider === 'printful' && shopifyVariantId) {
-      const routing = await resolveGelatoRouting(shopifyVariantId);
-      if (routing.provider === 'gelato') {
-        resolvedProvider = 'gelato';
-        // Only override gelatoUid from metafield if not already supplied by caller
-        if (!resolvedGelatoUid && routing.gelatoProductUid) resolvedGelatoUid = routing.gelatoProductUid;
+    if (preflightRouting && preflightRouting.status === 'ok' && preflightRouting.provider === 'gelato') {
+      resolvedProvider = 'gelato';
+      if (!resolvedGelatoUid && preflightRouting.gelatoProductUid) {
+        resolvedGelatoUid = preflightRouting.gelatoProductUid;
       }
     }
 
