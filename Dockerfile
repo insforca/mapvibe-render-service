@@ -63,4 +63,11 @@ COPY start.sh .
 RUN chmod +x start.sh
 
 EXPOSE 3000
+
+# Container healthcheck — Railway uses /health for liveness; this duplicates
+# the signal for docker tooling + local runs. Uses node's built-in http (no
+# extra package install needed; wget/curl aren't on ubuntu:24.04 minimal).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
 CMD ["./start.sh"]
