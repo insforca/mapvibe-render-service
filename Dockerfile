@@ -24,11 +24,19 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     xvfb \
     libuv1 \
     fonts-liberation fonts-dejavu-core \
-    pkg-config build-essential python3 python3-pip python3-venv \
+    python3-pip python3-venv \
+    libgeos-dev libproj-dev libgdal-dev \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json tsconfig.json ./
 RUN npm install
+
+# ── Python OSM renderer venv ──────────────────────────────────────────────────
+COPY python/requirements.txt ./python/requirements.txt
+RUN python3 -m venv /opt/mapvibe-py \
+  && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
+ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
 
 COPY fonts/ ./fonts/
 
