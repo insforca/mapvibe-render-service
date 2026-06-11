@@ -12,19 +12,29 @@ ENV DISPLAY=:99
 
 # ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
 # xvfb: virtual X11 framebuffer display (needed by X11/GLX backend; no physical display or GPU required)
+# python3 + pip: OSM renderer (OSMnx/matplotlib pipeline; headless Agg backend — no display needed)
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
   && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && apt-get install -y nodejs \
   && apt-get install -y --no-install-recommends \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
-    pkg-config build-essential python3 \
+    pkg-config build-essential python3 python3-pip python3-venv \
     libgl1 libgl1-mesa-dri libglx0 libglx-mesa0 libopengl0 \
     libegl1 libegl-mesa0 libgles2 \
     libx11-6 libxext6 \
     xvfb \
     libuv1 \
     fonts-liberation fonts-dejavu-core \
+    libgeos-dev libproj-dev libgdal-dev \
   && rm -rf /var/lib/apt/lists/*
+
+# ── Python OSM renderer dependencies ─────────────────────────────────────────
+# Installed into a venv so pip doesn't conflict with system packages.
+COPY python/requirements.txt ./python/requirements.txt
+RUN python3 -m venv /opt/mapvibe-py \
+  && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
+ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
 
 COPY package.json tsconfig.json ./
 RUN npm install
@@ -58,6 +68,12 @@ RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
 
 RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
+
+# 4. Python OSM renderer smoke test
+COPY python/ ./python/
+RUN echo '{"city":"Paris","country":"France","lat":48.8566,"lng":2.3522,"dist":100,"width_in":3,"height_in":4,"dpi":72,"show_text":false,"output_path":"/tmp/smoke_test.png"}' \
+  | ${MAPVIBE_PYTHON} python/mapvibe_render.py \
+  && echo 'Python OSM renderer: OK' || echo 'Python OSM renderer: WARN (non-fatal at build time)'
 
 COPY start.sh .
 RUN chmod +x start.sh
