@@ -77,12 +77,10 @@ describe('notifyFulfillFail', () => {
   });
 
   it('sends email via Resend SDK when ALERT_EMAIL and RESEND_API_KEY are set', async () => {
-    process.env.ALERT_EMAIL     = 'hi@mapvibestudio.com';
-    process.env.RESEND_API_KEY  = 're_test_key';
-    // Re-import to pick up new env (Resend client is module-level)
-    vi.resetModules();
-    const { notifyFulfillFail: notify2 } = await import('../alerting.js?v=2');
-    notify2('order-006', 'gelato-api', 'api error');
+    // Lazy client reads env at call time — no resetModules/dynamic import needed.
+    process.env.ALERT_EMAIL    = 'hi@mapvibestudio.com';
+    process.env.RESEND_API_KEY = 're_test_key';
+    notifyFulfillFail('order-006', 'gelato-api', 'api error');
     await vi.runAllTimersAsync();
     expect(mockEmailsSend).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -94,12 +92,10 @@ describe('notifyFulfillFail', () => {
   });
 
   it('idempotency key is deterministic for same externalId + reason', async () => {
-    process.env.ALERT_EMAIL     = 'hi@mapvibestudio.com';
-    process.env.RESEND_API_KEY  = 're_test_key';
-    vi.resetModules();
-    const { notifyFulfillFail: n } = await import('../alerting.js?v=3');
-    n('order-007', 'printful-api', 'err1');
-    n('order-007', 'printful-api', 'err2');  // same id+reason, different detail
+    process.env.ALERT_EMAIL    = 'hi@mapvibestudio.com';
+    process.env.RESEND_API_KEY = 're_test_key';
+    notifyFulfillFail('order-007', 'printful-api', 'err1');
+    notifyFulfillFail('order-007', 'printful-api', 'err2');  // same id+reason, different detail
     await vi.runAllTimersAsync();
     const keys = mockEmailsSend.mock.calls.map(
       (c: unknown[]) => (c[1] as { idempotencyKey: string }).idempotencyKey,

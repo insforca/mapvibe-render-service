@@ -35,7 +35,13 @@ export type FulfillFailReason =
 const RESEND_API_KEY   = process.env.RESEND_API_KEY    ?? '';
 const ALERT_FROM_EMAIL = process.env.ALERT_FROM_EMAIL  ?? 'alerts@mapvibestudio.com';
 
-const resendClient = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+/** Lazy getter — reads env at call time so vi.stubEnv() works in tests
+ *  without needing vi.resetModules() + dynamic re-import.
+ */
+function getResendClient(): Resend | null {
+  const key = process.env.RESEND_API_KEY ?? '';
+  return key ? new Resend(key) : null;
+}
 
 // ── Idempotency key helper ────────────────────────────────────────────────────
 function idempotencyKey(externalId: string, reason: FulfillFailReason): string {
@@ -84,10 +90,10 @@ export function notifyFulfillFail(
   }
 
   // ── Email via Resend SDK ──────────────────────────────────────────────────
-  if (ALERT_EMAIL && resendClient) {
+  if (ALERT_EMAIL && getResendClient()) {
     void (async () => {
       try {
-        await resendClient.emails.send(
+        await getResendClient()!.emails.send(
           {
             from:    `MapVibe Alerts <${ALERT_FROM_EMAIL}>`,
             to:      [ALERT_EMAIL],
