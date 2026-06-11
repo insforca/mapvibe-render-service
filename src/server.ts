@@ -409,31 +409,67 @@ async function ensureFont(fontFamily: string): Promise<void> {
   }
 }
 
-/** Register design-system fonts bundled in ./fonts/ at Docker build time.
+/** Register design-system fonts bundled in ./assets/fonts/ at Docker build time.
  *  This eliminates the Google Fonts download dependency — fonts are always
  *  available regardless of outbound network access.
+ *
+ *  WEIGHT-AWARE REGISTRATION (fixes editor vs print typography mismatch):
+ *  drawPosterText requests three Playfair Display weights (300, 400, 700) and
+ *  two DM Sans weights (300, 400). node-canvas requires a registered face for
+ *  each weight — when only one face is registered per family, ALL weight
+ *  requests collapse onto that face and node-canvas synthesises "bold" via
+ *  stroke-thickening (faux-bold). Result: city name renders as faux-bold
+ *  instead of true 700, country renders as regular instead of true 300 —
+ *  visibly different from what the editor's browser engine renders.
+ *
+ *  Resolution order per (family, weight):
+ *    1. Weight-specific static file (e.g. PlayfairDisplay-Bold.ttf) — preferred,
+ *       commit these alongside the existing variable TTF.
+ *    2. Variable file (PlayfairDisplay.ttf) registered with the requested
+ *       weight metadata — node-canvas v3+ uses the wght variation axis to
+ *       pick the right instance.
+ *    3. Skip — ensureFont() Google Fonts fallback covers it on first use.
  */
 function registerBundledFonts(): void {
-  // Variable TTFs bundled in assets/fonts/ — cover all weights, no network required
   const FONTS_DIR = join(__dirname, '..', 'assets', 'fonts');
-  const bundled: Array<{ file: string; family: string; weight?: string }> = [
-    { file: 'PlayfairDisplay.ttf', family: 'Playfair Display' },
-    { file: 'DMSans.ttf',          family: 'DM Sans' },
+
+  // Each row: [family, weight (CSS number), static filename, variable fallback].
+  // The static filename is preferred — drop weight-specific TTFs into assets/fonts/
+  // to get true (not synthesised) weights. Variable fallback always exists.
+  const bundled: Array<{
+    family: string;
+    weight: string;
+    staticFile: string;
+    variableFile: string;
+  }> = [
+    { family: 'Playfair Display', weight: '300', staticFile: 'PlayfairDisplay-Light.ttf',   variableFile: 'PlayfairDisplay.ttf' },
+    { family: 'Playfair Display', weight: '400', staticFile: 'PlayfairDisplay-Regular.ttf', variableFile: 'PlayfairDisplay.ttf' },
+    { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
+    { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
+    { family: 'DM Sans',          weight: '400', staticFile: 'DMSans-Regular.ttf',          variableFile: 'DMSans.ttf' },
   ];
-  for (const { file, family, weight } of bundled) {
-    const fontPath = join(FONTS_DIR, file);
-    const fontKey = weight ? `${family}:${weight}` : family;
-    if (existsSync(fontPath) && !registeredFonts.has(fontKey)) {
-      try {
-        const opts: { family: string; weight?: string } = { family };
-        if (weight) opts.weight = weight;
-        registerFont(fontPath, opts);
-        registeredFonts.add(fontKey);
-        registeredFonts.add(family);  // plain family name — ensureFont() lookup key
-        console.log(`[fonts] Bundled font registered: ${family} wt=${weight ?? 'any'} from ${file}`);
-      } catch (err) {
-        console.warn(`[fonts] Could not register bundled font ${file}:`, err);
-      }
+
+  for (const { family, weight, staticFile, variableFile } of bundled) {
+    const fontKey = `${family}:${weight}`;
+    if (registeredFonts.has(fontKey)) continue;
+
+    const staticPath   = join(FONTS_DIR, staticFile);
+    const variablePath = join(FONTS_DIR, variableFile);
+    const pathToUse    = existsSync(staticPath) ? staticPath : (existsSync(variablePath) ? variablePath : null);
+    const sourceLabel  = pathToUse === staticPath ? `${staticFile} (static)` : `${variableFile} (variable)`;
+
+    if (!pathToUse) {
+      console.warn(`[fonts] Neither ${staticFile} nor ${variableFile} found in ${FONTS_DIR}`);
+      continue;
+    }
+
+    try {
+      registerFont(pathToUse, { family, weight });
+      registeredFonts.add(fontKey);
+      registeredFonts.add(family); // plain family name — ensureFont() lookup key
+      console.log(`[fonts] Bundled font registered: ${family} wt=${weight} from ${sourceLabel}`);
+    } catch (err) {
+      console.warn(`[fonts] Could not register ${family} wt=${weight} from ${sourceLabel}:`, err);
     }
   }
 }
