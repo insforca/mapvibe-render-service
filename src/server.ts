@@ -361,7 +361,12 @@ function registerSystemFonts(): void {
   }
 }
 
-/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
+/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp.
+ *  @param fontFamily   Font family name (e.g. 'Playfair Display')
+ *  @param weight       Numeric CSS weight string (e.g. '700'). When supplied the font
+ *                      is registered with that weight so node-canvas resolves bold/light
+ *                      variants using real glyphs instead of faux-bold/faux-light synthesis.
+ */
 async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
   if (!fontFamily || registeredFonts.has(fontFamily)) return;
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
@@ -450,6 +455,8 @@ function registerBundledFonts(): void {
     { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
     { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
     { family: 'DM Sans',          weight: '400', staticFile: 'DMSans-Regular.ttf',          variableFile: 'DMSans.ttf' },
+    // IBM Plex Mono — editor body font used for coordinates and attribution in PosterTextOverlay
+    { family: 'IBM Plex Mono',    weight: '400', staticFile: 'IBMPlexMono-Regular.ttf',     variableFile: '' },
   ];
 
   for (const { family, weight, staticFile, variableFile } of bundled) {
