@@ -371,7 +371,7 @@ function registerSystemFonts(): void {
 }
 
 /** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
-async function ensureFont(fontFamily: string): Promise<void> {
+async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
   if (!fontFamily || registeredFonts.has(fontFamily)) return;
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
@@ -410,7 +410,7 @@ async function ensureFont(fontFamily: string): Promise<void> {
       ttfBuf = Buffer.from(await fontRes.arrayBuffer());
       writeFileSync(fontPath, ttfBuf);
     }
-    registerFont(fontPath, { family: fontFamily });
+    registerFont(fontPath, { family: fontFamily, ...(weight ? { weight } : {}) });
     registeredFonts.add(fontFamily);
     console.log(`[fonts] Registered ${fontFamily} from Google Fonts`);
   } catch (err) {
@@ -459,6 +459,8 @@ function registerBundledFonts(): void {
     { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
     { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
     { family: 'DM Sans',          weight: '400', staticFile: 'DMSans-Regular.ttf',          variableFile: 'DMSans.ttf' },
+    // IBM Plex Mono — editor body font used for coordinates and attribution in PosterTextOverlay
+    { family: 'IBM Plex Mono',    weight: '400', staticFile: 'IBMPlexMono-Regular.ttf',     variableFile: '' },
   ];
 
   for (const { family, weight, staticFile, variableFile } of bundled) {
@@ -492,8 +494,12 @@ registerBundledFonts();
 registerSystemFonts();
 
 // ── Compositing constants (match COMPOSITING_JS header in v2.x) ─────────────
-const _DR = 2400, _AB = 20.4,  _EM = .012, _CB = 204,  _CM = 96;
-const _CS  = .12,  _CTB = 67.2, _CTS = .12, _COB = 52.8, _COS = .06; // match editor CSS letter-spacing
+// ── Poster strip constants — MUST match src/features/poster/domain/textLayout.ts ─
+// TEXT_DIMENSION_REFERENCE_PX = 3600, edge margin = 2%
+// City: base=250px min=110px  Country: base=92px  Coords: base=58px  Attribution: base=30px
+// Letter-spacing (em): city=0.15  country=0.20  coords=0.25
+const _DR = 3600, _AB = 30,   _EM = .02,  _CB = 250,  _CM = 110;
+const _CS  = .15,  _CTB = 92,  _CTS = .20, _COB = 58,  _COS = .25; // match textLayout.ts §CITY/COUNTRY/COORDS_LETTER_SPACING
 
 // ── Compositing functions — Canvas 2D API; identical logic to v2.x ──────────
 function _wa(hex: any, a: any){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
@@ -505,9 +511,14 @@ if(fs==='none')return;if(fs==='text'){var tH=Math.round(H*0.25),tg=ctx.createLin
 function fmtCoords(lat: any, lon: any){return Math.abs(lat).toFixed(4)+'\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\u00b0 '+(lon>=0?'E':'W');}
 function fmtCity(c: any){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\u00C0-\u024F]/.test(ch)){lc++;ac++;}else if(/\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}
 function shrinkFont(base: any, min: any, len: any, sp: any){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}
-function textMetrics(w: any, h: any, layout: any, cfs?: any, ctFS?: any, coFS?: any){if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.830,dX:x,dY:h*.882,coX:x,coY:h*.907,crX:x,crY:h*.931,al:'left',dW:120};}var cx=w*.5,cY=h*.865;return{cX:cx,cY,dX:cx,dY:h*.917,coX:cx,coY:h*.944,crX:cx,crY:h*.970,al:'center',dW:w*.2};}
+function textMetrics(w: any, h: any, layout: any, cfs?: any, ctFS?: any, coFS?: any){
+  // Y-ratios match textLayout.ts: TEXT_CITY_Y=0.885 DIVIDER=0.900 COUNTRY=0.915 COORDS=0.934
+  // Editorial: EDITORIAL_CITY=0.820 DIVIDER=0.855 COUNTRY=0.885 COORDS=0.920
+  if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.820,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.920,al:'left',dW:120};}
+  var cx=w*.5,cY=h*.885;return{cX:cx,cY,dX:cx,dY:h*.900,coX:cx,coY:h*.915,crX:cx,crY:h*.934,al:'center',dW:w*.2};
+}
 function drawSpaced(ctx: any, text: any, x: any, y: any, sp: any, fs: any, al: any){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
-function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Playfair Display",serif':'"Playfair Display",serif';var bFF=ff?'"'+ff+'","DM Sans",sans-serif':'"DM Sans",sans-serif';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds,m=textMetrics(W,H,layout||'centered',cfs,ctFS,coFS);ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;var _cW=ctx.measureText(cl).width+_CS*cfs*(cl.length>1?cl.length-1:0);if(m.al==='center')m.dW=_cW;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='400 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;if(m.al==='center'){var fc=fmtCoords(lat,lon);var cW=ctx.measureText(fc).width+_COS*coFS*(fc.length>1?fc.length-1:0);var gL=24*ds,gG=9*ds;ctx.strokeStyle=tc;ctx.globalAlpha=.55;ctx.lineWidth=Math.max(1,1.5*ds);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(m.crX-cW/2-gG-gL,m.crY);ctx.lineTo(m.crX-cW/2-gG,m.crY);ctx.moveTo(m.crX+cW/2+gG,m.crY);ctx.lineTo(m.crX+cW/2+gG+gL,m.crY);ctx.stroke();ctx.globalAlpha=1;}}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
+function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Playfair Display",serif':'"Playfair Display",serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds,m=textMetrics(W,H,layout||'centered',cfs,ctFS,coFS);ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;var _cW=ctx.measureText(cl).width+_CS*cfs*(cl.length>1?cl.length-1:0);if(m.al==='center')m.dW=_cW;drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;if(m.al==='center'){var fc=fmtCoords(lat,lon);var cW=ctx.measureText(fc).width+_COS*coFS*(fc.length>1?fc.length-1:0);var gL=24*ds,gG=9*ds;ctx.strokeStyle=tc;ctx.globalAlpha=.55;ctx.lineWidth=Math.max(1,1.5*ds);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(m.crX-cW/2-gG-gL,m.crY);ctx.lineTo(m.crX-cW/2-gG,m.crY);ctx.moveTo(m.crX+cW/2+gG,m.crY);ctx.lineTo(m.crX+cW/2+gG+gL,m.crY);ctx.stroke();ctx.globalAlpha=1;}}ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
 
 // ── OverlayParams type ───────────────────────────────────────────────────────
 interface OverlayParams {
@@ -590,7 +601,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   h = vpH * DEVICE_SCALE;
 
   // Ensure design-system fonts are always loaded from Google Fonts
-  await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
+  await Promise.all([ensureFont('Playfair Display', '400'), ensureFont('Playfair Display', '700'), ensureFont('DM Sans', '300'), ensureFont('DM Sans', '400'), ensureFont('IBM Plex Mono', '400')]);
   // Also load any per-poster custom font override
   if (overlay?.fontFamily) await ensureFont(overlay.fontFamily);
 
