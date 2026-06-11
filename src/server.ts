@@ -442,7 +442,10 @@ function registerBundledFonts(): void {
     staticFile: string;
     variableFile: string;
   }> = [
-    { family: 'Playfair Display', weight: '300', staticFile: 'PlayfairDisplay-Light.ttf',   variableFile: 'PlayfairDisplay.ttf' },
+    // Playfair Display weight 300 (Light) intentionally omitted: no static Light instance on
+    // Google Fonts; variable wght axis starts at 400. Both browser and node-canvas apply
+    // nearest-weight fallback → '300 Playfair' requests land on the registered 400 face,
+    // identical to editor behaviour. Listing it would log a misleading wt=300 registration.
     { family: 'Playfair Display', weight: '400', staticFile: 'PlayfairDisplay-Regular.ttf', variableFile: 'PlayfairDisplay.ttf' },
     { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
     { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
