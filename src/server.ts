@@ -361,8 +361,13 @@ function registerSystemFonts(): void {
   }
 }
 
-/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
-async function ensureFont(fontFamily: string): Promise<void> {
+/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp.
+ *  @param fontFamily   Font family name (e.g. 'Playfair Display')
+ *  @param weight       Numeric CSS weight string (e.g. '700'). When supplied the font
+ *                      is registered with that weight so node-canvas resolves bold/light
+ *                      variants using real glyphs instead of faux-bold/faux-light synthesis.
+ */
+async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
   if (!fontFamily || registeredFonts.has(fontFamily)) return;
   mkdirSync(FONT_CACHE_DIR, { recursive: true });
   const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
@@ -401,7 +406,7 @@ async function ensureFont(fontFamily: string): Promise<void> {
       ttfBuf = Buffer.from(await fontRes.arrayBuffer());
       writeFileSync(fontPath, ttfBuf);
     }
-    registerFont(fontPath, { family: fontFamily });
+    registerFont(fontPath, { family: fontFamily, ...(weight ? { weight } : {}) });
     registeredFonts.add(fontFamily);
     console.log(`[fonts] Registered ${fontFamily} from Google Fonts`);
   } catch (err) {
@@ -450,6 +455,8 @@ function registerBundledFonts(): void {
     { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
     { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
     { family: 'DM Sans',          weight: '400', staticFile: 'DMSans-Regular.ttf',          variableFile: 'DMSans.ttf' },
+    // IBM Plex Mono — editor body font used for coordinates and attribution in PosterTextOverlay
+    { family: 'IBM Plex Mono',    weight: '400', staticFile: 'IBMPlexMono-Regular.ttf',     variableFile: '' },
   ];
 
   for (const { family, weight, staticFile, variableFile } of bundled) {
@@ -581,7 +588,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   h = vpH * DEVICE_SCALE;
 
   // Ensure design-system fonts are always loaded from Google Fonts
-  await Promise.all([ensureFont('Playfair Display'), ensureFont('DM Sans')]);
+  await Promise.all([ensureFont('Playfair Display', '400'), ensureFont('Playfair Display', '700'), ensureFont('DM Sans', '300'), ensureFont('DM Sans', '400'), ensureFont('IBM Plex Mono', '400')]);
   // Also load any per-poster custom font override
   if (overlay?.fontFamily) await ensureFont(overlay.fontFamily);
 
