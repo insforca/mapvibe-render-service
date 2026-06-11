@@ -30,6 +30,21 @@ COPY package.json tsconfig.json ./
 RUN npm install
 
 COPY fonts/ ./fonts/
+
+# ── Download missing weight-specific fonts at build time ─────────────────────
+# DMSans-Light.ttf (weight 300) is needed by drawPosterText for the attribution
+# and body text slots. IBM Plex Mono is the editor's body font for coordinates
+# and attribution. Download to fonts/ so registerBundledFonts() picks them up.
+RUN GF=https://github.com/google/fonts/raw/main/ofl && \
+    curl -fsSL "${GF}/dmsans/DMSans%5Bital%2Copsz%2Cwght%5D.ttf" \
+         -o fonts/DMSans-Light.ttf 2>/dev/null || \
+    curl -fsSL "${GF}/dmsans/static/DMSans-Light.ttf" \
+         -o fonts/DMSans-Light.ttf 2>/dev/null || \
+    echo "Warning: DMSans-Light.ttf download failed — weight 300 will use regular fallback" && \
+    curl -fsSL "${GF}/ibmplexmono/static/IBMPlexMono-Regular.ttf" \
+         -o fonts/IBMPlexMono-Regular.ttf 2>/dev/null || \
+    echo "Warning: IBMPlexMono-Regular.ttf download failed — coords will use DM Sans fallback" && \
+    ls -lh fonts/
 COPY assets/ ./assets/
 COPY src/ ./src/
 RUN npx tsc
