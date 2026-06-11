@@ -12,35 +12,58 @@ ENV DISPLAY=:99
 
 # ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
 # xvfb: virtual X11 framebuffer display (needed by X11/GLX backend; no physical display or GPU required)
-# python3 + pip: OSM renderer (OSMnx/matplotlib pipeline; headless Agg backend — no display needed)
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
   && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
   && apt-get install -y nodejs \
   && apt-get install -y --no-install-recommends \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
-    pkg-config build-essential python3 python3-pip python3-venv \
+    pkg-config build-essential python3 \
     libgl1 libgl1-mesa-dri libglx0 libglx-mesa0 libopengl0 \
     libegl1 libegl-mesa0 libgles2 \
     libx11-6 libxext6 \
     xvfb \
     libuv1 \
     fonts-liberation fonts-dejavu-core \
-    libgeos-dev libproj-dev libgdal-dev \
+    pkg-config build-essential python3 python3-pip python3-venv \
   && rm -rf /var/lib/apt/lists/*
-
-# ── Python OSM renderer dependencies ─────────────────────────────────────────
-# Installed into a venv so pip doesn't conflict with system packages.
-COPY python/requirements.txt ./python/requirements.txt
-RUN python3 -m venv /opt/mapvibe-py \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
-ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
 
 COPY package.json tsconfig.json ./
 RUN npm install
 
 COPY fonts/ ./fonts/
+
+# ── Download missing weight-specific fonts at build time ─────────────────────
+# DMSans-Light.ttf (weight 300) is needed by drawPosterText for the attribution
+# and body text slots. IBM Plex Mono is the editor's body font for coordinates
+# and attribution. Download to fonts/ so registerBundledFonts() picks them up.
+RUN GF=https://github.com/google/fonts/raw/main/ofl && \
+    curl -fsSL "${GF}/dmsans/DMSans%5Bital%2Copsz%2Cwght%5D.ttf" \
+         -o fonts/DMSans-Light.ttf 2>/dev/null || \
+    curl -fsSL "${GF}/dmsans/static/DMSans-Light.ttf" \
+         -o fonts/DMSans-Light.ttf 2>/dev/null || \
+    echo "Warning: DMSans-Light.ttf download failed — weight 300 will use regular fallback" && \
+    curl -fsSL "${GF}/ibmplexmono/static/IBMPlexMono-Regular.ttf" \
+         -o fonts/IBMPlexMono-Regular.ttf 2>/dev/null || \
+    echo "Warning: IBMPlexMono-Regular.ttf download failed — coords will use DM Sans fallback" && \
+    ls -lh fonts/
 COPY assets/ ./assets/
+
+# ── Python OSM renderer ───────────────────────────────────────────────────────
+COPY python/ ./python/
+
+# ── Download Roboto fonts at build time (not bundled as binary blobs in repo) ─
+# Roboto-Bold, Light, Regular — used by mapvibe_render.py typography layer.
+RUN mkdir -p python/fonts && \
+    BASE=https://github.com/google/fonts/raw/main/apache/roboto/static && \
+    for variant in Bold Light Regular; do \
+      curl -fsSL "${BASE}/Roboto-${variant}.ttf" -o "python/fonts/Roboto-${variant}.ttf" 2>/dev/null || \
+      echo "Warning: Roboto-${variant}.ttf download failed — will fall back to system fonts at runtime"; \
+    done && \
+    ls -lh python/fonts/ || true
+
+RUN echo '{"city":"Paris","country":"France","lat":48.8566,"lng":2.3522,"dist":100,"width_in":3,"height_in":4,"dpi":72,"show_text":false,"output_path":"/tmp/smoke_test.png"}' \
+  | ${MAPVIBE_PYTHON} python/mapvibe_render.py \
+  && echo 'Python OSM renderer: OK' || echo 'Python OSM renderer: WARN (non-fatal at build time)'
 COPY src/ ./src/
 RUN npx tsc
 
@@ -68,24 +91,6 @@ RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
 
 RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
-
-# 4. Python OSM renderer smoke test
-COPY python/ ./python/
-
-# ── Download Roboto fonts at build time (not bundled as binary blobs in repo) ─
-# Roboto-Bold, Light, Regular — used by mapvibe_render.py typography layer.
-# Fallback to system fonts if download fails (non-fatal).
-RUN mkdir -p python/fonts && \
-    BASE=https://github.com/google/fonts/raw/main/apache/roboto/static && \
-    for variant in Bold Light Regular; do \
-      curl -fsSL "${BASE}/Roboto-${variant}.ttf" -o "python/fonts/Roboto-${variant}.ttf" 2>/dev/null || \
-      echo "Warning: Roboto-${variant}.ttf download failed — will fall back to system fonts at runtime"; \
-    done && \
-    ls -lh python/fonts/ || true
-
-RUN echo '{"city":"Paris","country":"France","lat":48.8566,"lng":2.3522,"dist":100,"width_in":3,"height_in":4,"dpi":72,"show_text":false,"output_path":"/tmp/smoke_test.png"}' \
-  | ${MAPVIBE_PYTHON} python/mapvibe_render.py \
-  && echo 'Python OSM renderer: OK' || echo 'Python OSM renderer: WARN (non-fatal at build time)'
 
 COPY start.sh .
 RUN chmod +x start.sh
