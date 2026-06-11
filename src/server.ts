@@ -24,6 +24,7 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
@@ -159,6 +160,14 @@ const CM_PER_INCH       = 2.54;
 const MAX_RENDER_PX_WH  = 14400;  // raised: gives full 400 DPI up to Grand; Studio/Archival aspect-ratio-scaled
 const MAX_PX            = 150_000_000; // max single render/tile pixels; fits 400 DPI Grand (138 MP) and AR-scaled Studio/Archival
 const MAX_ZOOM_RENDER   = 17;
+
+// ── OSM renderer config ───────────────────────────────────────────────────────
+// RENDER_ENGINE=osm  → use Python/OSMnx pipeline for fulfillment renders
+// RENDER_ENGINE=maplibre (default) → keep native GL pipeline during transition
+const RENDER_ENGINE  = process.env.RENDER_ENGINE  ?? 'maplibre';
+const MAPVIBE_PYTHON = process.env.MAPVIBE_PYTHON ?? 'python3';
+const OSM_SCRIPT     = join(__dirname, '..', 'python', 'mapvibe_render.py');
+
 const MAX_CONCURRENT    = parseInt(process.env.MAX_CONCURRENT    ?? '4',  10);
 const MAX_QUEUE_SIZE    = parseInt(process.env.MAX_QUEUE_SIZE    ?? '20', 10);
 const renderQueue       = new PQueue({ concurrency: MAX_CONCURRENT });
@@ -796,6 +805,71 @@ async function renderTiledPng(
 }
 
 
+
+// ── OSM Python renderer ───────────────────────────────────────────────────────
+
+interface OsmRenderParams {
+  city?:           string;
+  country?:        string;
+  lat:             number;
+  lng:             number;
+  display_city:    string;
+  display_country: string;
+  theme_name?:     string;
+  theme_json?:     unknown;
+  dist?:           number;
+  width_in:        number;
+  height_in:       number;
+  dpi:             number;
+  show_text?:      boolean;
+  full_bleed?:     boolean;
+  no_fade?:        boolean;
+  minor_roads?:    boolean;
+}
+
+/**
+ * Render a city map poster using the Python/OSMnx pipeline (maptoposter).
+ * Full bleed, no fade, minor roads hidden — museum-grade output at target DPI.
+ *
+ * DPI contract:
+ *   • Standard sizes  → 400 DPI (caller must pass actualDpi)
+ *   • Archival        → ≥300 DPI (tiled path maintains this via actualDpi)
+ *
+ * @param params  OsmRenderParams
+ * @returns       PNG Buffer
+ */
+async function renderOsmPython(params: OsmRenderParams): Promise<Buffer> {
+  const tmpFile = join(tmpdir(), `mapvibe-osm-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+  const payload = JSON.stringify({ ...params, output_path: tmpFile });
+
+  const renderStart = Date.now();
+  const result = spawnSync(MAPVIBE_PYTHON, [OSM_SCRIPT], {
+    input: payload,
+    maxBuffer: 20 * 1024 * 1024, // stdout is just the JSON ack when output_path is set
+    timeout: 300_000,             // 5 min max — large archival renders may be slow
+    encoding: 'buffer',
+  });
+
+  if (result.error) {
+    throw new Error(`[osm] Python spawn error: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    const errText = (result.stderr as Buffer)?.toString() ?? '';
+    throw new Error(`[osm] Python renderer exited ${result.status}: ${errText.slice(-800)}`);
+  }
+  if (!existsSync(tmpFile)) {
+    const errText = (result.stderr as Buffer)?.toString() ?? '';
+    throw new Error(`[osm] Python renderer produced no output file. stderr: ${errText.slice(-500)}`);
+  }
+
+  const pngBuf = readFileSync(tmpFile);
+  try { unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
+
+  const elapsed = Math.round((Date.now() - renderStart) / 1000);
+  console.log(`[osm] render done in ${elapsed}s — ${pngBuf.length.toLocaleString()} bytes (${params.dpi} DPI, ${params.width_in?.toFixed(1)}×${params.height_in?.toFixed(1)}in)`);
+  return pngBuf;
+}
+
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
 interface MapvibeConfigSnapshot {
   styleJson:      unknown;
@@ -814,6 +888,12 @@ interface MapvibeConfigSnapshot {
   includeCredits: boolean;
   textLayout:     string;
   theme:          unknown;
+  // OSM renderer fields (only used when engine === 'osm' or RENDER_ENGINE=osm)
+  engine?:   'maplibre' | 'osm';
+  city?:     string;
+  country?:  string;
+  osmTheme?: string;
+  osmDist?:  number;
 }
 
 /**
@@ -915,7 +995,41 @@ async function renderConfigToBlobUrl(
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
-  // 5. Render via native pipeline — tiled or single-pass
+  // 5. Render via OSM Python pipeline or native MapLibre pipeline
+  //    OSM path: activated by cfg.engine === 'osm' OR RENDER_ENGINE env var
+  //    Inherits the same 400 DPI / tiled / AR-preserving dimension logic above.
+  const useOsm = cfg.engine === 'osm' || RENDER_ENGINE === 'osm';
+  let pngBuffer: Buffer;
+
+  if (useOsm) {
+    const widthIn  = widthCm  / CM_PER_INCH;
+    const heightIn = heightCm / CM_PER_INCH;
+    const osmParams: OsmRenderParams = {
+      city:            cfg.city            ?? '',
+      country:         cfg.country         ?? '',
+      lat:             cfg.center[1],        // MapLibre center = [lng, lat]
+      lng:             cfg.center[0],
+      display_city:    cfg.displayCity     ?? '',
+      display_country: cfg.displayCountry  ?? '',
+      theme_name:      cfg.osmTheme        ?? 'midnight_blue',
+      dist:            cfg.osmDist         ?? 15000,
+      width_in:        widthIn,
+      height_in:       heightIn,
+      dpi:             actualDpi,
+      show_text:       cfg.showPosterText  !== false,
+      full_bleed:      true,
+      no_fade:         true,
+      minor_roads:     false,
+    };
+    console.log(`[fulfill] OSM render: ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in)`);
+    try {
+      pngBuffer = await renderOsmPython(osmParams);
+    } catch (err) {
+      console.error('[fulfill] OSM render error:', err);
+      return null;
+    }
+  } else {
+  // Native MapLibre pipeline — tiled or single-pass
   const sharedParams: RenderParams = {
     styleJson,
     center:    cfg.center,
@@ -937,7 +1051,6 @@ async function renderConfigToBlobUrl(
     },
   };
 
-  let pngBuffer: Buffer;
   try {
     if (needsTiling) {
       pngBuffer = await renderTiledPng(sharedParams, width, height, numTiles);
@@ -948,6 +1061,7 @@ async function renderConfigToBlobUrl(
     console.error('[fulfill] Render error:', err);
     return null;
   }
+  } // end else (MapLibre path)
 
   // 6. Validate PNG magic bytes
   const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
