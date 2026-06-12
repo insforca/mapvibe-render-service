@@ -1105,6 +1105,7 @@ async function renderConfigToBlobUrl(
 app.get('/health', (_req: Request, res: Response) => res.json({
   status: 'ok',
   version: '3.5.0',
+  engine:  RENDER_ENGINE,
   queue: {
     size:           renderQueue.size,
     pending:        renderQueue.pending,
