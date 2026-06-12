@@ -1122,13 +1122,31 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   const {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
     displayCity, displayCountry, fontFamily, showPosterText, fadeStyle, includeCredits, textLayout, theme,
+    // ── OSM/maptoposter routing ─────────────────────────────────────────────
+    // engine — per-request override; falls back to RENDER_ENGINE env var.
+    // osmTheme / osmDist — already plumbed by api/render-and-upload (PR #140).
+    // previewMode — sent by the editor's live preview tile (studio PR #142)
+    //   so the server can shape DPI / quality cheaply. Print previews and
+    //   live preview tile go through this endpoint; full-print fulfillment
+    //   goes through /fulfill which has its own OSM branch.
+    engine, osmTheme, osmDist, previewMode,
   } = req.body;
 
-  if (!styleJson||typeof styleJson!=='object'||Array.isArray(styleJson)) { res.status(400).json({error:'styleJson must be a non-null object'}); return; }
+  // useOsm decides routing for THIS request. Per-request `engine` wins so a
+  // legacy MapLibre fallback is still reachable while RENDER_ENGINE=osm is
+  // the global default.
+  const useOsm = engine === 'osm' || (engine !== 'maplibre' && RENDER_ENGINE === 'osm');
+
   if (!center||zoom==null) { res.status(400).json({error:'Missing required fields: center, zoom'}); return; }
 
-  const urlError = validateStyleJsonUrls(styleJson);
-  if (urlError) { res.status(400).json({ error: urlError }); return; }
+  // styleJson is mandatory only on the MapLibre path. The Python/OSM pipeline
+  // builds its own style from `osmTheme` + the theme JSON bundled in the
+  // image, so it ignores styleJson entirely.
+  if (!useOsm) {
+    if (!styleJson||typeof styleJson!=='object'||Array.isArray(styleJson)) { res.status(400).json({error:'styleJson must be a non-null object'}); return; }
+    const urlError = validateStyleJsonUrls(styleJson);
+    if (urlError) { res.status(400).json({ error: urlError }); return; }
+  }
 
   // Queue-depth check — reject immediately if queue is saturated
   if (renderQueue.size >= MAX_QUEUE_SIZE) {
@@ -1153,13 +1171,62 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       theme:          theme          ?? {},
     } : undefined;
 
-  console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending}`);
+  console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=${useOsm ? 'osm' : 'maplibre'}${previewMode ? ' previewMode' : ''}`);
   await renderQueue.add(async () => {
     const renderStart = Date.now();
     try {
-      const png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
+      let png: Buffer;
+      if (useOsm) {
+        // Studio sends width/height as pixels already shaped for the target
+        // DPI: ~96 for the live preview tile (capped at 2400 px long edge),
+        // higher for the in-app print preview. Derive DPI accordingly so
+        // width_in / height_in stay accurate; the Python renderer uses these
+        // to size the matplotlib figure and pick line weights.
+        const dpi = previewMode ? 96 : 300;
+
+        // Vercel times out the proxy at 50s. renderOsmPython at 300 DPI on a
+        // 24×36" poster (7200×10800 ≈ 78 MP) routinely takes minutes. Cap the
+        // pixel budget so /render always returns under Vercel's window; the
+        // print preview is a fidelity simulation, not the fulfillment render
+        // (which goes through /fulfill and isn't behind the Vercel proxy).
+        //   previewMode  →  6 MP   (96 DPI ≈ 2400×2500, ~2-4s on Railway)
+        //   print preview→ 12 MP   (300 DPI ≈ 3000×4000, ~25-40s on Railway)
+        // When the requested figure exceeds the budget we scale both axes
+        // proportionally — aspect ratio is preserved, line weights / fonts
+        // scale with the smaller inch dimensions per maptoposter's spec.
+        const OSM_MAX_PIXELS = previewMode ? 6_000_000 : 12_000_000;
+        let capW = width, capH = height;
+        if (capW * capH > OSM_MAX_PIXELS) {
+          const k = Math.sqrt(OSM_MAX_PIXELS / (capW * capH));
+          capW = Math.round(capW * k);
+          capH = Math.round(capH * k);
+          console.warn(`[render][osm] Pixel budget exceeded: ${width}×${height} → ${capW}×${capH} (cap ${(OSM_MAX_PIXELS/1e6).toFixed(0)} MP)`);
+        }
+        const widthIn  = capW / dpi;
+        const heightIn = capH / dpi;
+        png = await renderOsmPython({
+          city:            '',                                     // OSMnx geocodes from lat/lng
+          country:         '',
+          lat:             center[1],                              // MapLibre center = [lng, lat]
+          lng:             center[0],
+          display_city:    displayCity    ?? '',
+          display_country: displayCountry ?? '',
+          theme_name:      osmTheme       ?? 'midnight_blue',
+          dist:            typeof osmDist === 'number' ? osmDist : 2000,
+          width_in:        widthIn,
+          height_in:       heightIn,
+          dpi,
+          show_text:       showPosterText !== false,
+          full_bleed:      true,
+          no_fade:         true,
+          minor_roads:     false,
+        });
+      } else {
+        png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
+      }
       res.setHeader('Content-Type', 'image/png');
-      if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
+      // Don't cache previews — same URL, different inputs each time.
+      if (!printMode && !useOsm) res.setHeader('Cache-Control', 'public, max-age=3600');
       res.end(png);
     } catch (err: any) {
       const elapsed = Math.round((Date.now()-renderStart)/1000);
