@@ -858,7 +858,11 @@ async function renderOsmPython(params: OsmRenderParams): Promise<Buffer> {
     input: payload,
     maxBuffer: 20 * 1024 * 1024, // stdout is just the JSON ack when output_path is set
     timeout: 300_000,             // 5 min max — large archival renders may be slow
-    encoding: 'buffer',
+    // encoding: omitted — Node 20+ rejects 'buffer' as a string-encoding name
+    // (throws "Unknown encoding: buffer" before spawn). Default behaviour
+    // (encoding undefined) already returns stdout / stderr as Buffers, which
+    // is what the `as Buffer` casts below expect. The PNG itself is read from
+    // the output file, not from stdout, so stream encoding is irrelevant.
   });
 
   if (result.error) {
