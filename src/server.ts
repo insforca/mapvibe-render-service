@@ -1134,6 +1134,12 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     //   live preview tile go through this endpoint; full-print fulfillment
     //   goes through /fulfill which has its own OSM branch.
     engine, osmTheme, osmDist, previewMode,
+    // themeJson — Python-shaped palette object assembled by the Vercel proxy
+    // from the studio's flat per-color fields. When present we hand it to
+    // renderOsmPython as `theme_json`; Python uses it directly instead of
+    // `load_theme(osmTheme)`, so the preview matches the editor's actual
+    // colors (vintage_noir cream/black instead of midnight_blue navy/gold).
+    themeJson,
   } = req.body;
 
   // useOsm decides routing for THIS request. Per-request `engine` wins so a
@@ -1208,6 +1214,21 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         }
         const widthIn  = capW / dpi;
         const heightIn = capH / dpi;
+
+        // Compensate for the Python pipeline's coverage formula:
+        //   comp_dist = dist * (max(W_in, H_in) / min(W_in, H_in)) / 4
+        // The studio's `osmDist` is the half-diagonal of the editor's bbox
+        // (the radius that just covers what the user designed). To make
+        // `comp_dist` come out equal to that radius we have to pre-divide
+        // by the aspect inflation and pre-multiply by 4. Without this, a
+        // 1.4-aspect portrait at osmDist=5000 ended up with comp_dist≈1750m
+        // — Python fetched ~3.5 km of road graph and dropped it into a
+        // 16.67"-tall figure, producing the "small cluster in a sea of
+        // empty background" preview the customer was seeing.
+        const userOsmDist = typeof osmDist === 'number' ? osmDist : 2000;
+        const aspectRatio = Math.max(widthIn, heightIn) / Math.min(widthIn, heightIn);
+        const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
+
         png = await renderOsmPython({
           city:            '',                                     // OSMnx geocodes from lat/lng
           country:         '',
@@ -1216,7 +1237,11 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           display_city:    displayCity    ?? '',
           display_country: displayCountry ?? '',
           theme_name:      osmTheme       ?? 'midnight_blue',
-          dist:            typeof osmDist === 'number' ? osmDist : 2000,
+          // theme_json wins over theme_name in Python: load_theme is skipped
+          // when an explicit dict is passed in. Studio + Vercel proxy build
+          // this from the full MapVibe palette so editor and preview agree.
+          theme_json:      themeJson,
+          dist:            compensatedDist,
           width_in:        widthIn,
           height_in:       heightIn,
           dpi,
