@@ -1,0 +1,15 @@
+{
+  "name": "Neon",
+  "description": "Electric city grid \u2014 lime neon on deep charcoal",
+  "bg": "#111820",
+  "text": "#C8FF00",
+  "gradient_color": "#111820",
+  "water": "#0C1A28",
+  "parks": "#161E12",
+  "road_motorway": "#C8FF00",
+  "road_primary": "#A0D400",
+  "road_secondary": "#78A800",
+  "road_tertiary": "#507C00",
+  "road_residential": "#2E4800",
+  "road_default": "#507C00"
+}

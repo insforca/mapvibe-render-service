@@ -1,0 +1,15 @@
+{
+  "name": "Copper",
+  "description": "Burnished metal \u2014 warm copper roads on rich espresso",
+  "bg": "#1A1008",
+  "text": "#D07830",
+  "gradient_color": "#1A1008",
+  "water": "#1E2830",
+  "parks": "#181C0C",
+  "road_motorway": "#D07830",
+  "road_primary": "#B06020",
+  "road_secondary": "#904E18",
+  "road_tertiary": "#703C10",
+  "road_residential": "#402408",
+  "road_default": "#703C10"
+}

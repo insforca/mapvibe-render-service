@@ -1,0 +1,15 @@
+{
+  "name": "Coral",
+  "description": "Tropical warmth \u2014 vibrant coral and salmon on soft ivory",
+  "bg": "#FFF0EC",
+  "text": "#C64B3A",
+  "gradient_color": "#FFF0EC",
+  "water": "#A8D8EA",
+  "parks": "#F2EBE4",
+  "road_motorway": "#C64B3A",
+  "road_primary": "#D96855",
+  "road_secondary": "#E88272",
+  "road_tertiary": "#F0A090",
+  "road_residential": "#F7C4BC",
+  "road_default": "#F0A090"
+}

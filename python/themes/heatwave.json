@@ -1,0 +1,15 @@
+{
+  "name": "Heatwave",
+  "description": "Scorched desert \u2014 blazing amber and flame on sun-bleached white",
+  "bg": "#FDFAF2",
+  "text": "#CC2800",
+  "gradient_color": "#FDFAF2",
+  "water": "#B4D0E0",
+  "parks": "#F2EEE0",
+  "road_motorway": "#CC2800",
+  "road_primary": "#E04200",
+  "road_secondary": "#F06010",
+  "road_tertiary": "#F88030",
+  "road_residential": "#FDB468",
+  "road_default": "#F88030"
+}

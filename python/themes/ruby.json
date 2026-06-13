@@ -1,0 +1,15 @@
+{
+  "name": "Ruby",
+  "description": "Jewel-tone drama \u2014 deep crimson roads on pale rose ivory",
+  "bg": "#FDF0F0",
+  "text": "#8B0020",
+  "gradient_color": "#FDF0F0",
+  "water": "#C0D4E0",
+  "parks": "#EBE0DE",
+  "road_motorway": "#8B0020",
+  "road_primary": "#A81530",
+  "road_secondary": "#C43048",
+  "road_tertiary": "#D85868",
+  "road_residential": "#EDA8B0",
+  "road_default": "#D85868"
+}
