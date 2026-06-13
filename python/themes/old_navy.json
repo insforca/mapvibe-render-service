@@ -1,0 +1,15 @@
+{
+  "name": "Old Navy",
+  "description": "Classic nautical \u2014 brass and ivory on rich admiral blue",
+  "bg": "#162340",
+  "text": "#E8D498",
+  "gradient_color": "#162340",
+  "water": "#0E1A30",
+  "parks": "#182A1A",
+  "road_motorway": "#E8D498",
+  "road_primary": "#C8B478",
+  "road_secondary": "#A89458",
+  "road_tertiary": "#887440",
+  "road_residential": "#4C4A2C",
+  "road_default": "#887440"
+}
