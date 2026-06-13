@@ -1,0 +1,15 @@
+{
+  "name": "Rustic",
+  "description": "Industrial grit \u2014 aged rust and weathered iron on dark tobacco",
+  "bg": "#221A10",
+  "text": "#C8A060",
+  "gradient_color": "#221A10",
+  "water": "#1E3040",
+  "parks": "#1E2010",
+  "road_motorway": "#C8863A",
+  "road_primary": "#A87030",
+  "road_secondary": "#8A5C28",
+  "road_tertiary": "#6A4820",
+  "road_residential": "#3E2C14",
+  "road_default": "#6A4820"
+}
