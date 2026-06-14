@@ -192,14 +192,48 @@ def create_gradient_fade(ax, color: str, location: str = 'bottom', zorder: int =
 # ── Crop limits ───────────────────────────────────────────────────────────────
 
 def get_crop_limits(g_proj, point: tuple, fig, dist: int):
+    """
+    Compute matplotlib axis limits centered on the user-supplied geographic
+    point. Returns (xlim, ylim) in the projected graph's CRS units (metres
+    for the UTM projections OSMnx picks by default).
+
+    point is (lat, lng) — WGS84 degrees.
+    g_proj is a *projected* graph: its node x/y are large metre values, not
+    lat/lng. Earlier code called
+        ox.distance.nearest_nodes(g_proj, point[1], point[0])
+    which passed degree-scale numbers (e.g. (-77, 39)) into a metre-scale
+    graph (e.g. (323420, 4307180)). nearest_nodes therefore returned the
+    node with the smallest cartesian distance to (-77, 39) — effectively a
+    random node near the projection origin, several kilometres away from
+    the user's actual location. That offset is why preview renders looked
+    drifted (cluster in the upper-half of the figure instead of centred).
+
+    Fix: project (lat, lng) into the graph's CRS first, then use those
+    coordinates directly as the centre. No need to snap to a graph node —
+    matplotlib's xlim/ylim accept any float and the crop is purely a view
+    decision, not a data lookup.
+    """
+    cx = cy = None
     try:
-        center_node = ox.distance.nearest_nodes(g_proj, point[1], point[0])
-        cx = g_proj.nodes[center_node]['x']
-        cy = g_proj.nodes[center_node]['y']
-    except Exception:
+        from shapely.geometry import Point as _Point
+        graph_crs = g_proj.graph.get('crs', 'EPSG:4326')
+        # shapely Point uses (x, y) ⇒ (lng, lat) in WGS84.
+        pt_proj, _ = ox.projection.project_geometry(
+            _Point(point[1], point[0]),
+            crs='EPSG:4326',
+            to_crs=graph_crs,
+        )
+        cx, cy = float(pt_proj.x), float(pt_proj.y)
+    except Exception as e:
+        _log(f'Projection of crop centre failed: {e}; falling back to node centroid')
+
+    if cx is None or cy is None:
+        # Last-resort fallback: centroid of fetched node coordinates. Always in
+        # the projected CRS already, so at worst we centre on the data mass.
         xs = [d['x'] for _, d in g_proj.nodes(data=True)]
         ys = [d['y'] for _, d in g_proj.nodes(data=True)]
         cx, cy = float(np.mean(xs)), float(np.mean(ys))
+
     figw, figh = fig.get_size_inches()
     aspect = figh / figw
     return (cx - dist, cx + dist), (cy - dist * aspect, cy + dist * aspect)
@@ -263,6 +297,14 @@ def render(params: dict) -> bytes:
     no_fade         = bool(params.get('no_fade', True))
     minor_roads     = bool(params.get('minor_roads', False))
     network_type    = params.get('network_type', 'drive')
+    # crop_dist — optional override for the matplotlib axis half-extent.
+    # Default (None) keeps the legacy behaviour: get_crop_limits is called
+    # with `dist`, which is the original /fulfill contract.
+    # /render passes crop_dist=userOsmDist so the visible axes equal the
+    # circle OSMnx actually fetched — without this override the road graph
+    # appears as a tiny cluster in a sea of background colour because
+    # comp_dist = dist*(max/min)/4 is always 3-4× smaller than dist.
+    crop_dist_param = params.get('crop_dist')
 
     # ── 1. Resolve coordinates ───────────────────────────────────────────────
     point = None
@@ -345,7 +387,11 @@ def render(params: dict) -> bytes:
     # ── 8. Roads ─────────────────────────────────────────────────────────────
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
     edge_widths = get_edge_widths(g_proj, minor_roads)
-    crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, dist)
+    # crop_dist override lets the caller (server.ts /render) align the visible
+    # axes with the actual fetch radius (comp_dist), eliminating the empty
+    # background area around the road graph on tight-bounds previews.
+    effective_crop_dist = int(crop_dist_param) if crop_dist_param is not None else dist
+    crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
 
     ox.plot_graph(
         g_proj, ax=ax,
