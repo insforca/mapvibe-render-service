@@ -916,6 +916,11 @@ interface MapvibeConfigSnapshot {
   country?:  string;
   osmTheme?: string;
   osmDist?:  number;
+  // Editor's road-detail toggle, persisted by useStoreConfig. True ⇒ Detailed
+  // (residential / service / footway included); false / undefined ⇒ Arteries.
+  // Customers who never touched the toggle have this undefined, which matches
+  // the historical hardcoded behaviour at fulfillment.
+  minorRoads?: boolean;
 }
 
 /**
@@ -1044,9 +1049,12 @@ async function renderConfigToBlobUrl(
       show_text:       cfg.showPosterText  !== false,
       full_bleed:      true,
       no_fade:         true,
-      minor_roads:     false,
+      // Snapshot's road-detail toggle. Falls back to false when the order
+      // was placed by the studio version that didn't persist the field,
+      // matching the historical hardcoded behaviour byte-for-byte.
+      minor_roads:     cfg.minorRoads === true,
     };
-    console.log(`[fulfill] OSM render: ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in)`);
+    console.log(`[fulfill] OSM render: ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in) minor_roads=${osmParams.minor_roads}`);
     try {
       pngBuffer = await renderOsmPython(osmParams);
     } catch (err) {
@@ -1147,6 +1155,12 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     // `load_theme(osmTheme)`, so the preview matches the editor's actual
     // colors (vintage_noir cream/black instead of midnight_blue navy/gold).
     themeJson,
+    // minorRoads — editor's Clean / Detailed road-detail toggle. When the
+    // studio sends `true` we include residential / service / footway in
+    // both the Overpass fetch and the matplotlib draw, matching what the
+    // user is looking at in the editor canvas. Falls back to false (the
+    // historical hardcoded default) when omitted.
+    minorRoads,
   } = req.body;
 
   // useOsm decides routing for THIS request. Per-request `engine` wins so a
@@ -1274,7 +1288,11 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           show_text:       showPosterText !== false,
           full_bleed:      true,
           no_fade:         true,
-          minor_roads:     false,
+          // Editor's Clean / Detailed pill — when true, Python skips the
+          // major-road custom_filter and renders residential / service /
+          // footway too. Defaults to the historical false when the studio
+          // (or a non-studio caller) omits the field.
+          minor_roads:     minorRoads === true,
         });
       } else {
         png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
