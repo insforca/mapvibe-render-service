@@ -327,7 +327,22 @@ def render(params: dict) -> bytes:
     comp_dist = dist * (max(height_in, width_in) / min(height_in, width_in)) / 4
 
     _log('Fetching street network...')
-    g = ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
+    if minor_roads:
+        # Full drive network — residential/service/etc. are drawn.
+        g = ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
+    else:
+        # We hide every minor road at draw time anyway (get_edge_colors paints
+        # residential / service / footway / etc. fully transparent), yet the
+        # default 'drive' network still *downloads* them — and they are the
+        # bulk of edges in a dense metro. Fetching the full network is what
+        # made wide-radius requests time out (hence the studio's former 5 km
+        # cap). Restrict the Overpass query to the exact classes we render
+        # (motorway/trunk/primary/secondary/tertiary, links included via the
+        # regex) so a 15-20 km poster fetches roughly what an old 5 km drive
+        # fetch did. Purely a fetch optimisation — zero visual change, since
+        # these are precisely the edges get_edge_colors keeps opaque.
+        major_roads_filter = '["highway"~"motorway|trunk|primary|secondary|tertiary"]'
+        g = ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
     if g is None or len(g.nodes) == 0:
         raise RuntimeError('Failed to retrieve street network data.')
 
