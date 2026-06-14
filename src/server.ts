@@ -829,6 +829,13 @@ interface OsmRenderParams {
   theme_name?:     string;
   theme_json?:     unknown;
   dist?:           number;
+  /**
+   * Override for matplotlib's axis half-extent. When omitted, Python uses
+   * `dist` itself (legacy /fulfill contract). `/render` passes the post-
+   * formula fetch radius so the visible axes equal what OSMnx actually has
+   * data for, eliminating the empty background area on bounds-tight previews.
+   */
+  crop_dist?:      number;
   width_in:        number;
   height_in:       number;
   dpi:             number;
@@ -1228,6 +1235,14 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         const userOsmDist = typeof osmDist === 'number' ? osmDist : 2000;
         const aspectRatio = Math.max(widthIn, heightIn) / Math.min(widthIn, heightIn);
         const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
+        // Python's `dist` parameter drives the matplotlib axis half-extent
+        // via get_crop_limits, but the OSMnx fetch radius is
+        // `comp_dist = dist * aspectRatio / 4`. After the compensation above
+        // comp_dist == userOsmDist, but the axes would still span the much
+        // larger `dist` value — leaving a tiny road cluster floating in
+        // empty background. Override `crop_dist` so the visible area equals
+        // what we actually fetched.
+        const cropDistOverride = userOsmDist;
 
         png = await renderOsmPython({
           city:            '',                                     // OSMnx geocodes from lat/lng
@@ -1242,6 +1257,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           // this from the full MapVibe palette so editor and preview agree.
           theme_json:      themeJson,
           dist:            compensatedDist,
+          crop_dist:       cropDistOverride,
           width_in:        widthIn,
           height_in:       heightIn,
           dpi,
