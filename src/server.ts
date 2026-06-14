@@ -24,7 +24,7 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
@@ -856,40 +856,87 @@ interface OsmRenderParams {
  * @param params  OsmRenderParams
  * @returns       PNG Buffer
  */
-async function renderOsmPython(params: OsmRenderParams): Promise<Buffer> {
+async function renderOsmPython(params: OsmRenderParams, signal?: AbortSignal): Promise<Buffer> {
   const tmpFile = join(tmpdir(), `mapvibe-osm-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
   const payload = JSON.stringify({ ...params, output_path: tmpFile });
-
   const renderStart = Date.now();
-  const result = spawnSync(MAPVIBE_PYTHON, [OSM_SCRIPT], {
-    input: payload,
-    maxBuffer: 20 * 1024 * 1024, // stdout is just the JSON ack when output_path is set
-    timeout: 300_000,             // 5 min max — large archival renders may be slow
-    // encoding: omitted — Node 20+ rejects 'buffer' as a string-encoding name
-    // (throws "Unknown encoding: buffer" before spawn). Default behaviour
-    // (encoding undefined) already returns stdout / stderr as Buffers, which
-    // is what the `as Buffer` casts below expect. The PNG itself is read from
-    // the output file, not from stdout, so stream encoding is irrelevant.
+
+  // Async spawn so the caller can kill the Python subprocess when the client
+  // (Vercel proxy / Shopify webhook) disconnects mid-render. The previous
+  // spawnSync blocked the Node event loop for the full 30-90 s of an OSM
+  // render — even if /render's request had already closed, we kept Overpass
+  // fetching, matplotlib drawing, and PNG encoding. Production observation
+  // 2026-06-14: a 72 s render finished and was discarded after Vercel's 50 s
+  // proxy timeout because the disconnect handler couldn't run while spawnSync
+  // held the loop. Pure waste on both sides.
+  return await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn(MAPVIBE_PYTHON, [OSM_SCRIPT], { timeout: 300_000 });
+
+    // Collect stderr for diagnostic logging; stdout is just a JSON ack since
+    // the PNG is written to `tmpFile` via output_path.
+    let stderrBuf = '';
+    child.stderr.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString(); });
+
+    // Send the params payload over stdin, then close — Python reads stdin to
+    // EOF before parsing.
+    child.stdin.write(payload);
+    child.stdin.end();
+
+    let settled = false;
+    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
+    // SIGTERM gives Python a chance to flush; SIGKILL is the hard fallback if
+    // it ignores the polite ask for 2 seconds.
+    const killChild = () => {
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 2_000);
+    };
+
+    const onAbort = () => {
+      const elapsed = Math.round((Date.now() - renderStart) / 1000);
+      console.warn(`[osm] aborted at ${elapsed}s — killing Python subprocess (pid=${child.pid})`);
+      killChild();
+      settle(() => {
+        try { unlinkSync(tmpFile); } catch { /* may not exist */ }
+        const err = new Error('aborted') as Error & { code?: string };
+        err.code = 'ABORTED';
+        reject(err);
+      });
+    };
+
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    child.on('error', (err: Error) => {
+      settle(() => {
+        signal?.removeEventListener('abort', onAbort);
+        reject(new Error(`[osm] Python spawn error: ${err.message}`));
+      });
+    });
+
+    child.on('close', (code: number | null) => {
+      if (settled) return;
+      signal?.removeEventListener('abort', onAbort);
+      const elapsed = Math.round((Date.now() - renderStart) / 1000);
+
+      if (code !== 0) {
+        try { unlinkSync(tmpFile); } catch { /* may not exist */ }
+        settle(() => reject(new Error(`[osm] Python renderer exited ${code}: ${stderrBuf.slice(-800)}`)));
+        return;
+      }
+      if (!existsSync(tmpFile)) {
+        settle(() => reject(new Error(`[osm] Python renderer produced no output file. stderr: ${stderrBuf.slice(-500)}`)));
+        return;
+      }
+
+      const pngBuf = readFileSync(tmpFile);
+      try { unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
+      console.log(`[osm] render done in ${elapsed}s — ${pngBuf.length.toLocaleString()} bytes (${params.dpi} DPI, ${params.width_in?.toFixed(1)}×${params.height_in?.toFixed(1)}in)`);
+      settle(() => resolve(pngBuf));
+    });
   });
-
-  if (result.error) {
-    throw new Error(`[osm] Python spawn error: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    const errText = (result.stderr as Buffer)?.toString() ?? '';
-    throw new Error(`[osm] Python renderer exited ${result.status}: ${errText.slice(-800)}`);
-  }
-  if (!existsSync(tmpFile)) {
-    const errText = (result.stderr as Buffer)?.toString() ?? '';
-    throw new Error(`[osm] Python renderer produced no output file. stderr: ${errText.slice(-500)}`);
-  }
-
-  const pngBuf = readFileSync(tmpFile);
-  try { unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
-
-  const elapsed = Math.round((Date.now() - renderStart) / 1000);
-  console.log(`[osm] render done in ${elapsed}s — ${pngBuf.length.toLocaleString()} bytes (${params.dpi} DPI, ${params.width_in?.toFixed(1)}×${params.height_in?.toFixed(1)}in)`);
-  return pngBuf;
 }
 
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
@@ -1202,10 +1249,32 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       theme:          theme          ?? {},
     } : undefined;
 
+  // Track client connection so we can abort an in-progress render when the
+  // proxy / browser disconnects mid-flight. Without this, a Vercel proxy that
+  // times out at 50 s still leaves a Python subprocess running on Railway for
+  // the full render duration — pure waste on compute + Blob upload + nothing
+  // delivered to the user.
+  const clientAbort = new AbortController();
+  let clientGone = false;
+  const onClientClose = () => {
+    if (res.headersSent) return; // already responded; ignore late close
+    clientGone = true;
+    console.warn(`[render] Client disconnected before response — aborting${useOsm ? ' OSM render' : ' MapLibre render'}`);
+    clientAbort.abort();
+  };
+  req.on('close', onClientClose);
+
   console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=${useOsm ? 'osm' : 'maplibre'}${previewMode ? ' previewMode' : ''}`);
   await renderQueue.add(async () => {
     const renderStart = Date.now();
     try {
+      // If the client gave up while we were waiting in the queue, skip the
+      // render entirely — no point spawning Python for output nobody will
+      // receive.
+      if (clientGone) {
+        console.warn(`[render] Skipping queued render — client already gone`);
+        return;
+      }
       let png: Buffer;
       if (useOsm) {
         // Studio sends width/height as pixels already shaped for the target
@@ -1293,9 +1362,17 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           // footway too. Defaults to the historical false when the studio
           // (or a non-studio caller) omits the field.
           minor_roads:     minorRoads === true,
-        });
+        }, clientAbort.signal);
       } else {
         png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
+      }
+      // Last-chance check: if the proxy disconnected between Python finishing
+      // and us sending the bytes, drop the response and the PNG on the floor —
+      // no upstream is listening, and the studio retry-once has already
+      // started a fresh request.
+      if (clientGone) {
+        console.warn(`[render] Render completed but client gone — discarding ${png.length} bytes`);
+        return;
       }
       res.setHeader('Content-Type', 'image/png');
       // Don't cache previews — same URL, different inputs each time.
@@ -1303,12 +1380,17 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       res.end(png);
     } catch (err: any) {
       const elapsed = Math.round((Date.now()-renderStart)/1000);
+      // ABORTED isn't a render failure — it's the client cancelling. Logged
+      // by the abort path; don't double-log or surface as error.
+      if (err?.code === 'ABORTED' || clientGone) return;
       console.error(`[render] Error after ${elapsed}s:`, err.message || err);
       // Sanitize: never surface err.message in the response body — it can
       // carry file paths, MapLibre/canvas/sharp internals. Full error stays
       // in the Railway log via console.error above; wire only carries the
       // generic phrase.
       if (!res.headersSent) res.status(500).json({ error: 'Render failed', elapsed });
+    } finally {
+      req.off('close', onClientClose);
     }
   });
 });
