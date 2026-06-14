@@ -441,7 +441,7 @@ def render(params: dict) -> bytes:
     # tier crosses the 1 px threshold and the road-detail hierarchy stays
     # readable at preview resolution. Capped at >= 1 so /fulfill at 300/400 DPI
     # renders byte-identical to before.
-    edge_width_scale = max(1.0, 300.0 / dpi)
+    edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
     edge_widths = [w * edge_width_scale for w in edge_widths]
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
