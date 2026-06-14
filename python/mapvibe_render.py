@@ -441,7 +441,15 @@ def render(params: dict) -> bytes:
     # tier crosses the 1 px threshold and the road-detail hierarchy stays
     # readable at preview resolution. Capped at >= 1 so /fulfill at 300/400 DPI
     # renders byte-identical to before.
-    edge_width_scale = max(1.0, 300.0 / dpi)
+    # Cap the scale at 2.0× — the original 300/96 = 3.125× factor produced
+    # ~954 KB PNGs (3.5× the pre-patch baseline of ~268 KB) because thicker
+    # lines mean dramatically more dark pixels for PNG to encode. On flaky
+    # mobile networks that download could take 30+ s — long enough that the
+    # print-preview modal's spinner appeared to hang. At 2.0× residential
+    # still lands at 0.8 pt = 1.07 px (above the 1 px visibility threshold)
+    # while PNG output stays around 500 KB. Clamped at >= 1 so /fulfill at
+    # 300/400 DPI keeps renders byte-identical.
+    edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
     edge_widths = [w * edge_width_scale for w in edge_widths]
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
