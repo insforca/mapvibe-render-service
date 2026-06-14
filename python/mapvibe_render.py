@@ -115,10 +115,27 @@ def is_latin_script(text: str) -> bool:
 
 # ── Road helpers ──────────────────────────────────────────────────────────────
 
+# Lowest road tier — service / track / footway / etc. Always hidden in Clean,
+# shown in Detailed. Pre-existing definition; semantically the "minor roads"
+# the studio's roadDetailMode never toggled on its own (these were tied to a
+# separate includeRoadMinorLow form field that defaults to off).
 _MINOR_ROAD_TYPES = frozenset({
     'residential', 'living_street', 'unclassified',
     'service', 'track', 'path', 'footway', 'cycleway',
     'pedestrian', 'steps',
+})
+
+# Mid-tier roads the editor's Clean / Arteries toggle hides alongside the
+# minor family. Matches MapVibeEditor.tsx's ROAD_DETAIL_LAYERS set:
+#   road-secondary       → secondary, secondary_link
+#   road-minor-mid       → tertiary, tertiary_link
+#   road-minor-low       → residential family (already in _MINOR_ROAD_TYPES)
+# So a true Clean-mode render shows only motorway / trunk / primary; anything
+# below gets transparent at draw time. Detailed (minor_roads=True) shows
+# every tier, matching the editor's Detailed = "everything visible".
+_CLEAN_HIDDEN_TYPES = frozenset(_MINOR_ROAD_TYPES | {
+    'secondary', 'secondary_link',
+    'tertiary',  'tertiary_link',
 })
 
 def _highway(data: dict) -> str:
@@ -131,7 +148,11 @@ def get_edge_colors(g, theme: dict, minor_roads: bool) -> list:
     colors = []
     for _u, _v, data in g.edges(data=True):
         hw = _highway(data)
-        if not minor_roads and hw in _MINOR_ROAD_TYPES:
+        # Clean mode hides secondary / tertiary / residential family — matches
+        # the editor's roadDetailMode='arteries' which toggles the same three
+        # layer families together. Detailed mode falls through and tiers are
+        # coloured by their highway class below.
+        if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             colors.append('#00000000')
             continue
         if hw in ('motorway', 'motorway_link'):
@@ -150,7 +171,10 @@ def get_edge_widths(g, minor_roads: bool) -> list:
     widths = []
     for _u, _v, data in g.edges(data=True):
         hw = _highway(data)
-        if not minor_roads and hw in _MINOR_ROAD_TYPES:
+        # Same Clean / Detailed semantics as get_edge_colors — keep the two
+        # hide-sets in lockstep so widths and colours never disagree on which
+        # tier is drawn.
+        if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             widths.append(0.0)
             continue
         if hw in ('motorway', 'motorway_link'):
@@ -341,7 +365,13 @@ def render(params: dict) -> bytes:
         # regex) so a 15-20 km poster fetches roughly what an old 5 km drive
         # fetch did. Purely a fetch optimisation — zero visual change, since
         # these are precisely the edges get_edge_colors keeps opaque.
-        major_roads_filter = '["highway"~"motorway|trunk|primary|secondary|tertiary"]'
+        # Clean mode draws only motorway / trunk / primary (matches editor's
+        # roadDetailMode='arteries' which hides road-secondary, road-minor-mid
+        # and road-minor-low). Anything below the arterial tier is painted
+        # transparent in get_edge_colors / get_edge_widths anyway, so we save
+        # the Overpass bandwidth by not downloading them in the first place.
+        # The regex matches *_link suffixes for free (no anchors).
+        major_roads_filter = '["highway"~"motorway|trunk|primary"]'
         g = ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
     if g is None or len(g.nodes) == 0:
         raise RuntimeError('Failed to retrieve street network data.')
@@ -402,6 +432,17 @@ def render(params: dict) -> bytes:
     # ── 8. Roads ─────────────────────────────────────────────────────────────
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
     edge_widths = get_edge_widths(g_proj, minor_roads)
+    # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's
+    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide — sub-
+    # pixel, anti-aliased into a faint smudge or vanished entirely. Result: Clean
+    # (4 tiers visible) and Detailed (5 tiers — but the new 5th is invisible)
+    # look identical in the preview modal even though the toggle is wired end-
+    # to-end. Scale all widths by (300 / dpi) when dpi < 300 so the smallest
+    # tier crosses the 1 px threshold and the road-detail hierarchy stays
+    # readable at preview resolution. Capped at >= 1 so /fulfill at 300/400 DPI
+    # renders byte-identical to before.
+    edge_width_scale = max(1.0, 300.0 / dpi)
+    edge_widths = [w * edge_width_scale for w in edge_widths]
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
     # background area around the road graph on tight-bounds previews.
