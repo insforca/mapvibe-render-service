@@ -1242,7 +1242,17 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         // larger `dist` value — leaving a tiny road cluster floating in
         // empty background. Override `crop_dist` so the visible area equals
         // what we actually fetched.
-        const cropDistOverride = userOsmDist;
+        // Inscribe the crop rectangle inside the fetch circle.
+        // The crop rectangle has half-width = crop_dist and
+        // half-height = crop_dist × figAspect (set in get_crop_limits),
+        // so its half-diagonal is crop_dist × √(1 + aspectRatio²).
+        // Setting crop_dist = userOsmDist / √(1 + aspectRatio²) makes
+        // the half-diagonal equal the fetch radius exactly — no empty
+        // facecolor wedges at the corners of portrait/landscape posters.
+        // Bonus: the rectangle's full diagonal equals 2×userOsmDist, which
+        // is the editor's bbox diagonal (boundsToOsmDist returns the
+        // half-diagonal), so preview scale matches what the user designed.
+        const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
 
         png = await renderOsmPython({
           city:            '',                                     // OSMnx geocodes from lat/lng
