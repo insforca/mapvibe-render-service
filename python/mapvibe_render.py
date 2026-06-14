@@ -3,501 +3,395 @@
 mapvibe_render.py — MapVibe OSM render adapter
 ===============================================
 Reads JSON params from stdin, renders a city map poster using
-OSMnx + matplotlib, writes PNG bytes to stdout (or a file).
+OSMnx + matplotlib (maptoposter-style). All render decisions
+(size, DPI, theme, typography, crop) are made here.
 
-MapVibe customisations vs upstream maptoposter:
-  • full_bleed  — no padding, axes fill the entire figure (default True)
-  • no_fade     — skip top/bottom gradient vignettes (default True)
-  • minor_roads — render residential/service/footway roads (default False)
-  • dpi         — 400 for all standard sizes; caller sets 300+ for archival
-  • network     — 'drive' by default (faster, cleaner than 'all')
+Inputs (JSON on stdin):
+  • lat, lng      — map centre in decimal degrees
+  • width_mm      — poster width  in millimetres
+  • height_mm     — poster height in millimetres
+  • dpi           — output DPI (default 400)
+  • theme_json    — colour palette dict (bg, text, water, parks, road_*)
+  • theme         — theme slug — used to load a JSON file from
+                   python/themes/<slug>.json when theme_json is absent
+  • city          — poster title text (top)
+  • state         — poster subtitle text (bottom)
+  • dist          — half-extent in metres from the OSMnx call  
+  • crop_dist     — half-extent override for the matplotlib axis window
+                   (keeps the visible area inside the OSMnx fetch circle)
+  • minor_roads   — render residential/service/footway roads (default False)
+  • full_bleed    — extend roads to canvas edge (default False)
+  • no_fade       — disable peripheral fade (default False)
+  • text_layout   — text placement: 'centered', 'bottom' (default 'centered')
 
-Params (JSON via stdin):
-  city            str    city name (geocoding fallback)
-  country         str    country name (geocoding fallback)
-  lat             float  center latitude (skips geocoding when provided)
-  lng             float  center longitude (skips geocoding when provided)
-  display_city    str    city label on poster
-  display_country str    country label on poster
-  theme_name      str    maptoposter theme name (default: midnight_blue)
-  theme_json      dict   inline theme override (takes priority over theme_name)
-  dist            int    map radius in metres (default: 15000)
-  width_in        float  poster width in inches  (default: 12.0)
-  height_in       float  poster height in inches (default: 16.0)
-  dpi             int    output DPI (default: 400)
-  show_text       bool   render city/country/coords text (default: True)
-  full_bleed      bool   fill canvas edge-to-edge (default: True)
-  no_fade         bool   skip gradient fades (default: True)
-  minor_roads     bool   include minor roads (default: False)
-  output_path     str    write PNG to file instead of stdout
+Outputs:
+  PNG bytes on stdout (stdout is binary; log messages go to stderr).
 """
 
-import sys
 import json
+import math
 import os
-import io
-import pickle
-import time
+import sys
+from pathlib import Path
 
-# ── Headless matplotlib — MUST be set before any pyplot import ─────────────
 import matplotlib
-matplotlib.use('Agg')
-import matplotlib.colors as mcolors
+matplotlib.use('Agg')   # headless, no Xvfb required
 import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
-from geopy.geocoders import Nominatim
-from matplotlib.font_manager import FontProperties
+from matplotlib.patches import Rectangle
+from PIL import Image, ImageFilter
+import io
 
-# ── Silence noisy osmnx / shapely logs ─────────────────────────────────────
-import logging
-logging.getLogger('osmnx').setLevel(logging.WARNING)
-
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
-THEMES_DIR    = os.path.join(SCRIPT_DIR, 'themes')
-FONTS_DIR     = os.path.join(SCRIPT_DIR, 'fonts')
-CACHE_DIR     = os.environ.get('CACHE_DIR', '/tmp/mapvibe-osm-cache')
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-# ── Cache helpers ────────────────────────────────────────────────────────────
-
-def _cache_path(key: str) -> str:
-    safe = key.replace(os.sep, '_').replace('/', '_')
-    return os.path.join(CACHE_DIR, f'{safe}.pkl')
-
-def cache_get(key: str):
-    path = _cache_path(key)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, 'rb') as f:
-            return pickle.load(f)
-    except Exception:
-        return None
-
-def cache_set(key: str, value):
-    path = _cache_path(key)
-    try:
-        with open(path, 'wb') as f:
-            pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception:
+# ---------------------------------------------------------------------------
+# Optional font discovery (font_management.py, shipped alongside this script)
+# ---------------------------------------------------------------------------
+try:
+    from font_management import ensure_fonts_loaded   # type: ignore
+except ImportError:
+    def ensure_fonts_loaded():
         pass
 
-# ── Theme loading ─────────────────────────────────────────────────────────────
 
-_TERRACOTTA_DEFAULT = {
-    "name": "Terracotta",
-    "bg": "#F5EDE4", "text": "#8B4513", "gradient_color": "#F5EDE4",
-    "water": "#A8C4C4", "parks": "#E8E0D0",
-    "road_motorway": "#A0522D", "road_primary": "#B8653A",
-    "road_secondary": "#C9846A", "road_tertiary": "#D9A08A",
-    "road_residential": "#E5C4B0", "road_default": "#D9A08A",
+_SCRIPT_DIR = Path(__file__).parent
+
+
+def _log(msg: str) -> None:
+    """Write a timestamped log line to stderr."""
+    import datetime
+    ts = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+    print(f'[render {ts}] {msg}', file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Road-type taxonomy (matches the OSMnx highway tag values)
+# ---------------------------------------------------------------------------
+_MINOR_ROAD_TYPES = {
+    'residential', 'living_street', 'unclassified',
+    'service', 'pedestrian', 'footway', 'path',
+    'cycleway', 'track', 'steps', 'construction',
 }
 
-def load_theme(theme_name: str = 'midnight_blue') -> dict:
-    theme_file = os.path.join(THEMES_DIR, f'{theme_name}.json')
-    if os.path.exists(theme_file):
-        with open(theme_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    _log(f'Theme {theme_name!r} not found; using terracotta fallback')
-    return _TERRACOTTA_DEFAULT.copy()
-
-# ── Script detection ──────────────────────────────────────────────────────────
-
-def is_latin_script(text: str) -> bool:
-    if not text:
-        return True
-    total_alpha = sum(1 for c in text if c.isalpha())
-    if total_alpha == 0:
-        return True
-    latin_count = sum(1 for c in text if c.isalpha() and ord(c) < 0x250)
-    return (latin_count / total_alpha) > 0.8
-
-# ── Road helpers ──────────────────────────────────────────────────────────────
-
-_MINOR_ROAD_TYPES = frozenset({
-    'residential', 'living_street', 'unclassified',
-    'service', 'track', 'path', 'footway', 'cycleway',
-    'pedestrian', 'steps',
-})
-
-def _highway(data: dict) -> str:
-    hw = data.get('highway', 'unclassified')
-    if isinstance(hw, list):
-        hw = hw[0] if hw else 'unclassified'
-    return hw
 
 def get_edge_colors(g, theme: dict, minor_roads: bool) -> list:
+    """Return a colour per edge matching the theme palette."""
     colors = []
-    for _u, _v, data in g.edges(data=True):
-        hw = _highway(data)
+    for _, _, data in g.edges(data=True):
+        hw = data.get('highway', '')
+        if isinstance(hw, list):
+            hw = hw[0]
         if not minor_roads and hw in _MINOR_ROAD_TYPES:
-            colors.append('#00000000')
-            continue
-        if hw in ('motorway', 'motorway_link'):
-            colors.append(theme['road_motorway'])
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            colors.append(theme['road_primary'])
+            colors.append('#00000000')   # fully transparent
+        elif hw in ('motorway', 'motorway_link'):
+            colors.append(theme.get('road_motorway', theme.get('text', '#C9A96E')))
+        elif hw in ('trunk', 'trunk_link'):
+            colors.append(theme.get('road_motorway', theme.get('text', '#C9A96E')))
+        elif hw in ('primary', 'primary_link'):
+            colors.append(theme.get('road_primary', theme.get('text', '#C9A96E')))
         elif hw in ('secondary', 'secondary_link'):
-            colors.append(theme['road_secondary'])
+            colors.append(theme.get('road_secondary', theme.get('text', '#C9A96E')))
         elif hw in ('tertiary', 'tertiary_link'):
-            colors.append(theme['road_tertiary'])
+            colors.append(theme.get('road_tertiary', theme.get('text', '#C9A96E')))
+        elif hw == 'residential':
+            colors.append(theme.get('road_residential', theme.get('text', '#C9A96E')))
         else:
-            colors.append(theme.get('road_residential', theme.get('road_default', '#888888')))
+            colors.append(theme.get('road_default', theme.get('text', '#C9A96E')))
     return colors
 
+
 def get_edge_widths(g, minor_roads: bool) -> list:
+    """Return a line-width per edge."""
     widths = []
-    for _u, _v, data in g.edges(data=True):
-        hw = _highway(data)
+    for _, _, data in g.edges(data=True):
+        hw = data.get('highway', '')
+        if isinstance(hw, list):
+            hw = hw[0]
         if not minor_roads and hw in _MINOR_ROAD_TYPES:
-            widths.append(0.0)
-            continue
-        if hw in ('motorway', 'motorway_link'):
-            widths.append(1.2)
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            widths.append(1.0)
+            widths.append(0)
+        elif hw in ('motorway', 'motorway_link', 'trunk', 'trunk_link'):
+            widths.append(2.0)
+        elif hw in ('primary', 'primary_link'):
+            widths.append(1.5)
         elif hw in ('secondary', 'secondary_link'):
-            widths.append(0.8)
+            widths.append(1.2)
         elif hw in ('tertiary', 'tertiary_link'):
-            widths.append(0.6)
+            widths.append(1.0)
         else:
-            widths.append(0.4)
+            widths.append(0.7)
     return widths
 
-# ── Gradient fade ─────────────────────────────────────────────────────────────
 
-def create_gradient_fade(ax, color: str, location: str = 'bottom', zorder: int = 10):
-    vals = np.linspace(0, 1, 256).reshape(-1, 1)
-    gradient = np.hstack((vals, vals))
-    rgb = mcolors.to_rgb(color)
-    my_colors = np.zeros((256, 4))
-    my_colors[:, 0] = rgb[0]
-    my_colors[:, 1] = rgb[1]
-    my_colors[:, 2] = rgb[2]
-    if location == 'bottom':
-        my_colors[:, 3] = np.linspace(1, 0, 256)
-        ys, ye = 0, 0.25
-    else:
-        my_colors[:, 3] = np.linspace(0, 1, 256)
-        ys, ye = 0.75, 1.0
-    cmap = mcolors.ListedColormap(my_colors)
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    yr = ylim[1] - ylim[0]
-    ax.imshow(gradient,
-              extent=[xlim[0], xlim[1], ylim[0] + yr * ys, ylim[0] + yr * ye],
-              aspect='auto', cmap=cmap, zorder=zorder, origin='lower')
+def load_theme(theme_slug: str) -> dict:
+    """Load a colour theme from python/themes/<slug>.json."""
+    theme_path = _SCRIPT_DIR / 'themes' / f'{theme_slug}.json'
+    if not theme_path.exists():
+        raise FileNotFoundError(f'Theme file not found: {theme_path}')
+    with open(theme_path) as f:
+        return json.load(f)
 
-# ── Crop limits ───────────────────────────────────────────────────────────────
 
-def get_crop_limits(g_proj, point: tuple, fig, dist: int):
+def get_crop_limits(
+    x_center: float,
+    y_center: float,
+    crop_dist: float,
+    fig_aspect: float,
+) -> tuple[float, float, float, float]:
     """
-    Compute matplotlib axis limits centered on the user-supplied geographic
-    point. Returns (xlim, ylim) in the projected graph's CRS units (metres
-    for the UTM projections OSMnx picks by default).
-
-    point is (lat, lng) — WGS84 degrees.
-    g_proj is a *projected* graph: its node x/y are large metre values, not
-    lat/lng. Earlier code called
-        ox.distance.nearest_nodes(g_proj, point[1], point[0])
-    which passed degree-scale numbers (e.g. (-77, 39)) into a metre-scale
-    graph (e.g. (323420, 4307180)). nearest_nodes therefore returned the
-    node with the smallest cartesian distance to (-77, 39) — effectively a
-    random node near the projection origin, several kilometres away from
-    the user's actual location. That offset is why preview renders looked
-    drifted (cluster in the upper-half of the figure instead of centred).
-
-    Fix: project (lat, lng) into the graph's CRS first, then use those
-    coordinates directly as the centre. No need to snap to a graph node —
-    matplotlib's xlim/ylim accept any float and the crop is purely a view
-    decision, not a data lookup.
+    Return (xmin, xmax, ymin, ymax) axis limits so that the visible
+    rectangle has half-width = crop_dist and half-height = crop_dist *
+    fig_aspect (in projected metres).
     """
-    cx = cy = None
-    try:
-        from shapely.geometry import Point as _Point
-        graph_crs = g_proj.graph.get('crs', 'EPSG:4326')
-        # shapely Point uses (x, y) ⇒ (lng, lat) in WGS84.
-        pt_proj, _ = ox.projection.project_geometry(
-            _Point(point[1], point[0]),
-            crs='EPSG:4326',
-            to_crs=graph_crs,
+    hw = crop_dist
+    hh = crop_dist * fig_aspect
+    return x_center - hw, x_center + hw, y_center - hh, y_center + hh
+
+
+def apply_fade(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    bg_color: str,
+    strength: float = 0.55,
+    radius: float = 0.5,
+) -> None:
+    """
+    Draw a radial-gradient vignette over the figure in bg_color so roads
+    near the edges fade to the background colour.
+    """
+    # Render current figure to a numpy array
+    fig.canvas.draw()
+    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    w_px = int(fig.get_figwidth()  * fig.dpi)
+    h_px = int(fig.get_figheight() * fig.dpi)
+    buf = buf.reshape(h_px, w_px, 3)
+
+    # Build a radial alpha mask (0 = transparent, 1 = fully bg)
+    xs = np.linspace(-1, 1, w_px)
+    ys = np.linspace(-1, 1, h_px)
+    xx, yy = np.meshgrid(xs, ys)
+    dist_map = np.sqrt(xx ** 2 + yy ** 2)
+    alpha = np.clip((dist_map - radius) / (1.0 - radius), 0, 1) * strength
+
+    # Parse the bg hex color
+    bg_hex = bg_color.lstrip('#')
+    bg_rgb = tuple(int(bg_hex[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
+    # Overlay
+    ax.imshow(
+        np.dstack([np.full((h_px, w_px), int(bg_rgb[c] * 255), dtype=np.uint8) for c in range(3)]
+                  + [np.clip(alpha * 255, 0, 255).astype(np.uint8)]),
+        extent=ax.get_xlim() + ax.get_ylim(),
+        aspect='auto',
+        zorder=5,
+        interpolation='bilinear',
+        transform=ax.transData,
+    )
+
+
+def render_text(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    city: str,
+    state: str,
+    theme: dict,
+    text_layout: str,
+    dpi: float,
+    width_in: float,
+    height_in: float,
+) -> None:
+    """
+    Draw city + state text over the map in the appropriate position and
+    font sizes, scaled to the poster dimensions.
+    """
+    ensure_fonts_loaded()
+
+    text_color = theme.get('text', '#C9A96E')
+    bg_color   = theme.get('bg',   '#1B2A4A')
+
+    # Base font sizes (pt) — calibrated for a 12x18-inch poster at 400 DPI.
+    base_city_pt  = 48.0
+    base_state_pt = 24.0
+    scale = min(width_in, height_in) / 12.0
+    city_pt  = base_city_pt  * scale
+    state_pt = base_state_pt * scale
+
+    if text_layout == 'bottom':
+        city_y,  city_va  = 0.08, 'bottom'
+        state_y, state_va = 0.04, 'bottom'
+    else:   # centered
+        city_y,  city_va  = 0.50, 'center'
+        state_y, state_va = 0.40, 'center'
+
+    # City name (Playfair Display-style serif)
+    ax.text(
+        0.5, city_y, city.upper(),
+        transform=ax.transAxes,
+        ha='center', va=city_va,
+        fontsize=city_pt,
+        color=text_color,
+        fontweight='bold',
+        zorder=10,
+        clip_on=False,
+    )
+    # State / sub-label (smaller, lighter)
+    if state:
+        ax.text(
+            0.5, state_y, state.upper(),
+            transform=ax.transAxes,
+            ha='center', va=state_va,
+            fontsize=state_pt,
+            color=text_color,
+            fontweight='normal',
+            zorder=10,
+            clip_on=False,
         )
-        cx, cy = float(pt_proj.x), float(pt_proj.y)
-    except Exception as e:
-        _log(f'Projection of crop centre failed: {e}; falling back to node centroid')
 
-    if cx is None or cy is None:
-        # Last-resort fallback: centroid of fetched node coordinates. Always in
-        # the projected CRS already, so at worst we centre on the data mass.
-        xs = [d['x'] for _, d in g_proj.nodes(data=True)]
-        ys = [d['y'] for _, d in g_proj.nodes(data=True)]
-        cx, cy = float(np.mean(xs)), float(np.mean(ys))
-
-    figw, figh = fig.get_size_inches()
-    aspect = figh / figw
-    return (cx - dist, cx + dist), (cy - dist * aspect, cy + dist * aspect)
-
-# ── Geocoding ─────────────────────────────────────────────────────────────────
-
-def get_coordinates(city: str, country: str):
-    key = f'coords_{city.lower()}_{country.lower()}'
-    cached = cache_get(key)
-    if cached:
-        _log(f'Using cached coordinates for {city}, {country}')
-        return cached
-    try:
-        geolocator = Nominatim(user_agent='mapvibe-render/1.0')
-        time.sleep(1)
-        location = geolocator.geocode(f'{city}, {country}')
-        if location:
-            result = (location.latitude, location.longitude)
-            cache_set(key, result)
-            return result
-    except Exception as e:
-        _log(f'Geocoding failed: {e}')
-    return None
-
-# ── Fonts ─────────────────────────────────────────────────────────────────────
-
-def load_fonts():
-    result = {}
-    for variant, filename in [
-        ('bold',    'Roboto-Bold.ttf'),
-        ('regular', 'Roboto-Regular.ttf'),
-        ('light',   'Roboto-Light.ttf'),
-    ]:
-        path = os.path.join(FONTS_DIR, filename)
-        if os.path.exists(path):
-            result[variant] = path
-    return result if len(result) == 3 else {}
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-
-def _log(msg: str):
-    print(f'[mapvibe_render] {msg}', file=sys.stderr, flush=True)
-
-# ── Main render function ──────────────────────────────────────────────────────
 
 def render(params: dict) -> bytes:
-    city            = params.get('city', '')
-    country         = params.get('country', '')
-    lat             = params.get('lat')
-    lng             = params.get('lng')
-    display_city    = params.get('display_city') or city
-    display_country = params.get('display_country') or country
-    theme_name      = params.get('theme_name', 'midnight_blue')
-    theme_override  = params.get('theme_json')
-    dist            = int(params.get('dist', 15000))
-    width_in        = float(params.get('width_in', 12.0))
-    height_in       = float(params.get('height_in', 16.0))
-    dpi             = int(params.get('dpi', 400))
-    show_text       = bool(params.get('show_text', True))
-    full_bleed      = bool(params.get('full_bleed', True))
-    no_fade         = bool(params.get('no_fade', True))
-    minor_roads     = bool(params.get('minor_roads', False))
-    network_type    = params.get('network_type', 'drive')
-    # crop_dist — optional override for the matplotlib axis half-extent.
-    # Default (None) keeps the legacy behaviour: get_crop_limits is called
-    # with `dist`, which is the original /fulfill contract.
-    # /render passes crop_dist=userOsmDist so the visible axes equal the
-    # circle OSMnx actually fetched — without this override the road graph
-    # appears as a tiny cluster in a sea of background colour because
-    # comp_dist = dist*(max/min)/4 is always 3-4× smaller than dist.
-    crop_dist_param = params.get('crop_dist')
+    """
+    Core render function. Accepts a parameter dict and returns PNG bytes.
+    """
+    # ------------------------------------------------------------------
+    # Extract parameters
+    # ------------------------------------------------------------------
+    lat           = float(params['lat'])
+    lng           = float(params['lng'])
+    width_mm      = float(params.get('width_mm',  457.2))  # default 18 in
+    height_mm     = float(params.get('height_mm', 609.6))  # default 24 in
+    dpi           = float(params.get('dpi',       400))
+    city          = str(params.get('city',        ''))
+    state         = str(params.get('state',       ''))
+    dist          = float(params.get('dist',      3000))
+    crop_dist     = float(params.get('crop_dist', dist))
+    minor_roads   = bool(params.get('minor_roads', False))
+    full_bleed    = bool(params.get('full_bleed',  False))
+    no_fade       = bool(params.get('no_fade',     False))
+    text_layout   = str(params.get('text_layout',  'centered'))
+    network_type  = str(params.get('network_type', 'drive'))
 
-    # ── 1. Resolve coordinates ───────────────────────────────────────────────
-    point = None
-    if lat is not None and lng is not None:
-        point = (float(lat), float(lng))
-    if point is None and city and country:
-        point = get_coordinates(city, country)
-    if point is None:
-        raise ValueError(f'Cannot resolve coordinates for city={city!r}, country={country!r}')
+    # Theme: explicit dict takes precedence over slug
+    theme_json_raw = params.get('theme_json')
+    theme_slug     = str(params.get('theme', 'vintage_noir'))
+    if theme_json_raw:
+        theme = theme_json_raw if isinstance(theme_json_raw, dict) else json.loads(theme_json_raw)
+    else:
+        theme = load_theme(theme_slug)
 
-    _log(f'{display_city}, {display_country} @ {point[0]:.4f},{point[1]:.4f}  '
-         f'dist={dist}m  {width_in}×{height_in}in  {dpi}DPI  '
-         f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}')
+    bg_color   = theme.get('bg',   '#1B2A4A')
+    text_color = theme.get('text', '#C9A96E')
 
-    # ── 2. Load theme ────────────────────────────────────────────────────────
-    theme = theme_override if isinstance(theme_override, dict) else load_theme(theme_name)
+    _log(
+        f'Rendering {city!r} {width_mm:.0f}x{height_mm:.0f}mm @{dpi:.0f}dpi '
+        f'theme={theme_slug}  dist={dist}  crop_dist={crop_dist}  '
+        f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}'
+    )
 
-    # ── 3. Fetch OSM data ────────────────────────────────────────────────────
-    # Compensated dist ensures the map fills poster aspect ratio without clipping
+    # ------------------------------------------------------------------
+    # Dimensions
+    # ------------------------------------------------------------------
+    MM_PER_INCH = 25.4
+    width_in  = width_mm  / MM_PER_INCH
+    height_in = height_mm / MM_PER_INCH
+
+    # comp_dist: OSMnx fetch radius.  The axis window is square in the fetch
+    # call but the figure is rectangular, so we over-fetch by the aspect ratio
+    # so road data fills the longer dimension.
     comp_dist = dist * (max(height_in, width_in) / min(height_in, width_in)) / 4
 
     _log('Fetching street network...')
-    g = ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
+    if minor_roads:
+        # Full drive network — residential/service/etc. are drawn.
+        g = ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
+    else:
+        # We hide every minor road at draw time anyway (get_edge_colors paints
+        # residential / service / footway / etc. fully transparent), yet the
+        # default 'drive' network still *downloads* them — and they are the
+        # bulk of edges in a dense metro. Fetching the full network is what
+        # made wide-radius requests time out (hence the studio's former 5 km
+        # cap). Restrict the Overpass query to the exact classes we render
+        # (motorway/trunk/primary/secondary/tertiary, links included via the
+        # regex) so a 15-20 km poster fetches roughly what an old 5 km drive
+        # fetch did. Purely a fetch optimisation — zero visual change, since
+        # these are precisely the edges get_edge_colors keeps opaque.
+        major_roads_filter = '["highway"~"motorway|trunk|primary|secondary|tertiary"]'
+        g = ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
     if g is None or len(g.nodes) == 0:
         raise RuntimeError('Failed to retrieve street network data.')
 
-    _log('Fetching water features...')
-    try:
-        water = ox.features_from_point(
-            point,
-            tags={'natural': ['water', 'bay', 'strait'], 'waterway': 'riverbank'},
-            dist=comp_dist,
-        )
-    except Exception as e:
-        _log(f'Water fetch skipped: {e}')
-        water = None
+    _log(f'Graph: {len(g.nodes)} nodes, {len(g.edges)} edges')
 
-    _log('Fetching parks...')
-    try:
-        parks = ox.features_from_point(
-            point,
-            tags={'leisure': 'park', 'landuse': 'grass'},
-            dist=comp_dist,
-        )
-    except Exception as e:
-        _log(f'Parks fetch skipped: {e}')
-        parks = None
-
-    # ── 4. Setup figure ──────────────────────────────────────────────────────
-    _log('Rendering figure...')
-    fig, ax = plt.subplots(figsize=(width_in, height_in), facecolor=theme['bg'])
-    ax.set_facecolor(theme['bg'])
-    ax.set_position((0.0, 0.0, 1.0, 1.0))
-    if full_bleed:
-        fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-
-    # ── 5. Project graph ─────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Project to metres
+    # ------------------------------------------------------------------
     g_proj = ox.project_graph(g)
 
-    # ── 6. Water layer ───────────────────────────────────────────────────────
-    if water is not None and not water.empty:
-        water_polys = water[water.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-        if not water_polys.empty:
-            try:
-                water_polys = ox.projection.project_gdf(water_polys)
-            except Exception:
-                water_polys = water_polys.to_crs(g_proj.graph['crs'])
-            water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
+    nodes_proj, _ = ox.graph_to_gdfs(g_proj)
+    x_center = nodes_proj.geometry.x.mean()
+    y_center = nodes_proj.geometry.y.mean()
 
-    # ── 7. Parks layer ───────────────────────────────────────────────────────
-    if parks is not None and not parks.empty:
-        parks_polys = parks[parks.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-        if not parks_polys.empty:
-            try:
-                parks_polys = ox.projection.project_gdf(parks_polys)
-            except Exception:
-                parks_polys = parks_polys.to_crs(g_proj.graph['crs'])
-            parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
+    # ------------------------------------------------------------------
+    # Figure setup
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(width_in, height_in), dpi=dpi)
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
+    ax.set_axis_off()
 
-    # ── 8. Roads ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Edge colours / widths
+    # ------------------------------------------------------------------
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
     edge_widths = get_edge_widths(g_proj, minor_roads)
-    # crop_dist override lets the caller (server.ts /render) align the visible
-    # axes with the actual fetch radius (comp_dist), eliminating the empty
-    # background area around the road graph on tight-bounds previews.
-    effective_crop_dist = int(crop_dist_param) if crop_dist_param is not None else dist
-    crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
 
     ox.plot_graph(
-        g_proj, ax=ax,
-        bgcolor=theme['bg'],
-        node_size=0,
+        g_proj,
+        ax=ax,
         edge_color=edge_colors,
         edge_linewidth=edge_widths,
+        node_size=0,
+        bgcolor=bg_color,
         show=False,
         close=False,
     )
-    ax.set_aspect('equal', adjustable='box')
-    ax.set_xlim(crop_xlim)
-    ax.set_ylim(crop_ylim)
 
-    # Re-assert full-bleed position after plot_graph may have adjusted it
-    if full_bleed:
-        ax.set_position((0.0, 0.0, 1.0, 1.0))
+    # ------------------------------------------------------------------
+    # Crop
+    # ------------------------------------------------------------------
+    fig_aspect = height_in / width_in
+    xmin, xmax, ymin, ymax = get_crop_limits(x_center, y_center, crop_dist, fig_aspect)
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
 
-    # ── 9. Gradient fades (only if not full-bleed / no_fade) ─────────────────
+    # ------------------------------------------------------------------
+    # Optional fade
+    # ------------------------------------------------------------------
     if not no_fade:
-        create_gradient_fade(ax, theme['gradient_color'], location='bottom', zorder=10)
-        create_gradient_fade(ax, theme['gradient_color'], location='top', zorder=10)
+        apply_fade(fig, ax, bg_color)
 
-    # ── 10. Typography ───────────────────────────────────────────────────────
-    if show_text:
-        scale = min(height_in, width_in) / 12.0
-        fonts = load_fonts()
+    # ------------------------------------------------------------------
+    # Text overlay
+    # ------------------------------------------------------------------
+    if city or state:
+        render_text(fig, ax, city, state, theme, text_layout, dpi, width_in, height_in)
 
-        spaced_city = ('  '.join(list(display_city.upper()))
-                       if is_latin_script(display_city)
-                       else display_city)
-
-        base_main = 60 * scale
-        n_chars = len(display_city)
-        adjusted_size = (max(base_main * (10 / n_chars), 10 * scale)
-                         if n_chars > 10 else base_main)
-
-        def fp(key, size):
-            if fonts:
-                return FontProperties(fname=fonts[key], size=size)
-            family = 'serif' if key == 'bold' else ('monospace' if key == 'regular' else 'sans-serif')
-            weight = 'bold' if key == 'bold' else 'normal'
-            return FontProperties(family=family, weight=weight, size=size)
-
-        ax.text(0.5, 0.14, spaced_city,
-                transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('bold', adjusted_size), zorder=11)
-
-        ax.text(0.5, 0.10, display_country.upper(),
-                transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('light', 22 * scale), zorder=11)
-
-        lat_v, lon_v = point
-        hem_ns = 'N' if lat_v >= 0 else 'S'
-        hem_ew = 'E' if lon_v >= 0 else 'W'
-        coords_str = f'{abs(lat_v):.4f}° {hem_ns} / {abs(lon_v):.4f}° {hem_ew}'
-
-        ax.text(0.5, 0.07, coords_str,
-                transform=ax.transAxes, color=theme['text'], alpha=0.7,
-                ha='center', fontproperties=fp('regular', 14 * scale), zorder=11)
-
-        ax.plot([0.4, 0.6], [0.125, 0.125],
-                transform=ax.transAxes,
-                color=theme['text'], linewidth=1 * scale, zorder=11)
-
-        ax.text(0.98, 0.02, '© OpenStreetMap contributors',
-                transform=ax.transAxes, color=theme['text'], alpha=0.5,
-                ha='right', va='bottom', fontproperties=fp('light', 8), zorder=11)
-
-    # ── 11. Save to buffer ───────────────────────────────────────────────────
+    # ------------------------------------------------------------------
+    # Export to PNG bytes
+    # ------------------------------------------------------------------
     buf = io.BytesIO()
-    save_kwargs: dict = {'facecolor': theme['bg'], 'dpi': dpi}
-
-    if full_bleed:
-        # bbox_inches=None skips tight-layout and honours our subplots_adjust(0,0,1,1)
-        save_kwargs['bbox_inches'] = None
-    else:
-        save_kwargs['bbox_inches'] = 'tight'
-        save_kwargs['pad_inches'] = 0.05
-
-    fig.savefig(buf, format='png', **save_kwargs)
+    plt.savefig(
+        buf,
+        format='png',
+        dpi=dpi,
+        bbox_inches='tight',
+        pad_inches=0,
+        facecolor=bg_color,
+    )
     plt.close(fig)
-
     buf.seek(0)
-    data = buf.read()
-    _log(f'Done — {len(data):,} bytes ({dpi} DPI, {width_in}×{height_in}in)')
-    return data
+    _log('Render complete.')
+    return buf.read()
 
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    try:
-        raw = sys.stdin.read()
-        params = json.loads(raw)
-        png_bytes = render(params)
-        output_path = params.get('output_path')
-        if output_path:
-            with open(output_path, 'wb') as f:
-                f.write(png_bytes)
-            print(json.dumps({'success': True, 'path': output_path, 'size': len(png_bytes)}))
-        else:
-            sys.stdout.buffer.write(png_bytes)
-    except Exception as exc:
-        _log(f'FATAL: {exc}')
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        print(json.dumps({'success': False, 'error': str(exc)}))
-        sys.exit(1)
+    params = json.loads(sys.stdin.read())
+    png_bytes = render(params)
+    sys.stdout.buffer.write(png_bytes)
