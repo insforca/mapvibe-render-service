@@ -435,7 +435,17 @@ def render(params: dict) -> bytes:
         scale = min(height_in, width_in) / 12.0
         fonts = load_fonts()
 
-        spaced_city = ('  '.join(list(display_city.upper()))
+        # City label — single-space join for letter-spacing parity with the
+        # studio editor. Original maptoposter aesthetic used '  '.join (two
+        # spaces) which roughly doubles the rendered width; the editor moved
+        # to CSS letter-spacing: 0.45em on .mvs-poster-city (studio PR #154
+        # — "Removes Array.from().join('  ') that tripled string length and
+        # clipped names"). matplotlib has no letter-spacing primitive, so
+        # ' '.join is the closest visual match: WAS HING TON stays wide-
+        # tracked but no longer overflows the poster on 10-char names like
+        # WASHINGTON. Non-Latin scripts (Cyrillic, CJK) keep their natural
+        # glyph spacing, also matching the editor's isLatinScript guard.
+        spaced_city = (' '.join(list(display_city.upper()))
                        if is_latin_script(display_city)
                        else display_city)
 
