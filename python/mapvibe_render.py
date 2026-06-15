@@ -350,21 +350,19 @@ def render(params: dict) -> bytes:
     # Compensated dist ensures the map fills poster aspect ratio without clipping
     comp_dist = dist * (max(height_in, width_in) / min(height_in, width_in)) / 4
 
-    _log('Fetching street network...')
-    if minor_roads:
-        # Full drive network — residential/service/etc. are drawn.
-        g = ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
-    else:
-        # We hide every minor road at draw time anyway (get_edge_colors paints
-        # residential / service / footway / etc. fully transparent), yet the
-        # default 'drive' network still *downloads* them — and they are the
-        # bulk of edges in a dense metro. Fetching the full network is what
-        # made wide-radius requests time out (hence the studio's former 5 km
-        # cap). Restrict the Overpass query to the exact classes we render
-        # (motorway/trunk/primary/secondary/tertiary, links included via the
-        # regex) so a 15-20 km poster fetches roughly what an old 5 km drive
-        # fetch did. Purely a fetch optimisation — zero visual change, since
-        # these are precisely the edges get_edge_colors keeps opaque.
+    # The street / water / parks fetches are three independent Overpass round
+    # trips. They were issued sequentially (streets → water → parks), so the
+    # render waited on the *sum* of three network latencies (~8-12 s on a busy
+    # Overpass mirror). They share no state, and OSMnx's underlying requests
+    # release the GIL during socket I/O, so a ThreadPoolExecutor genuinely
+    # overlaps them — the render now waits on the *max* of the three (~4-6 s).
+    # Pure latency win, identical output.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_streets():
+        if minor_roads:
+            # Full drive network — residential/service/etc. are drawn.
+            return ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
         # Clean mode draws only motorway / trunk / primary (matches editor's
         # roadDetailMode='arteries' which hides road-secondary, road-minor-mid
         # and road-minor-low). Anything below the arterial tier is painted
@@ -372,31 +370,44 @@ def render(params: dict) -> bytes:
         # the Overpass bandwidth by not downloading them in the first place.
         # The regex matches *_link suffixes for free (no anchors).
         major_roads_filter = '["highway"~"motorway|trunk|primary"]'
-        g = ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
+        return ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
+
+    def _fetch_water():
+        try:
+            return ox.features_from_point(
+                point,
+                tags={'natural': ['water', 'bay', 'strait'], 'waterway': 'riverbank'},
+                dist=comp_dist,
+            )
+        except Exception as e:
+            _log(f'Water fetch skipped: {e}')
+            return None
+
+    def _fetch_parks():
+        try:
+            return ox.features_from_point(
+                point,
+                tags={'leisure': 'park', 'landuse': 'grass'},
+                dist=comp_dist,
+            )
+        except Exception as e:
+            _log(f'Parks fetch skipped: {e}')
+            return None
+
+    _log('Fetching street network + water + parks (parallel)...')
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_streets = pool.submit(_fetch_streets)
+        f_water   = pool.submit(_fetch_water)
+        f_parks   = pool.submit(_fetch_parks)
+        # Streets are mandatory — let any exception propagate (fails the render
+        # exactly as the old sequential code did). Water / parks already
+        # swallow their own errors and return None.
+        g     = f_streets.result()
+        water = f_water.result()
+        parks = f_parks.result()
+
     if g is None or len(g.nodes) == 0:
         raise RuntimeError('Failed to retrieve street network data.')
-
-    _log('Fetching water features...')
-    try:
-        water = ox.features_from_point(
-            point,
-            tags={'natural': ['water', 'bay', 'strait'], 'waterway': 'riverbank'},
-            dist=comp_dist,
-        )
-    except Exception as e:
-        _log(f'Water fetch skipped: {e}')
-        water = None
-
-    _log('Fetching parks...')
-    try:
-        parks = ox.features_from_point(
-            point,
-            tags={'leisure': 'park', 'landuse': 'grass'},
-            dist=comp_dist,
-        )
-    except Exception as e:
-        _log(f'Parks fetch skipped: {e}')
-        parks = None
 
     # ── 4. Setup figure ──────────────────────────────────────────────────────
     _log('Rendering figure...')
