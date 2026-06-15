@@ -38,6 +38,7 @@ import os
 import io
 import pickle
 import time
+import hashlib
 
 # ── Headless matplotlib — MUST be set before any pyplot import ─────────────
 import matplotlib
@@ -82,6 +83,111 @@ def cache_set(key: str, value):
             pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
         pass
+
+# ── Graph cache (TTL + LRU eviction) ─────────────────────────────────────────
+# OSMnx fetches (street network, water polygons, parks) are the dominant time
+# cost of a render — even parallelised they're ~4-6 s of Overpass round trips
+# per render. Caching them by quantized (lat, lng, dist, filter) reduces a hot
+# re-render (theme swap, frame change, pan-back) to essentially the matplotlib
+# draw cost (~1-3 s).
+#
+# Design:
+#   - Storage: pickle to /tmp/mapvibe-osm-cache/ (same dir as the geocode
+#     cache). Ephemeral per Railway container, which is fine — cache rebuilds
+#     on demand and a cold start just means the first render of each location
+#     pays the full Overpass cost.
+#   - TTL: 7 days. OSM updates daily but a poster of a city centre is
+#     insensitive to a new sidewalk. Anything older than the TTL is treated
+#     as a miss and overwritten.
+#   - Disk budget: 512 MB hard cap. Each cached graph is a few MB; budget
+#     comfortably holds ~50-100 cities. LRU eviction by mtime when over.
+#   - Quantization: lat/lng to 4 decimals (~11 m), comp_dist rounded UP to
+#     the nearest 1 km so adjacent requests share entries. CRUCIAL: fetches
+#     ALWAYS use the quantized (rounded-up) radius so the cached value is
+#     guaranteed to cover any later request that maps to the same bucket.
+#     A smaller real comp_dist served from a larger cached fetch is safe —
+#     matplotlib crops to the requested view.
+_GRAPH_CACHE_TTL_S      = 7 * 24 * 3600          # 7 days
+_GRAPH_CACHE_MAX_BYTES  = 512 * 1024 * 1024      # 512 MB
+
+def _graph_cache_quantize(lat: float, lng: float, comp_dist: float) -> tuple:
+    """Quantize the (lat, lng, comp_dist) tuple for cache key derivation AND
+    for the actual Overpass fetch. Returning both so the caller fetches at
+    the bucket centre/radius, not the raw values — that's what guarantees
+    cached entries cover their bucket."""
+    qlat = round(lat * 1e4) / 1e4
+    qlng = round(lng * 1e4) / 1e4
+    # Round comp_dist UP to nearest 1 km so we never under-fetch within a bucket.
+    qdist = int(((float(comp_dist) + 999.0) // 1000.0) * 1000.0)
+    return qlat, qlng, qdist
+
+def _graph_cache_key(prefix: str, qlat: float, qlng: float, qdist: int, *extras) -> str:
+    parts = [prefix, f'{qlat:.4f}', f'{qlng:.4f}', str(qdist), *(str(e) for e in extras)]
+    return f'{prefix}_{hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]}'
+
+def graph_cache_get(key: str):
+    """Return the cached value if fresh (within TTL), else None. Treat any
+    pickle / OS error as a miss — never let a bad cache entry break a render."""
+    path = _cache_path(key)
+    try:
+        if not os.path.exists(path):
+            return None
+        if (time.time() - os.path.getmtime(path)) > _GRAPH_CACHE_TTL_S:
+            return None
+        with open(path, 'rb') as f:
+            return pickle.load(f)
+    except Exception as e:
+        _log(f'Graph cache read failed ({key}): {e}')
+        return None
+
+def graph_cache_set(key: str, value) -> None:
+    """Atomically write the entry (tmp + rename) and run an LRU eviction pass
+    so a long-running container can't blow past the disk budget. Never raises —
+    cache failure must not break the render."""
+    path = _cache_path(key)
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'wb') as f:
+            pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except Exception as e:
+        _log(f'Graph cache write failed ({key}): {e}')
+        try: os.unlink(tmp)
+        except Exception: pass
+        return
+    _graph_cache_evict_if_over_budget()
+
+def _graph_cache_evict_if_over_budget() -> None:
+    try:
+        entries = []
+        total = 0
+        for name in os.listdir(CACHE_DIR):
+            p = os.path.join(CACHE_DIR, name)
+            try:
+                st = os.stat(p)
+                entries.append((st.st_mtime, st.st_size, p))
+                total += st.st_size
+            except FileNotFoundError:
+                continue
+        if total <= _GRAPH_CACHE_MAX_BYTES:
+            return
+        # Oldest first — drop until we're back under budget.
+        entries.sort(key=lambda e: e[0])
+        evicted = 0
+        for _mtime, size, p in entries:
+            if total <= _GRAPH_CACHE_MAX_BYTES:
+                break
+            try:
+                os.unlink(p)
+                total -= size
+                evicted += 1
+            except Exception:
+                pass
+        if evicted:
+            _log(f'Graph cache: evicted {evicted} entries (LRU, budget={_GRAPH_CACHE_MAX_BYTES // 1024 // 1024} MB)')
+    except Exception as e:
+        _log(f'Graph cache eviction failed: {e}')
+
 
 # ── Theme loading ─────────────────────────────────────────────────────────────
 
@@ -351,60 +457,100 @@ def render(params: dict) -> bytes:
     comp_dist = dist * (max(height_in, width_in) / min(height_in, width_in)) / 4
 
     # The street / water / parks fetches are three independent Overpass round
-    # trips. They were issued sequentially (streets → water → parks), so the
-    # render waited on the *sum* of three network latencies (~8-12 s on a busy
-    # Overpass mirror). They share no state, and OSMnx's underlying requests
-    # release the GIL during socket I/O, so a ThreadPoolExecutor genuinely
-    # overlaps them — the render now waits on the *max* of the three (~4-6 s).
-    # Pure latency win, identical output.
+    # trips. Previously they ran sequentially (sum of three latencies ≈ 8-12 s
+    # on a busy Overpass mirror — the single largest chunk of the ~20 s preview
+    # render). They share no state and OSMnx's `requests` calls release the
+    # GIL during socket I/O, so a 3-worker ThreadPoolExecutor genuinely
+    # overlaps them; the render now waits on the MAX of the three (~4-6 s).
+    #
+    # On top of that, each fetch consults the on-disk graph cache (TTL 7 days,
+    # LRU-bounded 512 MB). A repeat render of the same location — theme swap,
+    # frame change, pan-back — skips Overpass entirely and goes straight to
+    # matplotlib, taking total render time to ~1-3 s. The cache key is
+    # quantized (lat/lng 4dp ≈ 11 m, comp_dist rounded UP to 1 km) and we
+    # ALWAYS fetch at the quantized point / radius so any later request that
+    # maps to the same bucket is guaranteed to be covered. Serving a 4500 m
+    # request from a cached 5000 m fetch is safe — matplotlib crops the view.
     from concurrent.futures import ThreadPoolExecutor
 
+    qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], comp_dist)
+    qpoint             = (qlat, qlng)
+    cache_hits         = {"streets": False, "water": False, "parks": False}
+
     def _fetch_streets():
+        # Streets are the only fetch whose filter depends on minor_roads, so
+        # the key carries that bit — Clean vs Detailed get separate entries.
+        filter_tag = 'minor' if minor_roads else 'major'
+        key = _graph_cache_key('streets', qlat, qlng, qdist, filter_tag, network_type)
+        cached = graph_cache_get(key)
+        if cached is not None:
+            cache_hits['streets'] = True
+            return cached
         if minor_roads:
             # Full drive network — residential/service/etc. are drawn.
-            return ox.graph_from_point(point, dist=comp_dist, network_type=network_type)
-        # Clean mode draws only motorway / trunk / primary (matches editor's
-        # roadDetailMode='arteries' which hides road-secondary, road-minor-mid
-        # and road-minor-low). Anything below the arterial tier is painted
-        # transparent in get_edge_colors / get_edge_widths anyway, so we save
-        # the Overpass bandwidth by not downloading them in the first place.
-        # The regex matches *_link suffixes for free (no anchors).
-        major_roads_filter = '["highway"~"motorway|trunk|primary"]'
-        return ox.graph_from_point(point, dist=comp_dist, custom_filter=major_roads_filter)
+            g_ = ox.graph_from_point(qpoint, dist=qdist, network_type=network_type)
+        else:
+            # Clean mode draws only motorway / trunk / primary (matches editor's
+            # roadDetailMode='arteries' which hides road-secondary, road-minor-mid
+            # and road-minor-low). Anything below the arterial tier is painted
+            # transparent in get_edge_colors / get_edge_widths anyway, so we save
+            # the Overpass bandwidth by not downloading them in the first place.
+            # The regex matches *_link suffixes for free (no anchors).
+            major_roads_filter = '["highway"~"motorway|trunk|primary"]'
+            g_ = ox.graph_from_point(qpoint, dist=qdist, custom_filter=major_roads_filter)
+        graph_cache_set(key, g_)
+        return g_
 
     def _fetch_water():
+        key = _graph_cache_key('water', qlat, qlng, qdist)
+        cached = graph_cache_get(key)
+        if cached is not None:
+            cache_hits['water'] = True
+            return cached
         try:
-            return ox.features_from_point(
-                point,
+            gdf = ox.features_from_point(
+                qpoint,
                 tags={'natural': ['water', 'bay', 'strait'], 'waterway': 'riverbank'},
-                dist=comp_dist,
+                dist=qdist,
             )
         except Exception as e:
             _log(f'Water fetch skipped: {e}')
             return None
+        graph_cache_set(key, gdf)
+        return gdf
 
     def _fetch_parks():
+        key = _graph_cache_key('parks', qlat, qlng, qdist)
+        cached = graph_cache_get(key)
+        if cached is not None:
+            cache_hits['parks'] = True
+            return cached
         try:
-            return ox.features_from_point(
-                point,
+            gdf = ox.features_from_point(
+                qpoint,
                 tags={'leisure': 'park', 'landuse': 'grass'},
-                dist=comp_dist,
+                dist=qdist,
             )
         except Exception as e:
             _log(f'Parks fetch skipped: {e}')
             return None
+        graph_cache_set(key, gdf)
+        return gdf
 
-    _log('Fetching street network + water + parks (parallel)...')
+    _log('Fetching streets + water + parks (parallel, cache-aware)...')
+    fetch_start = time.time()
     with ThreadPoolExecutor(max_workers=3) as pool:
         f_streets = pool.submit(_fetch_streets)
         f_water   = pool.submit(_fetch_water)
         f_parks   = pool.submit(_fetch_parks)
-        # Streets are mandatory — let any exception propagate (fails the render
-        # exactly as the old sequential code did). Water / parks already
-        # swallow their own errors and return None.
+        # Streets are mandatory — let any exception propagate (fails the
+        # render exactly as the old sequential code did). Water / parks
+        # already swallow their own errors and return None.
         g     = f_streets.result()
         water = f_water.result()
         parks = f_parks.result()
+    hit_summary = ','.join(f'{k}={"HIT" if v else "miss"}' for k, v in cache_hits.items())
+    _log(f'Fetch phase {time.time() - fetch_start:.1f}s — {hit_summary} (qdist={qdist})')
 
     if g is None or len(g.nodes) == 0:
         raise RuntimeError('Failed to retrieve street network data.')
