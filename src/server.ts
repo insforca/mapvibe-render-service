@@ -1256,13 +1256,26 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   // delivered to the user.
   const clientAbort = new AbortController();
   let clientGone = false;
+  // IMPORTANT: listen on `res`, NOT `req`. `app.use(express.json())` fully
+  // consumes the request body stream before this handler runs, so the
+  // IncomingMessage (`req`) reaches EOF and emits 'close' immediately — a
+  // `req.on('close')` listener fires microseconds after we attach it and
+  // aborts every render at 0s (regression observed 2026-06-15: every
+  // preview "Client disconnected before response — aborting at 0s").
+  //
+  // The ServerResponse (`res`) 'close' event is the correct disconnect
+  // signal: it fires when the response finishes (normal) OR the underlying
+  // socket is torn down before we finish (real disconnect). The
+  // writableEnded guard distinguishes the two — if we've already called
+  // res.end()/res.json(), writableEnded is true and this was a normal close,
+  // so we do nothing.
   const onClientClose = () => {
-    if (res.headersSent) return; // already responded; ignore late close
+    if (res.writableEnded) return; // normal completion — not a disconnect
     clientGone = true;
     console.warn(`[render] Client disconnected before response — aborting${useOsm ? ' OSM render' : ' MapLibre render'}`);
     clientAbort.abort();
   };
-  req.on('close', onClientClose);
+  res.on('close', onClientClose);
 
   console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=${useOsm ? 'osm' : 'maplibre'}${previewMode ? ' previewMode' : ''}`);
   await renderQueue.add(async () => {
@@ -1390,7 +1403,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       // generic phrase.
       if (!res.headersSent) res.status(500).json({ error: 'Render failed', elapsed });
     } finally {
-      req.off('close', onClientClose);
+      res.off('close', onClientClose);
     }
   });
 });
