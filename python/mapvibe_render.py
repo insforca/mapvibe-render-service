@@ -475,7 +475,7 @@ def render(params: dict) -> bytes:
 
     qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], comp_dist)
     qpoint             = (qlat, qlng)
-    cache_hits         = {"streets": False, "water": False, "parks": False}
+    cache_hits         = {"streets": False, "water": False, "parks": False, "rail": False}
 
     def _fetch_streets():
         # Streets are the only fetch whose filter depends on minor_roads, so
@@ -537,18 +537,48 @@ def render(params: dict) -> bytes:
         graph_cache_set(key, gdf)
         return gdf
 
-    _log('Fetching streets + water + parks (parallel, cache-aware)...')
+    def _fetch_rail():
+        # Railway lines (Metro/commuter/freight). Editor's MapLibre style
+        # paints these via theme.map.rail; until this fetch landed they were
+        # invisible in the Python preview (production 2026-06-16: user
+        # noticed the yellow rail corridors around the city missing from
+        # the print preview compared to the editor view).
+        key = _graph_cache_key('rail', qlat, qlng, qdist)
+        cached = graph_cache_get(key)
+        if cached is not None:
+            cache_hits['rail'] = True
+            return cached
+        try:
+            gdf = ox.features_from_point(
+                qpoint,
+                tags={'railway': ['rail', 'light_rail', 'subway', 'tram', 'monorail']},
+                dist=qdist,
+            )
+        except Exception as e:
+            _log(f'Rail fetch skipped: {e}')
+            return None
+        graph_cache_set(key, gdf)
+        return gdf
+
+    _log('Fetching streets + water + parks + rail (parallel, cache-aware)...')
     fetch_start = time.time()
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    # max_workers=4 — one per fetch. OSM-RENDER-PIPELINE.md previously
+    # warned against >3, but rail is a small Overpass query (railway lines
+    # only) and the editor parity gap from skipping it was visible enough
+    # to outweigh the marginal tarpit risk. If we see Overpass 429s in
+    # production this is the first knob to dial back to 3 (rail queued).
+    with ThreadPoolExecutor(max_workers=4) as pool:
         f_streets = pool.submit(_fetch_streets)
         f_water   = pool.submit(_fetch_water)
         f_parks   = pool.submit(_fetch_parks)
+        f_rail    = pool.submit(_fetch_rail)
         # Streets are mandatory — let any exception propagate (fails the
-        # render exactly as the old sequential code did). Water / parks
-        # already swallow their own errors and return None.
+        # render exactly as the old sequential code did). Water / parks /
+        # rail already swallow their own errors and return None.
         g     = f_streets.result()
         water = f_water.result()
         parks = f_parks.result()
+        rail  = f_rail.result()
     hit_summary = ','.join(f'{k}={"HIT" if v else "miss"}' for k, v in cache_hits.items())
     _log(f'Fetch phase {time.time() - fetch_start:.1f}s — {hit_summary} (qdist={qdist})')
 
@@ -585,6 +615,22 @@ def render(params: dict) -> bytes:
             except Exception:
                 parks_polys = parks_polys.to_crs(g_proj.graph['crs'])
             parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
+
+    # ── 7b. Rail layer ───────────────────────────────────────────────────────
+    # Drawn ABOVE parks (zorder 0.9) but BELOW roads (zorder 1+) so road
+    # overpasses cleanly cover rail crossings. Falls back to road_default
+    # when the theme didn't include a 'rail' key (older themes, or callers
+    # that haven't been updated to forward railColor) — keeps rail visible
+    # in some form instead of crashing on KeyError.
+    if rail is not None and not rail.empty:
+        rail_lines = rail[rail.geometry.type.isin(['LineString', 'MultiLineString'])]
+        if not rail_lines.empty:
+            try:
+                rail_lines = ox.projection.project_gdf(rail_lines)
+            except Exception:
+                rail_lines = rail_lines.to_crs(g_proj.graph['crs'])
+            rail_color = theme.get('rail', theme.get('road_default', theme['text']))
+            rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
     # ── 8. Roads ─────────────────────────────────────────────────────────────
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
