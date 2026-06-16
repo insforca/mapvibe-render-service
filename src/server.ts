@@ -872,8 +872,6 @@ async function renderOsmPython(params: OsmRenderParams, signal?: AbortSignal): P
   return await new Promise<Buffer>((resolve, reject) => {
     const child = spawn(MAPVIBE_PYTHON, [OSM_SCRIPT], { timeout: 300_000 });
 
-    // Collect stderr for diagnostic logging; stdout is just a JSON ack since
-    // the PNG is written to `tmpFile` via output_path.
     // Collect stderr for diagnostic logging AND forward it to the parent
     // process's stderr in real time. The earlier version only kept stderrBuf
     // for the failure path (lines 926 / 930). On the success path, the entire
