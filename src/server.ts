@@ -1660,5 +1660,121 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   })();
 });
 
+
+// ── OSM graph pre-warm endpoint ───────────────────────────────────────────────
+// Called by the studio the moment a city is selected (fire-and-forget from the
+// browser). Triggers the OSMnx graph fetch + disk-cache write without doing a
+// full render, so by the time the user clicks "Preview" (~10-60 s later) the
+// graph is already cached → first preview renders in ~3 s instead of 15-60 s.
+app.post('/warm', (req: Request, res: Response): void => {
+  if (!checkAuth(req, res)) return;
+  const { lat, lon, dist = 5000 } = req.body as { lat?: number; lon?: number; dist?: number };
+  if (!lat || !lon) { res.status(400).json({ error: 'lat and lon required' }); return; }
+  // Respond immediately — don't block the caller
+  res.json({ ok: true });
+  // Background: run a 1×1 px render just to prime the OSMnx graph cache.
+  // The render output is discarded; only the on-disk graph cache write matters.
+  void renderOsmPython({
+    lat,
+    lng: lon,
+    display_city: '',
+    display_country: '',
+    width_in: 1,
+    height_in: 1,
+    dpi: 10,          // 10 px — minimal matplotlib figure, negligible CPU
+    dist: Math.min(Number(dist), 15_000),
+    show_text: false,
+    no_fade: true,
+    minor_roads: false,
+  }, AbortSignal.timeout(120_000)).then(
+    ()  => console.log(`[warm] OSM graph cached for ${lat},${lon} dist=${dist}`),
+    (e) => console.log(`[warm] OSM graph warmup ended for ${lat},${lon}: ${(e as Error).message}`),
+  );
+});
+
 app.listen(PORT, () => console.log(`MapVibe Render Service v3.0.0 on port ${PORT}`));
+
+// ── Startup OSM graph warmup for top poster cities ───────────────────────────
+// Pre-populates the on-disk graph cache immediately after the server starts.
+// Any user who requests a preview for one of these cities after boot gets a
+// cache hit → ~3 s render instead of 15-60 s cold-fetch render.
+// Runs entirely in the background — does NOT delay server readiness.
+const TOP_POSTER_CITIES: Array<{ name: string; lat: number; lon: number; dist: number }> = [
+  { name: 'Paris',         lat:  48.8566, lon:   2.3522, dist:  8000 },
+  { name: 'London',        lat:  51.5074, lon:  -0.1278, dist: 12000 },
+  { name: 'New York',      lat:  40.7128, lon: -74.0060, dist: 10000 },
+  { name: 'Tokyo',         lat:  35.6762, lon: 139.6503, dist: 12000 },
+  { name: 'Rome',          lat:  41.9028, lon:  12.4964, dist:  7000 },
+  { name: 'Barcelona',     lat:  41.3851, lon:   2.1734, dist:  8000 },
+  { name: 'Amsterdam',     lat:  52.3676, lon:   4.9041, dist:  6000 },
+  { name: 'Berlin',        lat:  52.5200, lon:  13.4050, dist: 10000 },
+  { name: 'Prague',        lat:  50.0755, lon:  14.4378, dist:  7000 },
+  { name: 'Lisbon',        lat:  38.7223, lon:  -9.1393, dist:  7000 },
+  { name: 'Vienna',        lat:  48.2082, lon:  16.3738, dist:  8000 },
+  { name: 'Budapest',      lat:  47.4979, lon:  19.0402, dist:  7000 },
+  { name: 'Athens',        lat:  37.9838, lon:  23.7275, dist:  8000 },
+  { name: 'Porto',         lat:  41.1579, lon:  -8.6291, dist:  6000 },
+  { name: 'Florence',      lat:  43.7696, lon:  11.2558, dist:  5000 },
+  { name: 'Istanbul',      lat:  41.0082, lon:  28.9784, dist: 12000 },
+  { name: 'Edinburgh',     lat:  55.9533, lon:  -3.1883, dist:  6000 },
+  { name: 'Copenhagen',    lat:  55.6761, lon:  12.5683, dist:  7000 },
+  { name: 'Stockholm',     lat:  59.3293, lon:  18.0686, dist:  8000 },
+  { name: 'Zurich',        lat:  47.3769, lon:   8.5417, dist:  6000 },
+  { name: 'Munich',        lat:  48.1351, lon:  11.5820, dist:  8000 },
+  { name: 'Madrid',        lat:  40.4168, lon:  -3.7038, dist:  9000 },
+  { name: 'Seville',       lat:  37.3891, lon:  -5.9845, dist:  6000 },
+  { name: 'Dublin',        lat:  53.3498, lon:  -6.2603, dist:  7000 },
+  { name: 'Brussels',      lat:  50.8503, lon:   4.3517, dist:  7000 },
+  { name: 'Bruges',        lat:  51.2093, lon:   3.2247, dist:  3000 },
+  { name: 'Warsaw',        lat:  52.2297, lon:  21.0122, dist:  8000 },
+  { name: 'Krakow',        lat:  50.0647, lon:  19.9450, dist:  6000 },
+  { name: 'Reykjavik',     lat:  64.1355, lon: -21.8954, dist:  5000 },
+  { name: 'Oslo',          lat:  59.9139, lon:  10.7522, dist:  7000 },
+  { name: 'Milan',         lat:  45.4642, lon:   9.1900, dist:  8000 },
+  { name: 'Venice',        lat:  45.4408, lon:  12.3155, dist:  4000 },
+  { name: 'Dubrovnik',     lat:  42.6507, lon:  18.0944, dist:  3000 },
+  { name: 'Santorini',     lat:  36.3932, lon:  25.4615, dist:  4000 },
+  { name: 'Valencia',      lat:  39.4699, lon:  -0.3763, dist:  7000 },
+  { name: 'San Francisco', lat:  37.7749, lon:-122.4194, dist:  8000 },
+  { name: 'Chicago',       lat:  41.8781, lon: -87.6298, dist: 10000 },
+  { name: 'Los Angeles',   lat:  34.0522, lon:-118.2437, dist: 12000 },
+  { name: 'Washington DC', lat:  38.9072, lon: -77.0369, dist:  8000 },
+  { name: 'Sydney',        lat: -33.8688, lon: 151.2093, dist: 10000 },
+  { name: 'Melbourne',     lat: -37.8136, lon: 144.9631, dist: 10000 },
+  { name: 'Singapore',     lat:   1.3521, lon: 103.8198, dist:  8000 },
+  { name: 'Hong Kong',     lat:  22.3193, lon: 114.1694, dist:  8000 },
+  { name: 'Seoul',         lat:  37.5665, lon: 126.9780, dist: 12000 },
+  { name: 'Bangkok',       lat:  13.7563, lon: 100.5018, dist: 10000 },
+  { name: 'Mexico City',   lat:  19.4326, lon: -99.1332, dist: 12000 },
+  { name: 'Buenos Aires',  lat: -34.6037, lon: -58.3816, dist: 10000 },
+  { name: 'Cape Town',     lat: -33.9249, lon:  18.4241, dist:  8000 },
+  { name: 'Marrakech',     lat:  31.6295, lon:  -7.9811, dist:  5000 },
+  { name: 'Kyoto',         lat:  35.0116, lon: 135.7681, dist:  7000 },
+];
+
+// Stagger warmups 3 s apart to avoid Overpass rate-limiting on startup.
+// With 50 cities × 3 s = 2.5 min total — all done well before peak traffic.
+(async () => {
+  await new Promise(r => setTimeout(r, 15_000)); // wait 15 s for server to stabilise
+  console.log(`[warm/startup] Beginning OSM graph warmup for ${TOP_POSTER_CITIES.length} cities`);
+  let warmed = 0;
+  for (const city of TOP_POSTER_CITIES) {
+    try {
+      await renderOsmPython({
+        lat: city.lat, lng: city.lon,
+        display_city: '', display_country: '',
+        width_in: 1, height_in: 1, dpi: 10,
+        dist: city.dist,
+        show_text: false, no_fade: true, minor_roads: false,
+      }, AbortSignal.timeout(90_000));
+      warmed++;
+      console.log(`[warm/startup] ${city.name} ✓ (${warmed}/${TOP_POSTER_CITIES.length})`);
+    } catch (e) {
+      console.log(`[warm/startup] ${city.name} — ${(e as Error).message}`);
+    }
+    if (warmed < TOP_POSTER_CITIES.length) await new Promise(r => setTimeout(r, 3_000));
+  }
+  console.log(`[warm/startup] Done — ${warmed}/${TOP_POSTER_CITIES.length} cities cached`);
+})();
+
 
