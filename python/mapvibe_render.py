@@ -655,7 +655,19 @@ def render(params: dict) -> bytes:
                        if is_latin_script(display_city)
                        else display_city)
 
-        base_main = 60 * scale
+        # 60 * scale rendered Playfair 700 + ' '.join letter-spacing at
+        # ~95 % of poster width for 10-char names like WASHINGTON (production
+        # 2026-06-16 screenshot — print preview's "WASHINGTON" stretched
+        # corner-to-corner while the editor's MapLibre rendering sat at
+        # ~50 % width). matplotlib has no letter-spacing primitive so the
+        # spaced-glyph approach is the only way to match the editor's
+        # CSS letter-spacing aesthetic, but the size factor was tuned for the
+        # original two-space join and was never lowered after PR #154 moved
+        # to single-space join. 38 lands the spaced glyphs at ~55 % poster
+        # width on a 12.5×16.7 in classic — parity with the editor's
+        # visual weight. n_chars > 10 still shrinks proportionally so very
+        # long names (SAN FRANCISCO, JOHANNESBURG) stay inside the band.
+        base_main = 38 * scale
         n_chars = len(display_city)
         adjusted_size = (max(base_main * (10 / n_chars), 10 * scale)
                          if n_chars > 10 else base_main)
