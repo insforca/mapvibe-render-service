@@ -40,6 +40,8 @@ import pickle
 import time
 import hashlib
 import threading
+import tempfile
+import struct
 
 # ── Headless matplotlib — MUST be set before any pyplot import ─────────────
 import matplotlib
@@ -166,9 +168,12 @@ def _graph_cache_key(prefix: str, qlat: float, qlng: float, qdist: int, *extras)
     parts = [prefix, f'{qlat:.4f}', f'{qlng:.4f}', str(qdist), *(str(e) for e in extras)]
     return f'{prefix}_{hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]}'
 
-def graph_cache_get(key: str):
+def graph_cache_get(key: str, *, _pbf_context=None):
     """Return the cached value if fresh (within TTL), else None.
-    Lookup order:  disk L1 (~1 s) → R2 L2 (~2 s) → None (Overpass fallback).
+    Lookup order: disk L1 (~1s) → R2 L2 graph (~2s) → local PBF (~5-10s) →
+                  R2 PBF download (~15-30s) → None (Overpass fallback).
+    _pbf_context: optional dict with keys lat, lon, dist, minor_roads — when
+    present, enables the PBF tier (L3/L4) for street-graph lookups.
     Never raises — any error is treated as a cache miss."""
     path = _cache_path(key)
     # L1: disk
@@ -178,11 +183,16 @@ def graph_cache_get(key: str):
                 return pickle.load(f)
     except Exception as e:
         _log(f'Graph cache L1 read failed ({key}): {e}')
-    # L2: R2 (only when configured)
+    # L2: R2 graph pickle
     r2_value = r2_cache_get(key)
     if r2_value is not None:
         _graph_cache_write_disk(key, r2_value)   # warm L1 from L2
         return r2_value
+    # L3/L4: PBF extraction (streets only, when context provided)
+    if _pbf_context is not None:
+        pbf_value = _try_pbf_extraction(**_pbf_context)
+        if pbf_value is not None:
+            return pbf_value   # graph_cache_set called inside _try_pbf_extraction
     return None
 
 def graph_cache_set(key: str, value) -> None:
@@ -241,11 +251,14 @@ def _graph_cache_evict_if_over_budget() -> None:
 
 
 
-# ── R2 graph cache — L2 persistent layer (survives Railway restarts) ──────────
-# When R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set, graph
-# cache entries are also mirrored to Cloudflare R2 (S3-compatible, zero egress
-# fees). Lookup order:  disk L1 (~1s) → R2 L2 (~2s) → Overpass (~20-65s).
-# R2 writes run in daemon threads so they NEVER block a render.
+# ── R2 graph cache + PBF tier (Phase 1 + 2) ─────────────────────────────────
+# Phase 1: graph pickles in R2 (L2) survive Railway restarts.
+# Phase 2: Geofabrik PBFs seeded to R2 (~55 GB); pyrosm extracts any city or
+#          village locally, eliminating Overpass for all seeded regions.
+# Lookup order:
+#   disk L1 (~1s) → R2 L2 graph (~2s) → local PBF (~5-10s) →
+#   R2 PBF download (~15-30s, warms local PBF) → Overpass (~20-65s)
+# R2 writes run in daemon threads — they NEVER block a render.
 # Falls back silently if R2 is not configured or any call fails.
 
 _R2_ACCOUNT_ID        = os.environ.get('R2_ACCOUNT_ID', '')
@@ -325,6 +338,230 @@ def r2_cache_set(cache_key: str, value) -> None:
         except Exception as e:
             _log(f'R2 cache set failed ({cache_key}): {e}')
     threading.Thread(target=_upload, daemon=True).start()
+
+
+
+
+# ── PBF cache — L3/L4 Geofabrik-based tier (Phase 2) ─────────────────────────
+# All Geofabrik regional PBFs are pre-seeded to R2 once by
+# scripts/upload_pbfs_to_r2.py (~55 GB total, ~$0.83/mo).
+# At runtime, the relevant country/regional PBF is fetched from R2 on demand
+# and cached locally in PBF_CACHE_DIR.  pyrosm extracts just the city bounding
+# box; the result is a normal OSMnx MultiDiGraph cached in L1+L2 as usual.
+
+_SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
+_PBF_CACHE_DIR    = os.environ.get('PBF_CACHE_DIR', '/tmp/mapvibe_pbf')
+_PBF_CACHE_MAX_BYTES = int(os.environ.get('PBF_CACHE_MAX_MB', '8000')) * 1024 * 1024
+_PBF_CACHE_TTL_S  = 14 * 24 * 3600   # 14 days
+os.makedirs(_PBF_CACHE_DIR, exist_ok=True)
+
+# Lazy-loaded region table — loaded once on first PBF lookup
+_pbf_regions = None
+_pbf_regions_lock = threading.Lock()
+
+
+def _load_pbf_regions():
+    global _pbf_regions
+    if _pbf_regions is not None:
+        return _pbf_regions
+    with _pbf_regions_lock:
+        if _pbf_regions is not None:
+            return _pbf_regions
+        candidates = [
+            os.path.join(_SCRIPT_DIR, 'geofabrik_regions.json'),
+            os.path.join(os.path.dirname(_SCRIPT_DIR), 'geofabrik_regions.json'),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                with open(path) as f:
+                    _pbf_regions = json.load(f)
+                _log(f'PBF region table loaded ({len(_pbf_regions)} regions)')
+                return _pbf_regions
+        _pbf_regions = []
+        _log('PBF region table not found — PBF tier disabled')
+        return _pbf_regions
+
+
+def _coord_to_pbf_region(lat: float, lon: float) -> dict | None:
+    """Return the most specific Geofabrik region dict that contains (lat, lon)."""
+    regions = _load_pbf_regions()
+    # Prefer smaller regions (lower size_mb) to avoid downloading large files
+    candidates = []
+    for r in regions:
+        w, s, e, n = r['bbox']
+        if w <= lon <= e and s <= lat <= n:
+            candidates.append(r)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: r.get('size_mb', 9999))
+    return candidates[0]
+
+
+def _pbf_local_path(region_key: str) -> str:
+    safe = region_key.replace('/', '_')
+    return os.path.join(_PBF_CACHE_DIR, f'{safe}.osm.pbf')
+
+
+def _pbf_r2_key(region_key: str) -> str:
+    return f'pbf/{region_key}.osm.pbf'
+
+
+def _pbf_local_fresh(region_key: str) -> bool:
+    path = _pbf_local_path(region_key)
+    if not os.path.exists(path):
+        return False
+    return (time.time() - os.path.getmtime(path)) <= _PBF_CACHE_TTL_S
+
+
+def _pbf_evict_if_over_budget() -> None:
+    """LRU-evict local PBF cache if over the disk budget."""
+    try:
+        entries = []
+        total = 0
+        for name in os.listdir(_PBF_CACHE_DIR):
+            p = os.path.join(_PBF_CACHE_DIR, name)
+            try:
+                st = os.stat(p)
+                entries.append((st.st_mtime, st.st_size, p))
+                total += st.st_size
+            except FileNotFoundError:
+                continue
+        if total <= _PBF_CACHE_MAX_BYTES:
+            return
+        entries.sort(key=lambda e: e[0])
+        evicted = 0
+        for _mtime, size, p in entries:
+            if total <= _PBF_CACHE_MAX_BYTES:
+                break
+            try:
+                os.unlink(p)
+                total -= size
+                evicted += 1
+            except Exception:
+                pass
+        if evicted:
+            _log(f'PBF cache: evicted {evicted} files (LRU, budget={_PBF_CACHE_MAX_BYTES // 1024 // 1024} MB)')
+    except Exception as e:
+        _log(f'PBF cache eviction failed: {e}')
+
+
+def _ensure_pbf_local(region: dict) -> str | None:
+    """Ensure the regional PBF is on local disk.
+    Returns local path on success, None on failure.
+    Check order: local disk (fresh) → R2 download → Geofabrik direct download.
+    Never raises."""
+    region_key = region['region_key']
+    local_path = _pbf_local_path(region_key)
+
+    # Already on disk and fresh
+    if _pbf_local_fresh(region_key):
+        return local_path
+
+    client = _get_r2_client()
+
+    # Try R2 first (fastest, no Geofabrik rate limits)
+    if client is not None:
+        try:
+            r2_key = _pbf_r2_key(region_key)
+            _log(f'PBF L4: downloading {region_key} from R2 ({region.get("size_mb")} MB)...')
+            tmp_path = local_path + '.tmp'
+            client.download_file(Bucket=_R2_BUCKET_NAME, Key=r2_key, Filename=tmp_path)
+            os.replace(tmp_path, local_path)
+            _pbf_evict_if_over_budget()
+            _log(f'PBF L4: {region_key} cached locally from R2')
+            return local_path
+        except Exception as e:
+            _log(f'PBF R2 download failed ({region_key}): {e}')
+            try: os.unlink(local_path + '.tmp')
+            except Exception: pass
+
+    # Fallback: direct Geofabrik download (seeds R2 too)
+    url = region.get('url')
+    if url:
+        try:
+            import requests as _requests
+            _log(f'PBF fallback: downloading {region_key} from Geofabrik ({region.get("size_mb")} MB)...')
+            tmp_path = local_path + '.tmp'
+            with _requests.get(url, stream=True, timeout=300) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, 'wb') as f:
+                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(chunk)
+            os.replace(tmp_path, local_path)
+            _pbf_evict_if_over_budget()
+            _log(f'PBF fallback: {region_key} downloaded from Geofabrik')
+            # Seed to R2 in background so future restarts skip Geofabrik
+            if client is not None:
+                def _seed_r2():
+                    try:
+                        client.upload_file(local_path, _R2_BUCKET_NAME, _pbf_r2_key(region_key))
+                        _log(f'PBF seeded to R2: {region_key}')
+                    except Exception as e2:
+                        _log(f'PBF R2 seed failed ({region_key}): {e2}')
+                threading.Thread(target=_seed_r2, daemon=True).start()
+            return local_path
+        except Exception as e:
+            _log(f'PBF Geofabrik download failed ({region_key}): {e}')
+            try: os.unlink(local_path + '.tmp')
+            except Exception: pass
+
+    return None
+
+
+def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
+                    dist: int, minor_roads: bool):
+    """Extract an OSMnx-compatible MultiDiGraph from a local PBF using pyrosm.
+    Returns None if pyrosm is unavailable or extraction fails."""
+    try:
+        import pyrosm
+    except ImportError:
+        _log('pyrosm not installed — PBF extraction unavailable')
+        return None
+    try:
+        # Bounding box: dist metres → degrees with 50% buffer
+        delta = (dist / 111_000) * 1.5
+        bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+        osm = pyrosm.OSM(pbf_path, bounding_box=bbox)
+        nodes, edges = osm.get_network(network_type='driving', nodes=True)
+        if nodes is None or edges is None or len(nodes) == 0 or len(edges) == 0:
+            _log(f'PBF extraction: no network data in bbox {bbox}')
+            return None
+        # Filter to arterials when minor_roads=False (matches Overpass behaviour)
+        if not minor_roads:
+            arterials = {'motorway', 'motorway_link', 'trunk', 'trunk_link',
+                         'primary', 'primary_link'}
+            if 'highway' in edges.columns:
+                edges = edges[edges['highway'].isin(arterials)]
+                if len(edges) == 0:
+                    _log('PBF extraction: no arterials after filter')
+                    return None
+        G = osm.to_graph(nodes, edges, graph_type='networkx', retain_all=False)
+        if G is None or len(G.nodes) == 0:
+            return None
+        _log(f'PBF extraction OK: {len(G.nodes)} nodes, {len(G.edges)} edges')
+        return G
+    except Exception as e:
+        _log(f'PBF graph extraction failed: {e}')
+        return None
+
+
+def _try_pbf_extraction(lat: float, lon: float, dist: int,
+                        minor_roads: bool, cache_key: str) -> object:
+    """Full PBF tier: find region → ensure local PBF → extract graph.
+    On success, writes the graph to L1+L2 (graph cache) and returns it.
+    Returns None on any failure so caller falls through to Overpass."""
+    region = _coord_to_pbf_region(lat, lon)
+    if region is None:
+        return None
+    pbf_path = _ensure_pbf_local(region)
+    if pbf_path is None:
+        return None
+    G = _graph_from_pbf(pbf_path, lat, lon, dist, minor_roads)
+    if G is None:
+        return None
+    # Cache graph so subsequent identical requests are L1/L2 hits
+    graph_cache_set(cache_key, G)
+    return G
 
 
 # ── Theme loading ─────────────────────────────────────────────────────────────
@@ -620,7 +857,10 @@ def render(params: dict) -> bytes:
         # the key carries that bit — Clean vs Detailed get separate entries.
         filter_tag = 'minor' if minor_roads else 'major'
         key = _graph_cache_key('streets', qlat, qlng, qdist, filter_tag, network_type)
-        cached = graph_cache_get(key)
+        cached = graph_cache_get(key, _pbf_context={
+            'lat': qlat, 'lon': qlng, 'dist': qdist,
+            'minor_roads': minor_roads, 'cache_key': key,
+        })
         if cached is not None:
             cache_hits['streets'] = True
             return cached
