@@ -1695,3 +1695,52 @@ app.post('/warm', (req: Request, res: Response): void => {
 app.listen(PORT, () => console.log(`MapVibe Render Service v3.0.0 on port ${PORT}`));
 
 
+// ── Startup city seed ──────────────────────────────────────────────────────────
+// On boot, pre-warm the OSMnx graph cache for the top 300 cities (defined in
+// python/top_cities.json) using the same low-DPI warm render as /warm.
+// Each city fires at 2-second intervals so Overpass is never hammered.
+// Cities already in the R2 / disk cache will complete in ~2s each (fast path).
+// The first 50 cities warm in ~2 min; all 300 in ~10 min in the background.
+interface SeedCity { city: string; country: string; lat: number; lon: number; dist?: number; }
+function runStartupCitySeed(): void {
+  const seedPath = join(__dirname, '..', 'python', 'top_cities.json');
+  let cities: SeedCity[];
+  try {
+    cities = JSON.parse(readFileSync(seedPath, 'utf-8')) as SeedCity[];
+  } catch (e) {
+    console.warn('[seed] top_cities.json not found or invalid — skipping startup seed:', (e as Error).message);
+    return;
+  }
+  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 2s intervals`);
+  let idx = 0;
+  function warmNext(): void {
+    if (idx >= cities.length) {
+      console.log('[seed] Startup city seed complete');
+      return;
+    }
+    const c = cities[idx++];
+    void renderOsmPython({
+      lat:             c.lat,
+      lng:             c.lon,
+      display_city:    '',
+      display_country: '',
+      width_in:        1,
+      height_in:       1,
+      dpi:             10,
+      dist:            Math.min(c.dist ?? 8000, 15_000),
+      show_text:       false,
+      no_fade:         true,
+      minor_roads:     false,
+    }, AbortSignal.timeout(120_000)).then(
+      () => console.log(`[seed] ✓ ${c.city}, ${c.country} (${idx}/${cities.length})`),
+      (e: Error) => console.log(`[seed] ✗ ${c.city}: ${e.message}`),
+    ).finally(() => setTimeout(warmNext, 2_000));
+  }
+  // Delay first warm by 15s to let the service fully boot before hitting Overpass.
+  setTimeout(warmNext, 15_000);
+}
+
+runStartupCitySeed();
+
+
+
