@@ -1,1 +1,232 @@
-IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiIKdXBsb2FkX3BiZnNfdG9fcjIucHkg4oCUIE9uZS10aW1lIEdlb2ZhYnJpayBQQkYgc2VlZGVyIGZvciBQaGFzZSAyCj09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09CkRvd25sb2FkcyBhbGwgR2VvZmFicmlrIHJlZ2lvbmFsIFBCRnMgbGlzdGVkIGluIHB5dGhvbi9nZW9mYWJyaWtfcmVnaW9ucy5qc29uCmFuZCB1cGxvYWRzIHRoZW0gdG8gdGhlIG1hcHZpYmUtZ3JhcGgtY2FjaGUgUjIgYnVja2V0IHVuZGVyIHRoZSBwYmYvIHByZWZpeC4KClJ1biB0aGlzIExPQ0FMTFkgKG5vdCBvbiBSYWlsd2F5KSDigJQgdG90YWwgZG93bmxvYWQgaXMgfjU1IEdCLgpQcm9ncmVzcyBpcyBzYXZlZCB0byB1cGxvYWRfc3RhdGUuanNvbiBzbyBpbnRlcnJ1cHRlZCBydW5zIHJlc3VtZSBjbGVhbmx5LgoKVXNhZ2U6CiAgICBweXRob24gc2NyaXB0cy91cGxvYWRfcGJmc190b19yMi5weSBbLS1wcmlvcml0eSAxXSBbLS1kcnktcnVuXSBbLS1yZXN1bWVdCgogICAgLS1wcmlvcml0eSBOICAgIE9ubHkgdXBsb2FkIHJlZ2lvbnMgd2l0aCBwcmlvcml0eSA8PSBOIChkZWZhdWx0OiBhbGwpCiAgICAtLWRyeS1ydW4gICAgICAgUHJpbnQgd2hhdCB3b3VsZCBiZSB1cGxvYWRlZCwgc2tpcCBhY3R1YWwgdHJhbnNmZXIKICAgIC0tcmVzdW1lICAgICAgICBTa2lwIHJlZ2lvbnMgYWxyZWFkeSBwcmVzZW50IGluIFIyIChkZWZhdWx0OiBUcnVlKQogICAgLS13b3JrZXJzIE4gICAgIFBhcmFsbGVsIHVwbG9hZCB3b3JrZXJzIChkZWZhdWx0OiAzKQoKUmVxdWlyZWQgZW52IHZhcnM6CiAgICBSMl9BQ0NPVU5UX0lELCBSMl9BQ0NFU1NfS0VZX0lELCBSMl9TRUNSRVRfQUNDRVNTX0tFWQogICAgUjJfQlVDS0VUX05BTUUgIChvcHRpb25hbCwgZGVmYXVsdDogbWFwdmliZS1ncmFwaC1jYWNoZSkKIiIiCgppbXBvcnQgb3MKaW1wb3J0IHN5cwppbXBvcnQganNvbgppbXBvcnQgdGltZQppbXBvcnQgaGFzaGxpYgppbXBvcnQgYXJncGFyc2UKaW1wb3J0IHRocmVhZGluZwppbXBvcnQgdGVtcGZpbGUKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmZyb20gY29uY3VycmVudC5mdXR1cmVzIGltcG9ydCBUaHJlYWRQb29sRXhlY3V0b3IsIGFzX2NvbXBsZXRlZAoKdHJ5OgogICAgaW1wb3J0IGJvdG8zCiAgICBpbXBvcnQgcmVxdWVzdHMKZXhjZXB0IEltcG9ydEVycm9yOgogICAgcHJpbnQoIk1pc3NpbmcgZGVwcy4gUnVuOiBwaXAgaW5zdGFsbCBib3RvMyByZXF1ZXN0cyIpCiAgICBzeXMuZXhpdCgxKQoKIyDilIDilIAgQ29uZmlnIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgApTQ1JJUFRfRElSICAgPSBQYXRoKF9fZmlsZV9fKS5wYXJlbnQKUkVQT19ST09UICAgID0gU0NSSVBUX0RJUi5wYXJlbnQKUkVHSU9OU19GSUxFID0gUkVQT19ST09UIC8gJ3B5dGhvbicgLyAnZ2VvZmFicmlrX3JlZ2lvbnMuanNvbicKU1RBVEVfRklMRSAgID0gU0NSSVBUX0RJUiAvICd1cGxvYWRfc3RhdGUuanNvbicKVE1QX0RJUiAgICAgID0gUGF0aCh0ZW1wZmlsZS5nZXR0ZW1wZGlyKCkpIC8gJ21hcHZpYmVfcGJmX3VwbG9hZCcKVE1QX0RJUi5ta2RpcihleGlzdF9vaz1UcnVlKQoKUjJfQUNDT1VOVF9JRCAgICAgICAgPSBvcy5lbnZpcm9uWydSMl9BQ0NPVU5UX0lEJ10KUjJfQUNDRVNTX0tFWV9JRCAgICAgPSBvcy5lbnZpcm9uWydSMl9BQ0NFU1NfS0VZX0lEJ10KUjJfU0VDUkVUX0FDQ0VTU19LRVkgPSBvcy5lbnZpcm9uWydSMl9TRUNSRVRfQUNDRVNTX0tFWSddClIyX0JVQ0tFVF9OQU1FICAgICAgID0gb3MuZW52aXJvbi5nZXQoJ1IyX0JVQ0tFVF9OQU1FJywgJ21hcHZpYmUtZ3JhcGgtY2FjaGUnKQoKQ0hVTktfU0laRSAgID0gMTYgKiAxMDI0ICogMTAyNCAgICMgMTYgTUIgZG93bmxvYWQgY2h1bmtzClBBUlRfU0laRSAgICA9IDY0ICogMTAyNCAqIDEwMjQgICAjIDY0IE1CIFIyIG11bHRpcGFydCBwYXJ0cwoKX3ByaW50X2xvY2sgPSB0aHJlYWRpbmcuTG9jaygpCgpkZWYgbG9nKG1zZzogc3RyKToKICAgIHdpdGggX3ByaW50X2xvY2s6CiAgICAgICAgcHJpbnQoZiJbe3RpbWUuc3RyZnRpbWUoJyVIOiVNOiVTJyl9XSB7bXNnfSIsIGZsdXNoPVRydWUpCgoKIyDilIDilIAgUjIgY2xpZW50IOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgApkZWYgZ2V0X3IyX2NsaWVudCgpOgogICAgcmV0dXJuIGJvdG8zLmNsaWVudCgKICAgICAgICAnczMnLAogICAgICAgIGVuZHBvaW50X3VybD1mJ2h0dHBzOi8ve1IyX0FDQ09VTlRfSUR9LnIyLmNsb3VkZmxhcmVzdG9yYWdlLmNvbScsCiAgICAgICAgYXdzX2FjY2Vzc19rZXlfaWQ9UjJfQUNDRVNTX0tFWV9JRCwKICAgICAgICBhd3Nfc2VjcmV0X2FjY2Vzc19rZXk9UjJfU0VDUkVUX0FDQ0VTU19LRVksCiAgICApCgoKZGVmIHIyX2tleV9leGlzdHMoY2xpZW50LCBidWNrZXQ6IHN0ciwga2V5OiBzdHIpIC0+IGJvb2w6CiAgICB0cnk6CiAgICAgICAgY2xpZW50LmhlYWRfb2JqZWN0KEJ1Y2tldD1idWNrZXQsIEtleT1rZXkpCiAgICAgICAgcmV0dXJuIFRydWUKICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgcmV0dXJuIEZhbHNlCgoKIyDilIDilIAgRG93bmxvYWQgKyB1cGxvYWQg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACmRlZiBkb3dubG9hZF9hbmRfdXBsb2FkKHJlZ2lvbjogZGljdCwgY2xpZW50LCBkcnlfcnVuOiBib29sKSAtPiBkaWN0OgogICAgcmVnaW9uX2tleSA9IHJlZ2lvblsncmVnaW9uX2tleSddCiAgICB1cmwgICAgICAgID0gcmVnaW9uWyd1cmwnXQogICAgcjJfa2V5ICAgICA9IGYicGJmL3tyZWdpb25fa2V5fS5vc20ucGJmIgogICAgc2l6ZV9tYiAgICA9IHJlZ2lvbi5nZXQoJ3NpemVfbWInLCAnPycpCgogICAgbG9nKGYi4pa2ICB7cmVnaW9uX2tleX0gICh7c2l6ZV9tYn0gTUIpICDihpIgIHtyMl9rZXl9IikKCiAgICBpZiBkcnlfcnVuOgogICAgICAgIHJldHVybiB7J3JlZ2lvbl9rZXknOiByZWdpb25fa2V5LCAnc3RhdHVzJzogJ2RyeV9ydW4nfQoKICAgICMgRG93bmxvYWQgdG8gdGVtcCBmaWxlCiAgICB0bXBfcGF0aCA9IFRNUF9ESVIgLyBmIntyZWdpb25fa2V5LnJlcGxhY2UoJy8nLCAnXycpfS5vc20ucGJmIgogICAgdG1wX3BhdGgucGFyZW50Lm1rZGlyKHBhcmVudHM9VHJ1ZSwgZXhpc3Rfb2s9VHJ1ZSkKCiAgICB0cnk6CiAgICAgICAgdDAgPSB0aW1lLnRpbWUoKQogICAgICAgIHdpdGggcmVxdWVzdHMuZ2V0KHVybCwgc3RyZWFtPVRydWUsIHRpbWVvdXQ9NjAwKSBhcyByZXNwOgogICAgICAgICAgICByZXNwLnJhaXNlX2Zvcl9zdGF0dXMoKQogICAgICAgICAgICB0b3RhbF9ieXRlcyA9IGludChyZXNwLmhlYWRlcnMuZ2V0KCdjb250ZW50LWxlbmd0aCcsIDApKQogICAgICAgICAgICBkb3dubG9hZGVkICA9IDAKICAgICAgICAgICAgd2l0aCBvcGVuKHRtcF9wYXRoLCAnd2InKSBhcyBmOgogICAgICAgICAgICAgICAgZm9yIGNodW5rIGluIHJlc3AuaXRlcl9jb250ZW50KGNodW5rX3NpemU9Q0hVTktfU0laRSk6CiAgICAgICAgICAgICAgICAgICAgZi53cml0ZShjaHVuaykKICAgICAgICAgICAgICAgICAgICBkb3dubG9hZGVkICs9IGxlbihjaHVuaykKICAgICAgICAgICAgZGxfc2VjcyA9IHRpbWUudGltZSgpIC0gdDAKICAgICAgICAgICAgZGxfbWIgICA9IGRvd25sb2FkZWQgLyAxMDI0IC8gMTAyNAogICAgICAgICAgICBsb2coZiIgICDihpMge3JlZ2lvbl9rZXl9OiB7ZGxfbWI6LjBmfSBNQiBpbiB7ZGxfc2VjczouMGZ9cyAoe2RsX21iL2RsX3NlY3M6LjFmfSBNQi9zKSIpCgogICAgICAgICMgTXVsdGlwYXJ0IHVwbG9hZCB0byBSMgogICAgICAgIGZpbGVfc2l6ZSA9IHRtcF9wYXRoLnN0YXQoKS5zdF9zaXplCiAgICAgICAgdDEgPSB0aW1lLnRpbWUoKQogICAgICAgIGlmIGZpbGVfc2l6ZSA+IFBBUlRfU0laRToKICAgICAgICAgICAgIyBNdWx0aXBhcnQKICAgICAgICAgICAgbXB1ID0gY2xpZW50LmNyZWF0ZV9tdWx0aXBhcnRfdXBsb2FkKAogICAgICAgICAgICAgICAgQnVja2V0PVIyX0JVQ0tFVF9OQU1FLCBLZXk9cjJfa2V5LAogICAgICAgICAgICAgICAgQ29udGVudFR5cGU9J2FwcGxpY2F0aW9uL29jdGV0LXN0cmVhbScsCiAgICAgICAgICAgICkKICAgICAgICAgICAgdXBsb2FkX2lkID0gbXB1WydVcGxvYWRJZCddCiAgICAgICAgICAgIHBhcnRzID0gW10KICAgICAgICAgICAgcGFydF9udW0gPSAxCiAgICAgICAgICAgIHdpdGggb3Blbih0bXBfcGF0aCwgJ3JiJykgYXMgZjoKICAgICAgICAgICAgICAgIHdoaWxlIFRydWU6CiAgICAgICAgICAgICAgICAgICAgZGF0YSA9IGYucmVhZChQQVJUX1NJWkUpCiAgICAgICAgICAgICAgICAgICAgaWYgbm90IGRhdGE6CiAgICAgICAgICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgICAgICAgICAgcmVzcCA9IGNsaWVudC51cGxvYWRfcGFydCgKICAgICAgICAgICAgICAgICAgICAgICAgQnVja2V0PVIyX0JVQ0tFVF9OQU1FLCBLZXk9cjJfa2V5LAogICAgICAgICAgICAgICAgICAgICAgICBVcGxvYWRJZD11cGxvYWRfaWQsIFBhcnROdW1iZXI9cGFydF9udW0sIEJvZHk9ZGF0YSwKICAgICAgICAgICAgICAgICAgICApCiAgICAgICAgICAgICAgICAgICAgcGFydHMuYXBwZW5kKHsnUGFydE51bWJlcic6IHBhcnRfbnVtLCAnRVRhZyc6IHJlc3BbJ0VUYWcnXX0pCiAgICAgICAgICAgICAgICAgICAgcGFydF9udW0gKz0gMQogICAgICAgICAgICBjbGllbnQuY29tcGxldGVfbXVsdGlwYXJ0X3VwbG9hZCgKICAgICAgICAgICAgICAgIEJ1Y2tldD1SMl9CVUNLRVRfTkFNRSwgS2V5PXIyX2tleSwKICAgICAgICAgICAgICAgIFVwbG9hZElkPXVwbG9hZF9pZCwKICAgICAgICAgICAgICAgIE11bHRpcGFydFVwbG9hZD17J1BhcnRzJzogcGFydHN9LAogICAgICAgICAgICApCiAgICAgICAgZWxzZToKICAgICAgICAgICAgIyBTaW5nbGUtcGFydAogICAgICAgICAgICB3aXRoIG9wZW4odG1wX3BhdGgsICdyYicpIGFzIGY6CiAgICAgICAgICAgICAgICBjbGllbnQucHV0X29iamVjdCgKICAgICAgICAgICAgICAgICAgICBCdWNrZXQ9UjJfQlVDS0VUX05BTUUsIEtleT1yMl9rZXksCiAgICAgICAgICAgICAgICAgICAgQm9keT1mLCBDb250ZW50VHlwZT0nYXBwbGljYXRpb24vb2N0ZXQtc3RyZWFtJywKICAgICAgICAgICAgICAgICkKICAgICAgICB1bF9zZWNzICA9IHRpbWUudGltZSgpIC0gdDEKICAgICAgICBmaWxlX21iICA9IGZpbGVfc2l6ZSAvIDEwMjQgLyAxMDI0CiAgICAgICAgbG9nKGYiICAg4oaRIHtyZWdpb25fa2V5fToge2ZpbGVfbWI6LjBmfSBNQiDihpIgUjIgaW4ge3VsX3NlY3M6LjBmfXMgKHtmaWxlX21iL3VsX3NlY3M6LjFmfSBNQi9zKSIpCgogICAgICAgICMgQ2xlYW51cAogICAgICAgIHRtcF9wYXRoLnVubGluayhtaXNzaW5nX29rPVRydWUpCiAgICAgICAgcmV0dXJuIHsncmVnaW9uX2tleSc6IHJlZ2lvbl9rZXksICdzdGF0dXMnOiAnb2snLCAnc2l6ZV9tYic6IGZpbGVfbWJ9CgogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgICAgIGxvZyhmIiAgIOKclyAge3JlZ2lvbl9rZXl9OiB7ZX0iKQogICAgICAgIHRtcF9wYXRoLnVubGluayhtaXNzaW5nX29rPVRydWUpCiAgICAgICAgcmV0dXJuIHsncmVnaW9uX2tleSc6IHJlZ2lvbl9rZXksICdzdGF0dXMnOiAnZXJyb3InLCAnZXJyb3InOiBzdHIoZSl9CgoKIyDilIDilIAgU3RhdGUgcGVyc2lzdGVuY2Ug4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACmRlZiBsb2FkX3N0YXRlKCkgLT4gZGljdDoKICAgIGlmIFNUQVRFX0ZJTEUuZXhpc3RzKCk6CiAgICAgICAgd2l0aCBvcGVuKFNUQVRFX0ZJTEUpIGFzIGY6CiAgICAgICAgICAgIHJldHVybiBqc29uLmxvYWQoZikKICAgIHJldHVybiB7J2NvbXBsZXRlZCc6IFtdLCAnZmFpbGVkJzogW119CgoKZGVmIHNhdmVfc3RhdGUoc3RhdGU6IGRpY3QpOgogICAgd2l0aCBvcGVuKFNUQVRFX0ZJTEUsICd3JykgYXMgZjoKICAgICAgICBqc29uLmR1bXAoc3RhdGUsIGYsIGluZGVudD0yKQoKCiMg4pSA4pSAIE1haW4g4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACmRlZiBtYWluKCk6CiAgICBwYXJzZXIgPSBhcmdwYXJzZS5Bcmd1bWVudFBhcnNlcihkZXNjcmlwdGlvbj0nVXBsb2FkIEdlb2ZhYnJpayBQQkZzIHRvIFIyJykKICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy0tcHJpb3JpdHknLCB0eXBlPWludCwgZGVmYXVsdD05OSwgaGVscD0nTWF4IHByaW9yaXR5IGxldmVsIHRvIHVwbG9hZCcpCiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctLWRyeS1ydW4nLCBhY3Rpb249J3N0b3JlX3RydWUnKQogICAgcGFyc2VyLmFkZF9hcmd1bWVudCgnLS1uby1yZXN1bWUnLCBhY3Rpb249J3N0b3JlX3RydWUnLCBoZWxwPSdSZS11cGxvYWQgZXZlbiBpZiBrZXkgZXhpc3RzIGluIFIyJykKICAgIHBhcnNlci5hZGRfYXJndW1lbnQoJy0td29ya2VycycsIHR5cGU9aW50LCBkZWZhdWx0PTIpCiAgICBhcmdzID0gcGFyc2VyLnBhcnNlX2FyZ3MoKQoKICAgIHJlZ2lvbnMgPSBqc29uLmxvYWRzKFJFR0lPTlNfRklMRS5yZWFkX3RleHQoKSkKICAgIHJlZ2lvbnMgPSBbciBmb3IgciBpbiByZWdpb25zIGlmIHIuZ2V0KCdwcmlvcml0eScsIDk5KSA8PSBhcmdzLnByaW9yaXR5XQogICAgcmVnaW9ucy5zb3J0KGtleT1sYW1iZGEgcjogci5nZXQoJ3ByaW9yaXR5JywgOTkpKQoKICAgIGxvZyhmIlJlZ2lvbnMgdG8gcHJvY2Vzczoge2xlbihyZWdpb25zKX0gKHByaW9yaXR5IDw9IHthcmdzLnByaW9yaXR5fSkiKQogICAgbG9nKGYiVG90YWwgZXN0LiBzaXplOiB7c3VtKHIuZ2V0KCdzaXplX21iJywgMCkgZm9yIHIgaW4gcmVnaW9ucykgLyAxMDI0Oi4xZn0gR0IiKQoKICAgIGlmIGFyZ3MuZHJ5X3J1bjoKICAgICAgICBmb3IgciBpbiByZWdpb25zOgogICAgICAgICAgICBsb2coZiIgIFtkcnktcnVuXSB7clsncmVnaW9uX2tleSddfSAoe3IuZ2V0KCdzaXplX21iJyl9IE1CKSIpCiAgICAgICAgcmV0dXJuCgogICAgY2xpZW50ID0gZ2V0X3IyX2NsaWVudCgpCiAgICBzdGF0ZSAgPSBsb2FkX3N0YXRlKCkKCiAgICAjIEZpbHRlciBhbHJlYWR5IGNvbXBsZXRlZAogICAgdG9kbyA9IFtdCiAgICBmb3IgciBpbiByZWdpb25zOgogICAgICAgIGlmIHJbJ3JlZ2lvbl9rZXknXSBpbiBzdGF0ZVsnY29tcGxldGVkJ106CiAgICAgICAgICAgIGxvZyhmIiAg4pyTIHNraXAgKGNvbXBsZXRlZCk6IHtyWydyZWdpb25fa2V5J119IikKICAgICAgICAgICAgY29udGludWUKICAgICAgICByMl9rZXkgPSBmInBiZi97clsncmVnaW9uX2tleSddfS5vc20ucGJmIgogICAgICAgIGlmIG5vdCBhcmdzLm5vX3Jlc3VtZSBhbmQgcjJfa2V5X2V4aXN0cyhjbGllbnQsIFIyX0JVQ0tFVF9OQU1FLCByMl9rZXkpOgogICAgICAgICAgICBsb2coZiIgIOKckyBza2lwIChpbiBSMik6IHtyWydyZWdpb25fa2V5J119IikKICAgICAgICAgICAgc3RhdGVbJ2NvbXBsZXRlZCddLmFwcGVuZChyWydyZWdpb25fa2V5J10pCiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdG9kby5hcHBlbmQocikKCiAgICBsb2coZiJVcGxvYWRpbmcge2xlbih0b2RvKX0gcmVnaW9ucyB3aXRoIHthcmdzLndvcmtlcnN9IHdvcmtlcnMuLi4iKQoKICAgIHdpdGggVGhyZWFkUG9vbEV4ZWN1dG9yKG1heF93b3JrZXJzPWFyZ3Mud29ya2VycykgYXMgcG9vbDoKICAgICAgICBmdXR1cmVzID0ge3Bvb2wuc3VibWl0KGRvd25sb2FkX2FuZF91cGxvYWQsIHIsIGNsaWVudCwgRmFsc2UpOiByIGZvciByIGluIHRvZG99CiAgICAgICAgZm9yIGZ1dCBpbiBhc19jb21wbGV0ZWQoZnV0dXJlcyk6CiAgICAgICAgICAgIHJlc3VsdCA9IGZ1dC5yZXN1bHQoKQogICAgICAgICAgICBpZiByZXN1bHRbJ3N0YXR1cyddID09ICdvayc6CiAgICAgICAgICAgICAgICBzdGF0ZVsnY29tcGxldGVkJ10uYXBwZW5kKHJlc3VsdFsncmVnaW9uX2tleSddKQogICAgICAgICAgICBlbHNlOgogICAgICAgICAgICAgICAgc3RhdGVbJ2ZhaWxlZCddLmFwcGVuZChyZXN1bHQpCiAgICAgICAgICAgIHNhdmVfc3RhdGUoc3RhdGUpCgogICAgbG9nKGYiXG5Eb25lLiB7bGVuKHN0YXRlWydjb21wbGV0ZWQnXSl9IGNvbXBsZXRlZCwge2xlbihzdGF0ZVsnZmFpbGVkJ10pfSBmYWlsZWQuIikKICAgIGlmIHN0YXRlWydmYWlsZWQnXToKICAgICAgICBsb2coIkZhaWxlZDoiKQogICAgICAgIGZvciBmIGluIHN0YXRlWydmYWlsZWQnXToKICAgICAgICAgICAgbG9nKGYiICDinJcge2ZbJ3JlZ2lvbl9rZXknXX06IHtmLmdldCgnZXJyb3InLCAnPycpfSIpCgoKaWYgX19uYW1lX18gPT0gJ19fbWFpbl9fJzoKICAgIG1haW4oKQo=
+#!/usr/bin/env python3
+"""
+upload_pbfs_to_r2.py — One-time Geofabrik PBF seeder for Phase 2
+=================================================================
+Downloads all Geofabrik regional PBFs listed in python/geofabrik_regions.json
+and uploads them to the mapvibe-graph-cache R2 bucket under the pbf/ prefix.
+
+Run this LOCALLY (not on Railway) — total download is ~55 GB.
+Progress is saved to upload_state.json so interrupted runs resume cleanly.
+
+Usage:
+    python scripts/upload_pbfs_to_r2.py [--priority 1] [--dry-run] [--resume]
+
+    --priority N    Only upload regions with priority <= N (default: all)
+    --dry-run       Print what would be uploaded, skip actual transfer
+    --resume        Skip regions already present in R2 (default: True)
+    --workers N     Parallel upload workers (default: 3)
+
+Required env vars:
+    R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+    R2_BUCKET_NAME  (optional, default: mapvibe-graph-cache)
+"""
+
+import os
+import sys
+import json
+import time
+import hashlib
+import argparse
+import threading
+import tempfile
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    import boto3
+    import requests
+except ImportError:
+    print("Missing deps. Run: pip install boto3 requests")
+    sys.exit(1)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+SCRIPT_DIR   = Path(__file__).parent
+REPO_ROOT    = SCRIPT_DIR.parent
+REGIONS_FILE = REPO_ROOT / 'python' / 'geofabrik_regions.json'
+STATE_FILE   = SCRIPT_DIR / 'upload_state.json'
+TMP_DIR      = Path(tempfile.gettempdir()) / 'mapvibe_pbf_upload'
+TMP_DIR.mkdir(exist_ok=True)
+
+R2_ACCOUNT_ID        = os.environ['R2_ACCOUNT_ID']
+R2_ACCESS_KEY_ID     = os.environ['R2_ACCESS_KEY_ID']
+R2_SECRET_ACCESS_KEY = os.environ['R2_SECRET_ACCESS_KEY']
+R2_BUCKET_NAME       = os.environ.get('R2_BUCKET_NAME', 'mapvibe-graph-cache')
+
+CHUNK_SIZE   = 16 * 1024 * 1024   # 16 MB download chunks
+PART_SIZE    = 64 * 1024 * 1024   # 64 MB R2 multipart parts
+
+_print_lock = threading.Lock()
+
+def log(msg: str):
+    with _print_lock:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# ── R2 client ─────────────────────────────────────────────────────────────────
+def get_r2_client():
+    return boto3.client(
+        's3',
+        endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+    )
+
+
+def r2_key_exists(client, bucket: str, key: str) -> bool:
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+# ── Download + upload ─────────────────────────────────────────────────────────
+def download_and_upload(region: dict, client, dry_run: bool) -> dict:
+    region_key = region['region_key']
+    url        = region['url']
+    r2_key     = f"pbf/{region_key}.osm.pbf"
+    size_mb    = region.get('size_mb', '?')
+
+    log(f"▶  {region_key}  ({size_mb} MB)  →  {r2_key}")
+
+    if dry_run:
+        return {'region_key': region_key, 'status': 'dry_run'}
+
+    # Download to temp file
+    tmp_path = TMP_DIR / f"{region_key.replace('/', '_')}.osm.pbf"
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        t0 = time.time()
+        with requests.get(url, stream=True, timeout=600) as resp:
+            resp.raise_for_status()
+            total_bytes = int(resp.headers.get('content-length', 0))
+            downloaded  = 0
+            with open(tmp_path, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+            dl_secs = time.time() - t0
+            dl_mb   = downloaded / 1024 / 1024
+            log(f"   ↓ {region_key}: {dl_mb:.0f} MB in {dl_secs:.0f}s ({dl_mb/dl_secs:.1f} MB/s)")
+
+        # Multipart upload to R2
+        file_size = tmp_path.stat().st_size
+        t1 = time.time()
+        if file_size > PART_SIZE:
+            # Multipart
+            mpu = client.create_multipart_upload(
+                Bucket=R2_BUCKET_NAME, Key=r2_key,
+                ContentType='application/octet-stream',
+            )
+            upload_id = mpu['UploadId']
+            parts = []
+            part_num = 1
+            with open(tmp_path, 'rb') as f:
+                while True:
+                    data = f.read(PART_SIZE)
+                    if not data:
+                        break
+                    resp = client.upload_part(
+                        Bucket=R2_BUCKET_NAME, Key=r2_key,
+                        UploadId=upload_id, PartNumber=part_num, Body=data,
+                    )
+                    parts.append({'PartNumber': part_num, 'ETag': resp['ETag']})
+                    part_num += 1
+            client.complete_multipart_upload(
+                Bucket=R2_BUCKET_NAME, Key=r2_key,
+                UploadId=upload_id,
+                MultipartUpload={'Parts': parts},
+            )
+        else:
+            # Single-part
+            with open(tmp_path, 'rb') as f:
+                client.put_object(
+                    Bucket=R2_BUCKET_NAME, Key=r2_key,
+                    Body=f, ContentType='application/octet-stream',
+                )
+        ul_secs  = time.time() - t1
+        file_mb  = file_size / 1024 / 1024
+        log(f"   ↑ {region_key}: {file_mb:.0f} MB → R2 in {ul_secs:.0f}s ({file_mb/ul_secs:.1f} MB/s)")
+
+        # Cleanup
+        tmp_path.unlink(missing_ok=True)
+        return {'region_key': region_key, 'status': 'ok', 'size_mb': file_mb}
+
+    except Exception as e:
+        log(f"   ✗  {region_key}: {e}")
+        tmp_path.unlink(missing_ok=True)
+        return {'region_key': region_key, 'status': 'error', 'error': str(e)}
+
+
+# ── State persistence ─────────────────────────────────────────────────────────
+def load_state() -> dict:
+    if STATE_FILE.exists():
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    return {'completed': [], 'failed': []}
+
+
+def save_state(state: dict):
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description='Upload Geofabrik PBFs to R2')
+    parser.add_argument('--priority', type=int, default=99, help='Max priority level to upload')
+    parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--no-resume', action='store_true', help='Re-upload even if key exists in R2')
+    parser.add_argument('--workers', type=int, default=2)
+    args = parser.parse_args()
+
+    regions = json.loads(REGIONS_FILE.read_text())
+    regions = [r for r in regions if r.get('priority', 99) <= args.priority]
+    regions.sort(key=lambda r: r.get('priority', 99))
+
+    log(f"Regions to process: {len(regions)} (priority <= {args.priority})")
+    log(f"Total est. size: {sum(r.get('size_mb', 0) for r in regions) / 1024:.1f} GB")
+
+    if args.dry_run:
+        for r in regions:
+            log(f"  [dry-run] {r['region_key']} ({r.get('size_mb')} MB)")
+        return
+
+    client = get_r2_client()
+    state  = load_state()
+
+    # Filter already completed
+    todo = []
+    for r in regions:
+        if r['region_key'] in state['completed']:
+            log(f"  ✓ skip (completed): {r['region_key']}")
+            continue
+        r2_key = f"pbf/{r['region_key']}.osm.pbf"
+        if not args.no_resume and r2_key_exists(client, R2_BUCKET_NAME, r2_key):
+            log(f"  ✓ skip (in R2): {r['region_key']}")
+            state['completed'].append(r['region_key'])
+            continue
+        todo.append(r)
+
+    log(f"Uploading {len(todo)} regions with {args.workers} workers...")
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(download_and_upload, r, client, False): r for r in todo}
+        for fut in as_completed(futures):
+            result = fut.result()
+            if result['status'] == 'ok':
+                state['completed'].append(result['region_key'])
+            else:
+                state['failed'].append(result)
+            save_state(state)
+
+    log(f"\nDone. {len(state['completed'])} completed, {len(state['failed'])} failed.")
+    if state['failed']:
+        log("Failed:")
+        for f in state['failed']:
+            log(f"  ✗ {f['region_key']}: {f.get('error', '?')}")
+
+
+if __name__ == '__main__':
+    main()
