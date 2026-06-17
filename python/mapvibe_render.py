@@ -753,7 +753,7 @@ def render(params: dict) -> bytes:
         # width on a 12.5×16.7 in classic — parity with the editor's
         # visual weight. n_chars > 10 still shrinks proportionally so very
         # long names (SAN FRANCISCO, JOHANNESBURG) stay inside the band.
-        base_main = 38 * scale
+        base_main = 24 * scale
         n_chars = len(display_city)
         adjusted_size = (max(base_main * (10 / n_chars), 10 * scale)
                          if n_chars > 10 else base_main)
