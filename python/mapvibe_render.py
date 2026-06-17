@@ -275,7 +275,8 @@ def _get_r2_client():
                 endpoint_url=f'https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
                 aws_access_key_id=_R2_ACCESS_KEY_ID,
                 aws_secret_access_key=_R2_SECRET_ACCESS_KEY,
-                region_name='auto',
+                # R2 region is always 'auto'; omitting region_name avoids boto3
+                # validation errors on versions that reject non-AWS region strings.
             )
             _log('R2 graph cache client initialised')
         except Exception as e:
