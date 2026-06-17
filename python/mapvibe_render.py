@@ -47,6 +47,46 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
+
+# ── Overpass mirror failover ──────────────────────────────────────────────────
+# OSMnx defaults to overpass-api.de which has been observed refusing
+# connections (Errno 111) under sustained load — production 2026-06-17 logs:
+# every render burning 60 s + then dying because the primary mirror was
+# unreachable. Probe alternates at process start and pick the first one whose
+# TCP socket accepts a handshake; this Python subprocess is spawned per render
+# so the probe runs once per request (worst case +2 s on a cold render when
+# the primary is down). Override the candidate list via the OVERPASS_URLS env
+# var (comma-separated) when adding/reordering mirrors.
+
+def _select_overpass_mirror() -> str:
+    import socket
+    from urllib.parse import urlparse
+
+    raw = os.environ.get(
+        'OVERPASS_URLS',
+        'https://overpass-api.de/api/interpreter,'
+        'https://overpass.kumi.systems/api/interpreter,'
+        'https://overpass.osm.ch/api/interpreter'
+    )
+    candidates = [s.strip() for s in raw.split(',') if s.strip()]
+    for url in candidates:
+        host = urlparse(url).hostname
+        port = urlparse(url).port or 443
+        if not host:
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return url
+        except Exception:
+            continue
+    # All mirrors unreachable — fall through to the first and let the actual
+    # fetch raise a meaningful error instead of swallowing it here.
+    return candidates[0] if candidates else 'https://overpass-api.de/api/interpreter'
+
+
+_OVERPASS_URL = _select_overpass_mirror()
+ox.settings.overpass_url = _OVERPASS_URL
+print(f'[mapvibe_render] Overpass mirror: {_OVERPASS_URL}', file=sys.stderr, flush=True)
 from geopy.geocoders import Nominatim
 from matplotlib.font_manager import FontProperties
 
