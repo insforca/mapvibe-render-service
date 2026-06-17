@@ -39,6 +39,7 @@ import io
 import pickle
 import time
 import hashlib
+import threading
 
 # ── Headless matplotlib — MUST be set before any pyplot import ─────────────
 import matplotlib
@@ -166,21 +167,31 @@ def _graph_cache_key(prefix: str, qlat: float, qlng: float, qdist: int, *extras)
     return f'{prefix}_{hashlib.sha256("|".join(parts).encode()).hexdigest()[:24]}'
 
 def graph_cache_get(key: str):
-    """Return the cached value if fresh (within TTL), else None. Treat any
-    pickle / OS error as a miss — never let a bad cache entry break a render."""
+    """Return the cached value if fresh (within TTL), else None.
+    Lookup order:  disk L1 (~1 s) → R2 L2 (~2 s) → None (Overpass fallback).
+    Never raises — any error is treated as a cache miss."""
     path = _cache_path(key)
+    # L1: disk
     try:
-        if not os.path.exists(path):
-            return None
-        if (time.time() - os.path.getmtime(path)) > _GRAPH_CACHE_TTL_S:
-            return None
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+        if os.path.exists(path) and (time.time() - os.path.getmtime(path)) <= _GRAPH_CACHE_TTL_S:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
     except Exception as e:
-        _log(f'Graph cache read failed ({key}): {e}')
-        return None
+        _log(f'Graph cache L1 read failed ({key}): {e}')
+    # L2: R2 (only when configured)
+    r2_value = r2_cache_get(key)
+    if r2_value is not None:
+        _graph_cache_write_disk(key, r2_value)   # warm L1 from L2
+        return r2_value
+    return None
 
 def graph_cache_set(key: str, value) -> None:
+    """Write to disk L1 (atomic) and kick off a non-blocking R2 L2 upload."""
+    _graph_cache_write_disk(key, value)
+    r2_cache_set(key, value)   # daemon thread — never blocks render
+
+
+def _graph_cache_write_disk(key: str, value) -> None:
     """Atomically write the entry (tmp + rename) and run an LRU eviction pass
     so a long-running container can't blow past the disk budget. Never raises —
     cache failure must not break the render."""
@@ -191,7 +202,7 @@ def graph_cache_set(key: str, value) -> None:
             pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)
     except Exception as e:
-        _log(f'Graph cache write failed ({key}): {e}')
+        _log(f'Graph cache L1 write failed ({key}): {e}')
         try: os.unlink(tmp)
         except Exception: pass
         return
@@ -227,6 +238,92 @@ def _graph_cache_evict_if_over_budget() -> None:
             _log(f'Graph cache: evicted {evicted} entries (LRU, budget={_GRAPH_CACHE_MAX_BYTES // 1024 // 1024} MB)')
     except Exception as e:
         _log(f'Graph cache eviction failed: {e}')
+
+
+
+# ── R2 graph cache — L2 persistent layer (survives Railway restarts) ──────────
+# When R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set, graph
+# cache entries are also mirrored to Cloudflare R2 (S3-compatible, zero egress
+# fees). Lookup order:  disk L1 (~1s) → R2 L2 (~2s) → Overpass (~20-65s).
+# R2 writes run in daemon threads so they NEVER block a render.
+# Falls back silently if R2 is not configured or any call fails.
+
+_R2_ACCOUNT_ID        = os.environ.get('R2_ACCOUNT_ID', '')
+_R2_ACCESS_KEY_ID     = os.environ.get('R2_ACCESS_KEY_ID', '')
+_R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY', '')
+_R2_BUCKET_NAME       = os.environ.get('R2_BUCKET_NAME', 'mapvibe-graph-cache')
+_R2_ENABLED           = bool(_R2_ACCOUNT_ID and _R2_ACCESS_KEY_ID and _R2_SECRET_ACCESS_KEY)
+_r2_client = None
+_r2_init_lock = threading.Lock()
+
+
+def _get_r2_client():
+    """Lazily initialise and return the boto3 S3 client for R2. Returns None
+    if R2 is not configured or boto3 is unavailable.""""
+    global _r2_client
+    if not _R2_ENABLED:
+        return None
+    if _r2_client is not None:
+        return _r2_client
+    with _r2_init_lock:
+        if _r2_client is not None:
+            return _r2_client
+        try:
+            import boto3
+            _r2_client = boto3.client(
+                's3',
+                endpoint_url=f'https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+                aws_access_key_id=_R2_ACCESS_KEY_ID,
+                aws_secret_access_key=_R2_SECRET_ACCESS_KEY,
+                region_name='auto',
+            )
+            _log('R2 graph cache client initialised')
+        except Exception as e:
+            _log(f'R2 client init failed — R2 disabled: {e}')
+            _r2_client = None
+        return _r2_client
+
+
+def _r2_obj_key(cache_key: str) -> str:
+    return f'graphs/{cache_key}.pkl'
+
+
+def r2_cache_get(cache_key: str):
+    """Try to fetch a graph entry from R2. Returns unpickled value or None.""""
+    client = _get_r2_client()
+    if client is None:
+        return None
+    try:
+        obj = client.get_object(Bucket=_R2_BUCKET_NAME, Key=_r2_obj_key(cache_key))
+        data = obj['Body'].read()
+        value = pickle.loads(data)
+        _log(f'R2 L2 cache hit ({cache_key})')
+        return value
+    except client.exceptions.NoSuchKey:
+        return None
+    except Exception as e:
+        _log(f'R2 cache get failed ({cache_key}): {e}')
+        return None
+
+
+def r2_cache_set(cache_key: str, value) -> None:
+    """Upload a graph entry to R2 in a background daemon thread.""""
+    def _upload():
+        client = _get_r2_client()
+        if client is None:
+            return
+        try:
+            data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            client.put_object(
+                Bucket=_R2_BUCKET_NAME,
+                Key=_r2_obj_key(cache_key),
+                Body=data,
+                ContentType='application/octet-stream',
+            )
+            _log(f'R2 L2 cache written ({cache_key}, {len(data) // 1024} KB)')
+        except Exception as e:
+            _log(f'R2 cache set failed ({cache_key}): {e}')
+    threading.Thread(target=_upload, daemon=True).start()
 
 
 # ── Theme loading ─────────────────────────────────────────────────────────────
