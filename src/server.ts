@@ -1711,7 +1711,7 @@ function runStartupCitySeed(): void {
     console.warn('[seed] top_cities.json not found or invalid — skipping startup seed:', (e as Error).message);
     return;
   }
-  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 2s intervals`);
+  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 5s intervals`);
   let idx = 0;
   function warmNext(): void {
     if (idx >= cities.length) {
@@ -1734,7 +1734,7 @@ function runStartupCitySeed(): void {
     }, AbortSignal.timeout(120_000)).then(
       () => console.log(`[seed] ✓ ${c.city}, ${c.country} (${idx}/${cities.length})`),
       (e: Error) => console.log(`[seed] ✗ ${c.city}: ${e.message}`),
-    ).finally(() => setTimeout(warmNext, 2_000));
+    ).finally(() => setTimeout(warmNext, 5_000));
   }
   // Delay first warm by 15s to let the service fully boot before hitting Overpass.
   setTimeout(warmNext, 15_000);
