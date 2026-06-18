@@ -549,7 +549,21 @@ def _try_pbf_extraction(lat: float, lon: float, dist: int,
                         minor_roads: bool, cache_key: str) -> object:
     """Full PBF tier: find region → ensure local PBF → extract graph.
     On success, writes the graph to L1+L2 (graph cache) and returns it.
-    Returns None on any failure so caller falls through to Overpass."""
+    Returns None on any failure so caller falls through to Overpass.
+
+    IMPORTANT: pyrosm availability is checked FIRST — before any PBF download.
+    Without this guard, _ensure_pbf_local eagerly downloads the full regional
+    PBF (up to 4 GB) only to discover pyrosm is absent, wasting 40-60 s
+    before falling through to Overpass and making every cold village render
+    pay a full PBF download cost for zero benefit.
+    """
+    # Guard: bail immediately if pyrosm is not installed.
+    # This is the critical check — it must precede _ensure_pbf_local.
+    try:
+        import pyrosm  # noqa: F401
+    except ImportError:
+        _log('pyrosm not installed — skipping PBF tier (Overpass fallback)')
+        return None
     region = _coord_to_pbf_region(lat, lon)
     if region is None:
         return None
