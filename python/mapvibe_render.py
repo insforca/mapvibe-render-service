@@ -61,18 +61,25 @@ import osmnx as ox
 # the primary is down). Override the candidate list via the OVERPASS_URLS env
 # var (comma-separated) when adding/reordering mirrors.
 
-def _select_overpass_mirror() -> str:
-    import socket
-    from urllib.parse import urlparse
-
-    raw = os.environ.get(
+# Module-level candidate list so the per-request failover can rotate through it.
+_OVERPASS_CANDIDATES: list[str] = [
+    s.strip()
+    for s in os.environ.get(
         'OVERPASS_URLS',
         'https://overpass-api.de/api/interpreter,'
         'https://overpass.kumi.systems/api/interpreter,'
         'https://overpass.osm.ch/api/interpreter'
-    )
-    candidates = [s.strip() for s in raw.split(',') if s.strip()]
-    for url in candidates:
+    ).split(',')
+    if s.strip()
+]
+_overpass_idx = 0  # index into _OVERPASS_CANDIDATES; mutated by failover helper
+
+
+def _select_overpass_mirror() -> str:
+    import socket
+    from urllib.parse import urlparse
+
+    for url in _OVERPASS_CANDIDATES:
         host = urlparse(url).hostname
         port = urlparse(url).port or 443
         if not host:
@@ -84,12 +91,48 @@ def _select_overpass_mirror() -> str:
             continue
     # All mirrors unreachable — fall through to the first and let the actual
     # fetch raise a meaningful error instead of swallowing it here.
-    return candidates[0] if candidates else 'https://overpass-api.de/api/interpreter'
+    return _OVERPASS_CANDIDATES[0] if _OVERPASS_CANDIDATES else 'https://overpass-api.de/api/interpreter'
 
 
 _OVERPASS_URL = _select_overpass_mirror()
+# Align _overpass_idx with whatever the probe chose.
+if _OVERPASS_URL in _OVERPASS_CANDIDATES:
+    _overpass_idx = _OVERPASS_CANDIDATES.index(_OVERPASS_URL)
 ox.settings.overpass_url = _OVERPASS_URL
 print(f'[mapvibe_render] Overpass mirror: {_OVERPASS_URL}', file=sys.stderr, flush=True)
+
+
+def _ox_call_with_mirror_failover(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) (an osmnx Overpass-backed call).
+
+    On ConnectionError / MaxRetryError / timeout, rotate to the next mirror
+    from _OVERPASS_CANDIDATES and retry — up to len(_OVERPASS_CANDIDATES)
+    attempts total.  This protects against a mirror that passed the startup
+    TCP probe but then starts refusing connections under load mid-seeder-run.
+
+    Back-off: 0 s on first failure, 2 s on second, 4 s on third.
+    """
+    global _overpass_idx
+    import requests as _req_mod
+    backoffs = [0, 2, 4]
+    last_exc: Exception | None = None
+    for attempt in range(len(_OVERPASS_CANDIDATES)):
+        try:
+            return fn(*args, **kwargs)
+        except (_req_mod.exceptions.ConnectionError,
+                _req_mod.exceptions.Timeout,
+                OSError) as exc:
+            last_exc = exc
+            _log(f'Overpass mirror {ox.settings.overpass_url!r} failed '
+                 f'(attempt {attempt + 1}/{len(_OVERPASS_CANDIDATES)}): '
+                 f'{type(exc).__name__}: {exc}')
+            _overpass_idx = (_overpass_idx + 1) % len(_OVERPASS_CANDIDATES)
+            ox.settings.overpass_url = _OVERPASS_CANDIDATES[_overpass_idx]
+            _log(f'Rotating Overpass mirror → {ox.settings.overpass_url!r}')
+            sleep_s = backoffs[min(attempt, len(backoffs) - 1)]
+            if sleep_s:
+                time.sleep(sleep_s)
+    raise last_exc  # type: ignore[misc]
 from geopy.geocoders import Nominatim
 from matplotlib.font_manager import FontProperties
 
@@ -880,7 +923,7 @@ def render(params: dict) -> bytes:
             return cached
         if minor_roads:
             # Full drive network — residential/service/etc. are drawn.
-            g_ = ox.graph_from_point(qpoint, dist=qdist, network_type=network_type)
+            g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, network_type=network_type)
         else:
             # Clean mode draws only motorway / trunk / primary (matches editor's
             # roadDetailMode='arteries' which hides road-secondary, road-minor-mid
@@ -889,7 +932,7 @@ def render(params: dict) -> bytes:
             # the Overpass bandwidth by not downloading them in the first place.
             # The regex matches *_link suffixes for free (no anchors).
             major_roads_filter = '["highway"~"motorway|trunk|primary"]'
-            g_ = ox.graph_from_point(qpoint, dist=qdist, custom_filter=major_roads_filter)
+            g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, custom_filter=major_roads_filter)
         graph_cache_set(key, g_)
         return g_
 
@@ -900,7 +943,8 @@ def render(params: dict) -> bytes:
             cache_hits['water'] = True
             return cached
         try:
-            gdf = ox.features_from_point(
+            gdf = _ox_call_with_mirror_failover(
+                ox.features_from_point,
                 qpoint,
                 tags={'natural': ['water', 'bay', 'strait'], 'waterway': 'riverbank'},
                 dist=qdist,
@@ -918,7 +962,8 @@ def render(params: dict) -> bytes:
             cache_hits['parks'] = True
             return cached
         try:
-            gdf = ox.features_from_point(
+            gdf = _ox_call_with_mirror_failover(
+                ox.features_from_point,
                 qpoint,
                 tags={'leisure': 'park', 'landuse': 'grass'},
                 dist=qdist,
@@ -941,7 +986,8 @@ def render(params: dict) -> bytes:
             cache_hits['rail'] = True
             return cached
         try:
-            gdf = ox.features_from_point(
+            gdf = _ox_call_with_mirror_failover(
+                ox.features_from_point,
                 qpoint,
                 tags={'railway': ['rail', 'light_rail', 'subway', 'tram', 'monorail']},
                 dist=qdist,
