@@ -272,7 +272,7 @@ _r2_init_lock = threading.Lock()
 
 def _get_r2_client():
     """Lazily initialise and return the boto3 S3 client for R2. Returns None
-    if R2 is not configured or boto3 is unavailable.""""
+    if R2 is not configured or boto3 is unavailable."""
     global _r2_client
     if not _R2_ENABLED:
         return None
@@ -303,7 +303,7 @@ def _r2_obj_key(cache_key: str) -> str:
 
 
 def r2_cache_get(cache_key: str):
-    """Try to fetch a graph entry from R2. Returns unpickled value or None.""""
+    """Try to fetch a graph entry from R2. Returns unpickled value or None."""
     client = _get_r2_client()
     if client is None:
         return None
@@ -321,7 +321,7 @@ def r2_cache_get(cache_key: str):
 
 
 def r2_cache_set(cache_key: str, value) -> None:
-    """Upload a graph entry to R2 in a background daemon thread.""""
+    """Upload a graph entry to R2 in a background daemon thread."""
     def _upload():
         client = _get_r2_client()
         if client is None:
