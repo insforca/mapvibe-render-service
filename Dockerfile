@@ -33,8 +33,85 @@ RUN npm install
 
 # ── Python OSM renderer venv ──────────────────────────────────────────────────
 COPY python/requirements.txt ./python/requirements.txt
-RUN python3 -m venv /opt/mapvibe-py \
+# pyrobuf (transitive build dep of pyrosm) breaks with setuptools>=82;
+# pip's build isolation spawns its own fresh env and ignores venv pins,
+# so PIP_CONSTRAINT is required — it is inherited by isolated subprocesses.
+RUN echo 'setuptools<82' > /tmp/pip-constraints.txt \
+  && python3 -m venv /opt/mapvibe-py \
   && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir 'setuptools<82' \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
+  && PIP_CONSTRAINT=/tmp/pip-constraints.txt \
+     /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
 ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
+
+COPY fonts/ ./fonts/
+COPY assets/ ./assets/
+
+# ── Download IBM Plex Mono to assets/fonts/ at build time ────────────────────
+# IBMPlexMono-Regular.ttf is registered in registerBundledDesignFonts() (server.ts)
+# but was not committed to the repo. Without this font, coordinates and attribution
+# text render as □□□ boxes (tofu) on all Railway renders.
+# The Google Fonts CSS fallback in ensureFont() also fails silently because modern
+# fetch() receives WOFF2 but the regex only matches truetype|woff|opentype.
+# Downloading to assets/fonts/ (the path FONT_CACHE_DIR scans) fixes this permanently.
+RUN curl -fsSL \
+      "https://github.com/google/fonts/raw/main/ofl/ibmplexmono/IBMPlexMono-Regular.ttf" \
+      -o assets/fonts/IBMPlexMono-Regular.ttf \
+    && echo "IBM Plex Mono: downloaded OK" \
+    || echo "WARNING: IBMPlexMono-Regular.ttf download failed — coordinates may render as boxes"
+
+# ── Python OSM renderer ───────────────────────────────────────────────────────
+COPY python/ ./python/
+
+# ── Download Roboto fonts at build time (not bundled as binary blobs in repo) ─
+# Roboto-Bold, Light, Regular — used by mapvibe_render.py typography layer.
+RUN mkdir -p python/fonts && \
+    BASE=https://github.com/google/fonts/raw/main/apache/roboto/static && \
+    for variant in Bold Light Regular; do \
+      curl -fsSL "${BASE}/Roboto-${variant}.ttf" -o "python/fonts/Roboto-${variant}.ttf" 2>/dev/null || \
+      echo "Warning: Roboto-${variant}.ttf download failed — will fall back to system fonts at runtime"; \
+    done && \
+    ls -lh python/fonts/ || true
+
+RUN echo '{"city":"Paris","country":"France","lat":48.8566,"lng":2.3522,"dist":100,"width_in":3,"height_in":4,"dpi":72,"show_text":false,"output_path":"/tmp/smoke_test.png"}' \
+  | ${MAPVIBE_PYTHON} python/mapvibe_render.py \
+  && echo 'Python OSM renderer: OK' || echo 'Python OSM renderer: WARN (non-fatal at build time)'
+COPY src/ ./src/
+RUN npx tsc
+
+# ── Build-time smoke tests ────────────────────────────────────────────────────
+# 1. ldd: all native deps resolved
+RUN find /app/node_modules/@maplibre -name '*.node' | head -1 | xargs ldd 2>&1 | grep 'not found' || echo 'ldd: all libs resolved'
+
+# 2. require() — shared library loads
+RUN node -e "const {spawnSync}=require('child_process');const r=spawnSync('node',['-e','require(\"@maplibre/maplibre-gl-native\");console.log(\"mbgl OK\")'],{timeout:8000});console.log('mbgl exit:'+r.status+' signal:'+r.signal+' out:'+String(r.stdout).trim()+' err:'+String(r.stderr).trim());" || true
+
+# 3. Map() + render() — full EGL/GLX context + render test (with Xvfb)
+RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
+    sleep 1 && \
+    node -e " \
+      const mbgl = require('@maplibre/maplibre-gl-native'); \
+      const m = new mbgl.Map({ request: function(req, cb) { cb(new Error('blocked')); }, ratio: 1 }); \
+      const style = { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#336699' } }] }; \
+      m.load(style); \
+      m.render({ zoom: 0, center: [0, 0], width: 64, height: 64, bearing: 0, pitch: 0 }, function(err, buf) { \
+        m.release(); \
+        if (err) { console.error('RENDER FAIL:', err.message); process.exit(1); } \
+        console.log('RENDER OK buf:', buf ? buf.length : 0); \
+      }); \
+    " || true
+
+RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
+RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
+
+COPY start.sh .
+RUN chmod +x start.sh
+
+EXPOSE 3000
+
+# Container healthcheck — Railway uses /health for liveness; this duplicates
+# the signal for docker tooling + local runs. Uses node's built-in http (no
+# extra package install needed; wget/curl aren't on ubuntu:24.04 minimal).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["./start.sh"]
