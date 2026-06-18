@@ -33,14 +33,9 @@ RUN npm install
 
 # ── Python OSM renderer venv ──────────────────────────────────────────────────
 COPY python/requirements.txt ./python/requirements.txt
-# pyrobuf (transitive build dep of pyrosm) breaks with setuptools>=82;
-# pip's build isolation spawns its own fresh env and ignores venv pins,
-# so PIP_CONSTRAINT is required — it is inherited by isolated subprocesses.
-RUN echo 'setuptools<82' > /tmp/pip-constraints.txt \
-  && python3 -m venv /opt/mapvibe-py \
+RUN python3 -m venv /opt/mapvibe-py \
   && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
-  && PIP_CONSTRAINT=/tmp/pip-constraints.txt \
-     /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
+  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
 ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
 
 COPY fonts/ ./fonts/
