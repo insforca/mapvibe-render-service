@@ -1,0 +1,40 @@
+# .github/workflows/seed-brazil-pbfs.yml
+#
+# One-click seed: uploads the 5 Brazil Geofabrik sub-region PBFs to R2 via
+# Railway's CLI. Trigger manually from the Actions tab whenever the region
+# list changes or PBFs need refreshing.
+#
+# Prerequisites:
+#   • RAILWAY_TOKEN secret set in repo Settings → Secrets → Actions
+#   • Railway CLI v3+ (installed by the action below)
+#
+name: Seed Brazil PBFs to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      keys:
+        description: "Space-separated PBF region keys (leave blank for all 5 Brazil sub-regions)"
+        required: false
+        default: >-
+          south-america/brazil/norte
+          south-america/brazil/nordeste
+          south-america/brazil/sudeste
+          south-america/brazil/sul
+          south-america/brazil/centro-oeste
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Seed PBFs
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          railway run \
+            --service render-service \
+            python scripts/upload_pbfs_to_r2.py \
+            --keys ${{ github.event.inputs.keys }}
