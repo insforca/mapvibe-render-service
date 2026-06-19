@@ -67,9 +67,14 @@ RUN mkdir -p python/fonts && \
     done && \
     ls -lh python/fonts/ || true
 
-RUN echo '{"city":"Paris","country":"France","lat":48.8566,"lng":2.3522,"dist":100,"width_in":3,"height_in":4,"dpi":72,"show_text":false,"output_path":"/tmp/smoke_test.png"}' \
-  | ${MAPVIBE_PYTHON} python/mapvibe_render.py \
-  && echo 'Python OSM renderer: OK' || echo 'Python OSM renderer: WARN (non-fatal at build time)'
+# Lightweight import check — verifies venv is healthy without any network I/O.
+# A full Paris render was here before; replaced because pyrosm (now installed)
+# activates the PBF tier and triggers a 3.8 GB Geofabrik download at build time
+# when R2 credentials are not available.
+RUN ${MAPVIBE_PYTHON} -c "\
+import osmnx, matplotlib, geopandas, shapely, PIL, pyrosm, boto3; \
+print('Python OSM renderer: all imports OK')\
+"
 COPY src/ ./src/
 RUN npx tsc
 
