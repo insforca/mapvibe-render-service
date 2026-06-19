@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
   && apt-get install -y nodejs \
   && apt-get install -y --no-install-recommends \
     libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
-    pkg-config build-essential python3 \
+    pkg-config build-essential python3 python3-dev \
     libgl1 libgl1-mesa-dri libglx0 libglx-mesa0 libopengl0 \
     libegl1 libegl-mesa0 libgles2 \
     libx11-6 libxext6 \
