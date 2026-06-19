@@ -1004,6 +1004,19 @@ def render(params: dict) -> bytes:
             )
         except Exception as e:
             _log(f'Rail fetch skipped: {e}')
+            # Cache empty result for "no features" responses so we don't hit
+            # Overpass on every render for cities with no railway=rail/subway
+            # tagging (DC Metro, many Brazilian cities, etc.).  Transient
+            # network / timeout errors are NOT cached so they retry next render.
+            no_features = (
+                'No matching features' in str(e)
+                or 'InsufficientResponse' in type(e).__name__
+            )
+            if no_features:
+                import geopandas as gpd
+                empty = gpd.GeoDataFrame()
+                graph_cache_set(key, empty)
+                return empty
             return None
         graph_cache_set(key, gdf)
         return gdf
