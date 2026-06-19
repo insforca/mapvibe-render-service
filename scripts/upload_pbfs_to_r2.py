@@ -179,12 +179,27 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--no-resume', action='store_true', help='Re-upload even if key exists in R2')
     parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument(
+        '--keys', nargs='+', metavar='REGION_KEY',
+        help='Force-upload specific region keys regardless of R2 status (for repairs).'
+             ' Example: --keys central-america/dominican-republic central-america/haiti',
+    )
     args = parser.parse_args()
 
     regions = json.loads(REGIONS_FILE.read_text())
     regions = [r for r in regions if r.get('priority', 99) <= args.priority]
     regions.sort(key=lambda r: r.get('priority', 99))
 
+    # --keys: restrict to specific region keys (force-upload, ignore R2 presence)
+    if args.keys:
+        key_set = set(args.keys)
+        regions = [r for r in regions if r['region_key'] in key_set]
+        missing = key_set - {r['region_key'] for r in regions}
+        if missing:
+            log(f"WARNING: unknown keys ignored: {missing}")
+        # Force re-upload by enabling no_resume for targeted repairs
+        args.no_resume = True
+        log(f"Targeted repair mode: {len(regions)} region(s) → {[r['region_key'] for r in regions]}")
     log(f"Regions to process: {len(regions)} (priority <= {args.priority})")
     log(f"Total est. size: {sum(r.get('size_mb', 0) for r in regions) / 1024:.1f} GB")
 
