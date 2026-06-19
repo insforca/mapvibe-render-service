@@ -1116,5 +1116,29 @@
       -7.34
     ],
     "size_mb": 189
+  },
+  {
+    "region_key": "north-america/us/district-of-columbia",
+    "url": "https://download.geofabrik.de/north-america/us/district-of-columbia-latest.osm.pbf",
+    "bbox": [
+      -77.12,
+      38.79,
+      -76.91,
+      39.0
+    ],
+    "size_mb": 7,
+    "priority": 1
+  },
+  {
+    "region_key": "north-america/us/maryland",
+    "url": "https://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf",
+    "bbox": [
+      -79.49,
+      37.91,
+      -74.99,
+      39.72
+    ],
+    "size_mb": 160,
+    "priority": 2
   }
 ]
