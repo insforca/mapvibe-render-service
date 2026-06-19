@@ -584,7 +584,17 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
         _log(f'PBF extraction OK: {len(G.nodes)} nodes, {len(G.edges)} edges')
         return G
     except Exception as e:
-        _log(f'PBF graph extraction failed: {e}')
+        err_str = str(e)
+        # BlobHeader / StructError: the local PBF is corrupted (e.g. partial R2 upload).
+        # Evict it so the next request re-downloads a fresh copy from Geofabrik → R2.
+        if 'BlobHeader' in err_str or 'exceeds the' in err_str or 'StructError' in err_str:
+            _log(f'PBF corrupted ({pbf_path}) — evicting: {e}')
+            try:
+                os.unlink(pbf_path)
+            except Exception:
+                pass
+        else:
+            _log(f'PBF graph extraction failed: {e}')
         return None
 
 

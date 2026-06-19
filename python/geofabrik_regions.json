@@ -1,86 +1,1065 @@
 [
-  {"region_key": "south-america/brazil",        "url": "https://download.geofabrik.de/south-america/brazil-latest.osm.pbf",              "bbox": [-73.99, -33.75, -28.85, 5.27],      "size_mb": 1350, "priority": 1},
-  {"region_key": "south-america/colombia",      "url": "https://download.geofabrik.de/south-america/colombia-latest.osm.pbf",            "bbox": [-79.01, -4.23, -66.87, 12.60],      "size_mb": 230,  "priority": 1},
-  {"region_key": "south-america/venezuela",     "url": "https://download.geofabrik.de/south-america/venezuela-latest.osm.pbf",           "bbox": [-73.38, 0.65, -59.80, 12.21],       "size_mb": 220,  "priority": 1},
-  {"region_key": "south-america/argentina",     "url": "https://download.geofabrik.de/south-america/argentina-latest.osm.pbf",           "bbox": [-73.58, -55.06, -53.64, -21.78],    "size_mb": 420,  "priority": 1},
-  {"region_key": "south-america/chile",         "url": "https://download.geofabrik.de/south-america/chile-latest.osm.pbf",               "bbox": [-75.64, -55.92, -66.42, -17.50],    "size_mb": 200,  "priority": 1},
-  {"region_key": "south-america/peru",          "url": "https://download.geofabrik.de/south-america/peru-latest.osm.pbf",                "bbox": [-81.33, -18.35, -68.67, -0.04],     "size_mb": 170,  "priority": 1},
-  {"region_key": "south-america/ecuador",       "url": "https://download.geofabrik.de/south-america/ecuador-latest.osm.pbf",             "bbox": [-81.00, -5.00, -75.19, 1.44],       "size_mb": 100,  "priority": 1},
-  {"region_key": "south-america/bolivia",       "url": "https://download.geofabrik.de/south-america/bolivia-latest.osm.pbf",             "bbox": [-69.64, -22.90, -57.45, -9.67],     "size_mb": 130,  "priority": 2},
-  {"region_key": "south-america/paraguay",      "url": "https://download.geofabrik.de/south-america/paraguay-latest.osm.pbf",            "bbox": [-62.65, -27.59, -54.26, -19.29],    "size_mb": 80,   "priority": 2},
-  {"region_key": "south-america/uruguay",       "url": "https://download.geofabrik.de/south-america/uruguay-latest.osm.pbf",             "bbox": [-58.44, -34.97, -53.17, -29.98],    "size_mb": 80,   "priority": 2},
-  {"region_key": "south-america/guyana",        "url": "https://download.geofabrik.de/south-america/guyana-latest.osm.pbf",              "bbox": [-61.41, 1.19, -56.48, 8.56],        "size_mb": 40,   "priority": 3},
-  {"region_key": "south-america/suriname",      "url": "https://download.geofabrik.de/south-america/suriname-latest.osm.pbf",            "bbox": [-58.07, 1.85, -53.96, 6.01],        "size_mb": 35,   "priority": 3},
-  {"region_key": "central-america/mexico",      "url": "https://download.geofabrik.de/north-america/mexico-latest.osm.pbf",              "bbox": [-118.48, 14.53, -86.70, 32.72],     "size_mb": 550,  "priority": 1},
-  {"region_key": "central-america/cuba",        "url": "https://download.geofabrik.de/central-america/cuba-latest.osm.pbf",              "bbox": [-84.97, 19.82, -74.13, 23.27],      "size_mb": 120,  "priority": 2},
-  {"region_key": "central-america/dominican-republic", "url": "https://download.geofabrik.de/central-america/dominican-republic-latest.osm.pbf", "bbox": [-72.01, 17.47, -68.32, 19.93], "size_mb": 70, "priority": 2},
-  {"region_key": "central-america/haiti",       "url": "https://download.geofabrik.de/central-america/haiti-latest.osm.pbf",             "bbox": [-74.47, 18.03, -71.62, 20.08],      "size_mb": 50,   "priority": 3},
-  {"region_key": "central-america/guatemala",   "url": "https://download.geofabrik.de/central-america/guatemala-latest.osm.pbf",         "bbox": [-92.24, 13.74, -88.22, 17.82],      "size_mb": 65,   "priority": 2},
-  {"region_key": "central-america/honduras",    "url": "https://download.geofabrik.de/central-america/honduras-latest.osm.pbf",          "bbox": [-89.35, 12.98, -83.16, 16.52],      "size_mb": 60,   "priority": 3},
-  {"region_key": "central-america/el-salvador", "url": "https://download.geofabrik.de/central-america/el-salvador-latest.osm.pbf",       "bbox": [-90.12, 13.15, -87.69, 14.45],      "size_mb": 45,   "priority": 3},
-  {"region_key": "central-america/nicaragua",   "url": "https://download.geofabrik.de/central-america/nicaragua-latest.osm.pbf",         "bbox": [-87.69, 10.71, -82.73, 15.03],      "size_mb": 55,   "priority": 3},
-  {"region_key": "central-america/costa-rica",  "url": "https://download.geofabrik.de/central-america/costa-rica-latest.osm.pbf",        "bbox": [-85.95, 8.03, -82.55, 11.22],       "size_mb": 65,   "priority": 3},
-  {"region_key": "central-america/panama",      "url": "https://download.geofabrik.de/central-america/panama-latest.osm.pbf",            "bbox": [-83.05, 7.21, -77.16, 9.65],        "size_mb": 60,   "priority": 3},
-  {"region_key": "europe/great-britain",        "url": "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf",              "bbox": [-8.17, 49.87, 1.77, 60.90],         "size_mb": 1400, "priority": 1},
-  {"region_key": "europe/france",               "url": "https://download.geofabrik.de/europe/france-latest.osm.pbf",                     "bbox": [-5.14, 41.32, 9.56, 51.11],         "size_mb": 3800, "priority": 1},
-  {"region_key": "europe/germany",              "url": "https://download.geofabrik.de/europe/germany-latest.osm.pbf",                    "bbox": [5.87, 47.27, 15.04, 55.06],         "size_mb": 3800, "priority": 1},
-  {"region_key": "europe/spain",                "url": "https://download.geofabrik.de/europe/spain-latest.osm.pbf",                      "bbox": [-9.30, 35.95, 4.33, 43.79],         "size_mb": 1500, "priority": 1},
-  {"region_key": "europe/italy",                "url": "https://download.geofabrik.de/europe/italy-latest.osm.pbf",                      "bbox": [6.62, 36.65, 18.51, 47.09],         "size_mb": 1800, "priority": 1},
-  {"region_key": "europe/portugal",             "url": "https://download.geofabrik.de/europe/portugal-latest.osm.pbf",                   "bbox": [-9.52, 36.84, -6.19, 42.15],        "size_mb": 280,  "priority": 1},
-  {"region_key": "europe/netherlands",          "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf",                "bbox": [3.31, 50.75, 7.22, 53.56],          "size_mb": 450,  "priority": 2},
-  {"region_key": "europe/belgium",              "url": "https://download.geofabrik.de/europe/belgium-latest.osm.pbf",                    "bbox": [2.53, 49.50, 6.40, 51.49],          "size_mb": 300,  "priority": 2},
-  {"region_key": "europe/switzerland",          "url": "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf",                "bbox": [5.96, 45.82, 10.49, 47.81],         "size_mb": 500,  "priority": 2},
-  {"region_key": "europe/austria",              "url": "https://download.geofabrik.de/europe/austria-latest.osm.pbf",                    "bbox": [9.53, 46.37, 17.16, 49.02],         "size_mb": 600,  "priority": 2},
-  {"region_key": "europe/poland",               "url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf",                     "bbox": [14.12, 49.00, 24.15, 54.90],        "size_mb": 800,  "priority": 2},
-  {"region_key": "europe/sweden",               "url": "https://download.geofabrik.de/europe/sweden-latest.osm.pbf",                     "bbox": [11.09, 55.34, 24.17, 69.06],        "size_mb": 500,  "priority": 2},
-  {"region_key": "europe/norway",               "url": "https://download.geofabrik.de/europe/norway-latest.osm.pbf",                     "bbox": [4.56, 57.97, 31.08, 71.18],         "size_mb": 650,  "priority": 3},
-  {"region_key": "europe/denmark",              "url": "https://download.geofabrik.de/europe/denmark-latest.osm.pbf",                    "bbox": [8.07, 54.56, 15.20, 57.75],         "size_mb": 200,  "priority": 3},
-  {"region_key": "europe/finland",              "url": "https://download.geofabrik.de/europe/finland-latest.osm.pbf",                    "bbox": [20.55, 59.81, 31.59, 70.09],        "size_mb": 380,  "priority": 3},
-  {"region_key": "europe/czech-republic",       "url": "https://download.geofabrik.de/europe/czech-republic-latest.osm.pbf",             "bbox": [12.09, 48.55, 18.87, 51.06],        "size_mb": 400,  "priority": 3},
-  {"region_key": "europe/romania",              "url": "https://download.geofabrik.de/europe/romania-latest.osm.pbf",                    "bbox": [20.26, 43.62, 29.69, 48.27],        "size_mb": 350,  "priority": 3},
-  {"region_key": "europe/ukraine",              "url": "https://download.geofabrik.de/europe/ukraine-latest.osm.pbf",                    "bbox": [22.14, 44.36, 40.23, 52.38],        "size_mb": 450,  "priority": 3},
-  {"region_key": "europe/hungary",              "url": "https://download.geofabrik.de/europe/hungary-latest.osm.pbf",                    "bbox": [16.10, 45.74, 22.90, 48.58],        "size_mb": 250,  "priority": 3},
-  {"region_key": "europe/greece",               "url": "https://download.geofabrik.de/europe/greece-latest.osm.pbf",                     "bbox": [19.64, 34.80, 28.24, 41.75],        "size_mb": 350,  "priority": 3},
-  {"region_key": "europe/ireland",              "url": "https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest.osm.pbf","bbox": [-10.48, 51.42, -5.34, 55.43],       "size_mb": 160,  "priority": 3},
-  {"region_key": "north-america/us/california", "url": "https://download.geofabrik.de/north-america/us/california-latest.osm.pbf",       "bbox": [-124.41, 32.53, -114.13, 42.01],    "size_mb": 1100, "priority": 1},
-  {"region_key": "north-america/us/texas",      "url": "https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf",            "bbox": [-106.65, 25.84, -93.51, 36.50],     "size_mb": 900,  "priority": 1},
-  {"region_key": "north-america/us/new-york",   "url": "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf",         "bbox": [-79.76, 40.49, -71.85, 45.01],      "size_mb": 550,  "priority": 1},
-  {"region_key": "north-america/us/florida",    "url": "https://download.geofabrik.de/north-america/us/florida-latest.osm.pbf",          "bbox": [-87.63, 24.94, -79.97, 31.00],      "size_mb": 450,  "priority": 1},
-  {"region_key": "north-america/us/illinois",   "url": "https://download.geofabrik.de/north-america/us/illinois-latest.osm.pbf",         "bbox": [-91.51, 36.97, -87.01, 42.51],      "size_mb": 330,  "priority": 2},
-  {"region_key": "north-america/us/pennsylvania","url": "https://download.geofabrik.de/north-america/us/pennsylvania-latest.osm.pbf",    "bbox": [-80.52, 39.72, -74.69, 42.27],      "size_mb": 360,  "priority": 2},
-  {"region_key": "north-america/us/ohio",       "url": "https://download.geofabrik.de/north-america/us/ohio-latest.osm.pbf",             "bbox": [-84.82, 38.41, -80.52, 41.98],      "size_mb": 310,  "priority": 2},
-  {"region_key": "north-america/us/georgia",    "url": "https://download.geofabrik.de/north-america/us/georgia-latest.osm.pbf",          "bbox": [-85.60, 30.36, -80.84, 35.00],      "size_mb": 280,  "priority": 2},
-  {"region_key": "north-america/us/washington", "url": "https://download.geofabrik.de/north-america/us/washington-latest.osm.pbf",       "bbox": [-124.73, 45.54, -116.92, 49.00],    "size_mb": 340,  "priority": 2},
-  {"region_key": "north-america/us/arizona",    "url": "https://download.geofabrik.de/north-america/us/arizona-latest.osm.pbf",          "bbox": [-114.82, 31.33, -109.04, 37.00],    "size_mb": 250,  "priority": 2},
-  {"region_key": "north-america/us/massachusetts","url": "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf",  "bbox": [-73.51, 41.24, -69.93, 42.89],      "size_mb": 220,  "priority": 2},
-  {"region_key": "north-america/us/north-carolina","url": "https://download.geofabrik.de/north-america/us/north-carolina-latest.osm.pbf","bbox": [-84.32, 33.84, -75.46, 36.59],      "size_mb": 260,  "priority": 3},
-  {"region_key": "north-america/us/virginia",   "url": "https://download.geofabrik.de/north-america/us/virginia-latest.osm.pbf",         "bbox": [-83.68, 36.54, -75.24, 39.47],      "size_mb": 250,  "priority": 3},
-  {"region_key": "north-america/us/michigan",   "url": "https://download.geofabrik.de/north-america/us/michigan-latest.osm.pbf",         "bbox": [-90.42, 41.69, -82.43, 48.31],      "size_mb": 290,  "priority": 3},
-  {"region_key": "north-america/us/new-jersey", "url": "https://download.geofabrik.de/north-america/us/new-jersey-latest.osm.pbf",       "bbox": [-75.57, 38.93, -73.89, 41.36],      "size_mb": 180,  "priority": 3},
-  {"region_key": "north-america/us/colorado",   "url": "https://download.geofabrik.de/north-america/us/colorado-latest.osm.pbf",         "bbox": [-109.05, 36.99, -102.04, 41.00],    "size_mb": 220,  "priority": 3},
-  {"region_key": "north-america/us/nevada",     "url": "https://download.geofabrik.de/north-america/us/nevada-latest.osm.pbf",           "bbox": [-120.00, 35.00, -114.04, 42.00],    "size_mb": 160,  "priority": 3},
-  {"region_key": "north-america/canada/ontario","url": "https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf",      "bbox": [-95.16, 41.67, -74.34, 56.86],      "size_mb": 700,  "priority": 2},
-  {"region_key": "north-america/canada/quebec", "url": "https://download.geofabrik.de/north-america/canada/quebec-latest.osm.pbf",       "bbox": [-79.76, 44.99, -57.11, 62.59],      "size_mb": 600,  "priority": 2},
-  {"region_key": "north-america/canada/british-columbia","url": "https://download.geofabrik.de/north-america/canada/british-columbia-latest.osm.pbf","bbox": [-139.06, 48.31, -114.08, 60.00],"size_mb": 400, "priority": 3},
-  {"region_key": "north-america/canada/alberta","url": "https://download.geofabrik.de/north-america/canada/alberta-latest.osm.pbf",      "bbox": [-120.00, 49.00, -110.00, 60.00],    "size_mb": 280,  "priority": 3},
-  {"region_key": "africa/nigeria",              "url": "https://download.geofabrik.de/africa/nigeria-latest.osm.pbf",                    "bbox": [2.69, 4.27, 14.68, 13.87],          "size_mb": 280,  "priority": 2},
-  {"region_key": "africa/south-africa",         "url": "https://download.geofabrik.de/africa/south-africa-latest.osm.pbf",               "bbox": [16.48, -34.83, 32.89, -22.13],      "size_mb": 420,  "priority": 2},
-  {"region_key": "africa/kenya",                "url": "https://download.geofabrik.de/africa/kenya-latest.osm.pbf",                      "bbox": [33.91, -4.68, 41.90, 5.02],         "size_mb": 120,  "priority": 3},
-  {"region_key": "africa/ghana",                "url": "https://download.geofabrik.de/africa/ghana-latest.osm.pbf",                      "bbox": [-3.26, 4.74, 1.20, 11.17],          "size_mb": 80,   "priority": 3},
-  {"region_key": "africa/ethiopia",             "url": "https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf",                   "bbox": [33.00, 3.41, 47.99, 14.89],         "size_mb": 120,  "priority": 3},
-  {"region_key": "africa/morocco",              "url": "https://download.geofabrik.de/africa/morocco-latest.osm.pbf",                    "bbox": [-13.18, 27.67, -1.01, 35.92],       "size_mb": 180,  "priority": 3},
-  {"region_key": "asia/india",                  "url": "https://download.geofabrik.de/asia/india-latest.osm.pbf",                        "bbox": [68.18, 7.97, 97.40, 35.49],         "size_mb": 1400, "priority": 1},
-  {"region_key": "asia/japan",                  "url": "https://download.geofabrik.de/asia/japan-latest.osm.pbf",                        "bbox": [129.41, 31.03, 145.55, 45.52],      "size_mb": 1000, "priority": 2},
-  {"region_key": "asia/south-korea",            "url": "https://download.geofabrik.de/asia/south-korea-latest.osm.pbf",                  "bbox": [126.12, 33.11, 129.58, 38.61],      "size_mb": 300,  "priority": 2},
-  {"region_key": "asia/philippines",            "url": "https://download.geofabrik.de/asia/philippines-latest.osm.pbf",                  "bbox": [117.17, 5.58, 126.54, 18.51],       "size_mb": 250,  "priority": 2},
-  {"region_key": "asia/indonesia",              "url": "https://download.geofabrik.de/asia/indonesia-latest.osm.pbf",                    "bbox": [95.01, -10.94, 141.02, 6.08],       "size_mb": 650,  "priority": 2},
-  {"region_key": "asia/pakistan",               "url": "https://download.geofabrik.de/asia/pakistan-latest.osm.pbf",                     "bbox": [60.87, 23.69, 77.03, 37.06],        "size_mb": 350,  "priority": 2},
-  {"region_key": "asia/bangladesh",             "url": "https://download.geofabrik.de/asia/bangladesh-latest.osm.pbf",                   "bbox": [88.03, 20.74, 92.68, 26.62],        "size_mb": 130,  "priority": 3},
-  {"region_key": "asia/vietnam",                "url": "https://download.geofabrik.de/asia/vietnam-latest.osm.pbf",                      "bbox": [102.15, 8.56, 109.46, 23.39],       "size_mb": 200,  "priority": 3},
-  {"region_key": "asia/thailand",               "url": "https://download.geofabrik.de/asia/thailand-latest.osm.pbf",                     "bbox": [97.34, 5.63, 105.64, 20.46],        "size_mb": 230,  "priority": 3},
-  {"region_key": "asia/malaysia",               "url": "https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf",    "bbox": [99.64, 0.85, 119.28, 7.36],         "size_mb": 250,  "priority": 3},
-  {"region_key": "asia/saudi-arabia",           "url": "https://download.geofabrik.de/asia/saudi-arabia-latest.osm.pbf",                 "bbox": [36.49, 16.38, 55.67, 32.15],        "size_mb": 180,  "priority": 3},
-  {"region_key": "asia/uae",                    "url": "https://download.geofabrik.de/asia/united-arab-emirates-latest.osm.pbf",         "bbox": [51.58, 22.63, 56.38, 26.07],        "size_mb": 90,   "priority": 3},
-  {"region_key": "australia-oceania/australia", "url": "https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf",       "bbox": [113.34, -43.64, 153.58, -10.68],    "size_mb": 800,  "priority": 2},
-  {"region_key": "australia-oceania/new-zealand","url": "https://download.geofabrik.de/australia-oceania/new-zealand-latest.osm.pbf",   "bbox": [166.44, -46.64, 178.57, -34.43],    "size_mb": 220,  "priority": 3}
+  {
+    "region_key": "south-america/brazil",
+    "url": "https://download.geofabrik.de/south-america/brazil-latest.osm.pbf",
+    "bbox": [
+      -73.99,
+      -33.75,
+      -28.85,
+      5.27
+    ],
+    "size_mb": 1350,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/colombia",
+    "url": "https://download.geofabrik.de/south-america/colombia-latest.osm.pbf",
+    "bbox": [
+      -79.01,
+      -4.23,
+      -66.87,
+      12.6
+    ],
+    "size_mb": 230,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/venezuela",
+    "url": "https://download.geofabrik.de/south-america/venezuela-latest.osm.pbf",
+    "bbox": [
+      -73.38,
+      0.65,
+      -59.8,
+      12.21
+    ],
+    "size_mb": 220,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/argentina",
+    "url": "https://download.geofabrik.de/south-america/argentina-latest.osm.pbf",
+    "bbox": [
+      -73.58,
+      -55.06,
+      -53.64,
+      -21.78
+    ],
+    "size_mb": 420,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/chile",
+    "url": "https://download.geofabrik.de/south-america/chile-latest.osm.pbf",
+    "bbox": [
+      -75.64,
+      -55.92,
+      -66.42,
+      -17.5
+    ],
+    "size_mb": 200,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/peru",
+    "url": "https://download.geofabrik.de/south-america/peru-latest.osm.pbf",
+    "bbox": [
+      -81.33,
+      -18.35,
+      -68.67,
+      -0.04
+    ],
+    "size_mb": 170,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/ecuador",
+    "url": "https://download.geofabrik.de/south-america/ecuador-latest.osm.pbf",
+    "bbox": [
+      -81.0,
+      -5.0,
+      -75.19,
+      1.44
+    ],
+    "size_mb": 100,
+    "priority": 1
+  },
+  {
+    "region_key": "south-america/bolivia",
+    "url": "https://download.geofabrik.de/south-america/bolivia-latest.osm.pbf",
+    "bbox": [
+      -69.64,
+      -22.9,
+      -57.45,
+      -9.67
+    ],
+    "size_mb": 130,
+    "priority": 2
+  },
+  {
+    "region_key": "south-america/paraguay",
+    "url": "https://download.geofabrik.de/south-america/paraguay-latest.osm.pbf",
+    "bbox": [
+      -62.65,
+      -27.59,
+      -54.26,
+      -19.29
+    ],
+    "size_mb": 80,
+    "priority": 2
+  },
+  {
+    "region_key": "south-america/uruguay",
+    "url": "https://download.geofabrik.de/south-america/uruguay-latest.osm.pbf",
+    "bbox": [
+      -58.44,
+      -34.97,
+      -53.17,
+      -29.98
+    ],
+    "size_mb": 80,
+    "priority": 2
+  },
+  {
+    "region_key": "south-america/guyana",
+    "url": "https://download.geofabrik.de/south-america/guyana-latest.osm.pbf",
+    "bbox": [
+      -61.41,
+      1.19,
+      -56.48,
+      8.56
+    ],
+    "size_mb": 40,
+    "priority": 3
+  },
+  {
+    "region_key": "south-america/suriname",
+    "url": "https://download.geofabrik.de/south-america/suriname-latest.osm.pbf",
+    "bbox": [
+      -58.07,
+      1.85,
+      -53.96,
+      6.01
+    ],
+    "size_mb": 35,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/mexico",
+    "url": "https://download.geofabrik.de/north-america/mexico-latest.osm.pbf",
+    "bbox": [
+      -118.48,
+      14.53,
+      -86.7,
+      32.72
+    ],
+    "size_mb": 550,
+    "priority": 1
+  },
+  {
+    "region_key": "central-america/cuba",
+    "url": "https://download.geofabrik.de/central-america/cuba-latest.osm.pbf",
+    "bbox": [
+      -84.97,
+      19.82,
+      -74.13,
+      23.27
+    ],
+    "size_mb": 120,
+    "priority": 2
+  },
+  {
+    "region_key": "central-america/dominican-republic",
+    "url": "https://download.geofabrik.de/central-america/dominican-republic-latest.osm.pbf",
+    "bbox": [
+      -72.01,
+      17.47,
+      -68.32,
+      19.93
+    ],
+    "size_mb": 70,
+    "priority": 2
+  },
+  {
+    "region_key": "central-america/haiti",
+    "url": "https://download.geofabrik.de/central-america/haiti-latest.osm.pbf",
+    "bbox": [
+      -74.47,
+      18.03,
+      -71.62,
+      20.08
+    ],
+    "size_mb": 50,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/guatemala",
+    "url": "https://download.geofabrik.de/central-america/guatemala-latest.osm.pbf",
+    "bbox": [
+      -92.24,
+      13.74,
+      -88.22,
+      17.82
+    ],
+    "size_mb": 65,
+    "priority": 2
+  },
+  {
+    "region_key": "central-america/honduras",
+    "url": "https://download.geofabrik.de/central-america/honduras-latest.osm.pbf",
+    "bbox": [
+      -89.35,
+      12.98,
+      -83.16,
+      16.52
+    ],
+    "size_mb": 60,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/el-salvador",
+    "url": "https://download.geofabrik.de/central-america/el-salvador-latest.osm.pbf",
+    "bbox": [
+      -90.12,
+      13.15,
+      -87.69,
+      14.45
+    ],
+    "size_mb": 45,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/nicaragua",
+    "url": "https://download.geofabrik.de/central-america/nicaragua-latest.osm.pbf",
+    "bbox": [
+      -87.69,
+      10.71,
+      -82.73,
+      15.03
+    ],
+    "size_mb": 55,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/costa-rica",
+    "url": "https://download.geofabrik.de/central-america/costa-rica-latest.osm.pbf",
+    "bbox": [
+      -85.95,
+      8.03,
+      -82.55,
+      11.22
+    ],
+    "size_mb": 65,
+    "priority": 3
+  },
+  {
+    "region_key": "central-america/panama",
+    "url": "https://download.geofabrik.de/central-america/panama-latest.osm.pbf",
+    "bbox": [
+      -83.05,
+      7.21,
+      -77.16,
+      9.65
+    ],
+    "size_mb": 60,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/great-britain",
+    "url": "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf",
+    "bbox": [
+      -8.17,
+      49.87,
+      1.77,
+      60.9
+    ],
+    "size_mb": 1400,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/france",
+    "url": "https://download.geofabrik.de/europe/france-latest.osm.pbf",
+    "bbox": [
+      -5.14,
+      41.32,
+      9.56,
+      51.11
+    ],
+    "size_mb": 3800,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/germany",
+    "url": "https://download.geofabrik.de/europe/germany-latest.osm.pbf",
+    "bbox": [
+      5.87,
+      47.27,
+      15.04,
+      55.06
+    ],
+    "size_mb": 3800,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/spain",
+    "url": "https://download.geofabrik.de/europe/spain-latest.osm.pbf",
+    "bbox": [
+      -9.3,
+      35.95,
+      4.33,
+      43.79
+    ],
+    "size_mb": 1500,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/italy",
+    "url": "https://download.geofabrik.de/europe/italy-latest.osm.pbf",
+    "bbox": [
+      6.62,
+      36.65,
+      18.51,
+      47.09
+    ],
+    "size_mb": 1800,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/portugal",
+    "url": "https://download.geofabrik.de/europe/portugal-latest.osm.pbf",
+    "bbox": [
+      -9.52,
+      36.84,
+      -6.19,
+      42.15
+    ],
+    "size_mb": 280,
+    "priority": 1
+  },
+  {
+    "region_key": "europe/netherlands",
+    "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf",
+    "bbox": [
+      3.31,
+      50.75,
+      7.22,
+      53.56
+    ],
+    "size_mb": 450,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/belgium",
+    "url": "https://download.geofabrik.de/europe/belgium-latest.osm.pbf",
+    "bbox": [
+      2.53,
+      49.5,
+      6.4,
+      51.49
+    ],
+    "size_mb": 300,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/switzerland",
+    "url": "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf",
+    "bbox": [
+      5.96,
+      45.82,
+      10.49,
+      47.81
+    ],
+    "size_mb": 500,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/austria",
+    "url": "https://download.geofabrik.de/europe/austria-latest.osm.pbf",
+    "bbox": [
+      9.53,
+      46.37,
+      17.16,
+      49.02
+    ],
+    "size_mb": 600,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/poland",
+    "url": "https://download.geofabrik.de/europe/poland-latest.osm.pbf",
+    "bbox": [
+      14.12,
+      49.0,
+      24.15,
+      54.9
+    ],
+    "size_mb": 800,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/sweden",
+    "url": "https://download.geofabrik.de/europe/sweden-latest.osm.pbf",
+    "bbox": [
+      11.09,
+      55.34,
+      24.17,
+      69.06
+    ],
+    "size_mb": 500,
+    "priority": 2
+  },
+  {
+    "region_key": "europe/norway",
+    "url": "https://download.geofabrik.de/europe/norway-latest.osm.pbf",
+    "bbox": [
+      4.56,
+      57.97,
+      31.08,
+      71.18
+    ],
+    "size_mb": 650,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/denmark",
+    "url": "https://download.geofabrik.de/europe/denmark-latest.osm.pbf",
+    "bbox": [
+      8.07,
+      54.56,
+      15.2,
+      57.75
+    ],
+    "size_mb": 200,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/finland",
+    "url": "https://download.geofabrik.de/europe/finland-latest.osm.pbf",
+    "bbox": [
+      20.55,
+      59.81,
+      31.59,
+      70.09
+    ],
+    "size_mb": 380,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/czech-republic",
+    "url": "https://download.geofabrik.de/europe/czech-republic-latest.osm.pbf",
+    "bbox": [
+      12.09,
+      48.55,
+      18.87,
+      51.06
+    ],
+    "size_mb": 400,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/romania",
+    "url": "https://download.geofabrik.de/europe/romania-latest.osm.pbf",
+    "bbox": [
+      20.26,
+      43.62,
+      29.69,
+      48.27
+    ],
+    "size_mb": 350,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/ukraine",
+    "url": "https://download.geofabrik.de/europe/ukraine-latest.osm.pbf",
+    "bbox": [
+      22.14,
+      44.36,
+      40.23,
+      52.38
+    ],
+    "size_mb": 450,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/hungary",
+    "url": "https://download.geofabrik.de/europe/hungary-latest.osm.pbf",
+    "bbox": [
+      16.1,
+      45.74,
+      22.9,
+      48.58
+    ],
+    "size_mb": 250,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/greece",
+    "url": "https://download.geofabrik.de/europe/greece-latest.osm.pbf",
+    "bbox": [
+      19.64,
+      34.8,
+      28.24,
+      41.75
+    ],
+    "size_mb": 350,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/ireland",
+    "url": "https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest.osm.pbf",
+    "bbox": [
+      -10.48,
+      51.42,
+      -5.34,
+      55.43
+    ],
+    "size_mb": 160,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/california",
+    "url": "https://download.geofabrik.de/north-america/us/california-latest.osm.pbf",
+    "bbox": [
+      -124.41,
+      32.53,
+      -114.13,
+      42.01
+    ],
+    "size_mb": 1100,
+    "priority": 1
+  },
+  {
+    "region_key": "north-america/us/texas",
+    "url": "https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf",
+    "bbox": [
+      -106.65,
+      25.84,
+      -93.51,
+      36.5
+    ],
+    "size_mb": 900,
+    "priority": 1
+  },
+  {
+    "region_key": "north-america/us/new-york",
+    "url": "https://download.geofabrik.de/north-america/us/new-york-latest.osm.pbf",
+    "bbox": [
+      -79.76,
+      40.49,
+      -71.85,
+      45.01
+    ],
+    "size_mb": 550,
+    "priority": 1
+  },
+  {
+    "region_key": "north-america/us/florida",
+    "url": "https://download.geofabrik.de/north-america/us/florida-latest.osm.pbf",
+    "bbox": [
+      -87.63,
+      24.94,
+      -79.97,
+      31.0
+    ],
+    "size_mb": 450,
+    "priority": 1
+  },
+  {
+    "region_key": "north-america/us/illinois",
+    "url": "https://download.geofabrik.de/north-america/us/illinois-latest.osm.pbf",
+    "bbox": [
+      -91.51,
+      36.97,
+      -87.01,
+      42.51
+    ],
+    "size_mb": 330,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/pennsylvania",
+    "url": "https://download.geofabrik.de/north-america/us/pennsylvania-latest.osm.pbf",
+    "bbox": [
+      -80.52,
+      39.72,
+      -74.69,
+      42.27
+    ],
+    "size_mb": 360,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/ohio",
+    "url": "https://download.geofabrik.de/north-america/us/ohio-latest.osm.pbf",
+    "bbox": [
+      -84.82,
+      38.41,
+      -80.52,
+      41.98
+    ],
+    "size_mb": 310,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/georgia",
+    "url": "https://download.geofabrik.de/north-america/us/georgia-latest.osm.pbf",
+    "bbox": [
+      -85.6,
+      30.36,
+      -80.84,
+      35.0
+    ],
+    "size_mb": 280,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/washington",
+    "url": "https://download.geofabrik.de/north-america/us/washington-latest.osm.pbf",
+    "bbox": [
+      -124.73,
+      45.54,
+      -116.92,
+      49.0
+    ],
+    "size_mb": 340,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/arizona",
+    "url": "https://download.geofabrik.de/north-america/us/arizona-latest.osm.pbf",
+    "bbox": [
+      -114.82,
+      31.33,
+      -109.04,
+      37.0
+    ],
+    "size_mb": 250,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/massachusetts",
+    "url": "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf",
+    "bbox": [
+      -73.51,
+      41.24,
+      -69.93,
+      42.89
+    ],
+    "size_mb": 220,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/us/north-carolina",
+    "url": "https://download.geofabrik.de/north-america/us/north-carolina-latest.osm.pbf",
+    "bbox": [
+      -84.32,
+      33.84,
+      -75.46,
+      36.59
+    ],
+    "size_mb": 260,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/virginia",
+    "url": "https://download.geofabrik.de/north-america/us/virginia-latest.osm.pbf",
+    "bbox": [
+      -83.68,
+      36.54,
+      -75.24,
+      39.47
+    ],
+    "size_mb": 250,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/michigan",
+    "url": "https://download.geofabrik.de/north-america/us/michigan-latest.osm.pbf",
+    "bbox": [
+      -90.42,
+      41.69,
+      -82.43,
+      48.31
+    ],
+    "size_mb": 290,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/new-jersey",
+    "url": "https://download.geofabrik.de/north-america/us/new-jersey-latest.osm.pbf",
+    "bbox": [
+      -75.57,
+      38.93,
+      -73.89,
+      41.36
+    ],
+    "size_mb": 180,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/colorado",
+    "url": "https://download.geofabrik.de/north-america/us/colorado-latest.osm.pbf",
+    "bbox": [
+      -109.05,
+      36.99,
+      -102.04,
+      41.0
+    ],
+    "size_mb": 220,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/us/nevada",
+    "url": "https://download.geofabrik.de/north-america/us/nevada-latest.osm.pbf",
+    "bbox": [
+      -120.0,
+      35.0,
+      -114.04,
+      42.0
+    ],
+    "size_mb": 160,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/canada/ontario",
+    "url": "https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf",
+    "bbox": [
+      -95.16,
+      41.67,
+      -74.34,
+      56.86
+    ],
+    "size_mb": 700,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/canada/quebec",
+    "url": "https://download.geofabrik.de/north-america/canada/quebec-latest.osm.pbf",
+    "bbox": [
+      -79.76,
+      44.99,
+      -57.11,
+      62.59
+    ],
+    "size_mb": 600,
+    "priority": 2
+  },
+  {
+    "region_key": "north-america/canada/british-columbia",
+    "url": "https://download.geofabrik.de/north-america/canada/british-columbia-latest.osm.pbf",
+    "bbox": [
+      -139.06,
+      48.31,
+      -114.08,
+      60.0
+    ],
+    "size_mb": 400,
+    "priority": 3
+  },
+  {
+    "region_key": "north-america/canada/alberta",
+    "url": "https://download.geofabrik.de/north-america/canada/alberta-latest.osm.pbf",
+    "bbox": [
+      -120.0,
+      49.0,
+      -110.0,
+      60.0
+    ],
+    "size_mb": 280,
+    "priority": 3
+  },
+  {
+    "region_key": "africa/nigeria",
+    "url": "https://download.geofabrik.de/africa/nigeria-latest.osm.pbf",
+    "bbox": [
+      2.69,
+      4.27,
+      14.68,
+      13.87
+    ],
+    "size_mb": 280,
+    "priority": 2
+  },
+  {
+    "region_key": "africa/south-africa",
+    "url": "https://download.geofabrik.de/africa/south-africa-latest.osm.pbf",
+    "bbox": [
+      16.48,
+      -34.83,
+      32.89,
+      -22.13
+    ],
+    "size_mb": 420,
+    "priority": 2
+  },
+  {
+    "region_key": "africa/kenya",
+    "url": "https://download.geofabrik.de/africa/kenya-latest.osm.pbf",
+    "bbox": [
+      33.91,
+      -4.68,
+      41.9,
+      5.02
+    ],
+    "size_mb": 120,
+    "priority": 3
+  },
+  {
+    "region_key": "africa/ghana",
+    "url": "https://download.geofabrik.de/africa/ghana-latest.osm.pbf",
+    "bbox": [
+      -3.26,
+      4.74,
+      1.2,
+      11.17
+    ],
+    "size_mb": 80,
+    "priority": 3
+  },
+  {
+    "region_key": "africa/ethiopia",
+    "url": "https://download.geofabrik.de/africa/ethiopia-latest.osm.pbf",
+    "bbox": [
+      33.0,
+      3.41,
+      47.99,
+      14.89
+    ],
+    "size_mb": 120,
+    "priority": 3
+  },
+  {
+    "region_key": "africa/morocco",
+    "url": "https://download.geofabrik.de/africa/morocco-latest.osm.pbf",
+    "bbox": [
+      -13.18,
+      27.67,
+      -1.01,
+      35.92
+    ],
+    "size_mb": 180,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/india",
+    "url": "https://download.geofabrik.de/asia/india-latest.osm.pbf",
+    "bbox": [
+      68.18,
+      7.97,
+      97.4,
+      35.49
+    ],
+    "size_mb": 1400,
+    "priority": 1
+  },
+  {
+    "region_key": "asia/japan",
+    "url": "https://download.geofabrik.de/asia/japan-latest.osm.pbf",
+    "bbox": [
+      129.41,
+      31.03,
+      145.55,
+      45.52
+    ],
+    "size_mb": 1000,
+    "priority": 2
+  },
+  {
+    "region_key": "asia/south-korea",
+    "url": "https://download.geofabrik.de/asia/south-korea-latest.osm.pbf",
+    "bbox": [
+      126.12,
+      33.11,
+      129.58,
+      38.61
+    ],
+    "size_mb": 300,
+    "priority": 2
+  },
+  {
+    "region_key": "asia/philippines",
+    "url": "https://download.geofabrik.de/asia/philippines-latest.osm.pbf",
+    "bbox": [
+      117.17,
+      5.58,
+      126.54,
+      18.51
+    ],
+    "size_mb": 250,
+    "priority": 2
+  },
+  {
+    "region_key": "asia/indonesia",
+    "url": "https://download.geofabrik.de/asia/indonesia-latest.osm.pbf",
+    "bbox": [
+      95.01,
+      -10.94,
+      141.02,
+      6.08
+    ],
+    "size_mb": 650,
+    "priority": 2
+  },
+  {
+    "region_key": "asia/pakistan",
+    "url": "https://download.geofabrik.de/asia/pakistan-latest.osm.pbf",
+    "bbox": [
+      60.87,
+      23.69,
+      77.03,
+      37.06
+    ],
+    "size_mb": 350,
+    "priority": 2
+  },
+  {
+    "region_key": "asia/bangladesh",
+    "url": "https://download.geofabrik.de/asia/bangladesh-latest.osm.pbf",
+    "bbox": [
+      88.03,
+      20.74,
+      92.68,
+      26.62
+    ],
+    "size_mb": 130,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/vietnam",
+    "url": "https://download.geofabrik.de/asia/vietnam-latest.osm.pbf",
+    "bbox": [
+      102.15,
+      8.56,
+      109.46,
+      23.39
+    ],
+    "size_mb": 200,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/thailand",
+    "url": "https://download.geofabrik.de/asia/thailand-latest.osm.pbf",
+    "bbox": [
+      97.34,
+      5.63,
+      105.64,
+      20.46
+    ],
+    "size_mb": 230,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/malaysia",
+    "url": "https://download.geofabrik.de/asia/malaysia-singapore-brunei-latest.osm.pbf",
+    "bbox": [
+      99.64,
+      0.85,
+      119.28,
+      7.36
+    ],
+    "size_mb": 250,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/saudi-arabia",
+    "url": "https://download.geofabrik.de/asia/saudi-arabia-latest.osm.pbf",
+    "bbox": [
+      36.49,
+      16.38,
+      55.67,
+      32.15
+    ],
+    "size_mb": 180,
+    "priority": 3
+  },
+  {
+    "region_key": "asia/uae",
+    "url": "https://download.geofabrik.de/asia/united-arab-emirates-latest.osm.pbf",
+    "bbox": [
+      51.58,
+      22.63,
+      56.38,
+      26.07
+    ],
+    "size_mb": 90,
+    "priority": 3
+  },
+  {
+    "region_key": "australia-oceania/australia",
+    "url": "https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf",
+    "bbox": [
+      113.34,
+      -43.64,
+      153.58,
+      -10.68
+    ],
+    "size_mb": 800,
+    "priority": 2
+  },
+  {
+    "region_key": "australia-oceania/new-zealand",
+    "url": "https://download.geofabrik.de/australia-oceania/new-zealand-latest.osm.pbf",
+    "bbox": [
+      166.44,
+      -46.64,
+      178.57,
+      -34.43
+    ],
+    "size_mb": 220,
+    "priority": 3
+  },
+  {
+    "region_key": "europe/great-britain/england/greater-london",
+    "url": "https://download.geofabrik.de/europe/great-britain/england/greater-london-latest.osm.pbf",
+    "bbox": [
+      -0.51,
+      51.28,
+      0.33,
+      51.68
+    ],
+    "size_mb": 100
+  },
+  {
+    "region_key": "europe/great-britain/england",
+    "url": "https://download.geofabrik.de/europe/great-britain/england-latest.osm.pbf",
+    "bbox": [
+      -6.4,
+      49.9,
+      2.0,
+      55.8
+    ],
+    "size_mb": 900
+  },
+  {
+    "region_key": "europe/great-britain/scotland",
+    "url": "https://download.geofabrik.de/europe/great-britain/scotland-latest.osm.pbf",
+    "bbox": [
+      -7.6,
+      54.6,
+      -0.7,
+      60.9
+    ],
+    "size_mb": 200
+  },
+  {
+    "region_key": "europe/france/ile-de-france",
+    "url": "https://download.geofabrik.de/europe/france/ile-de-france-latest.osm.pbf",
+    "bbox": [
+      1.4,
+      48.12,
+      3.56,
+      49.24
+    ],
+    "size_mb": 120
+  },
+  {
+    "region_key": "north-america/mexico/ciudad-de-mexico",
+    "url": "https://download.geofabrik.de/north-america/mexico/ciudad-de-mexico-latest.osm.pbf",
+    "bbox": [
+      -99.37,
+      19.05,
+      -98.94,
+      19.59
+    ],
+    "size_mb": 25
+  }
 ]
