@@ -1692,7 +1692,7 @@ app.post('/warm', (req: Request, res: Response): void => {
   );
 });
 
-app.listen(PORT, () => console.log(`MapVibe Render Service v3.0.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`MapVibe Render Service v3.5.0 on port ${PORT}`));
 
 
 // ── Startup city seed ──────────────────────────────────────────────────────────

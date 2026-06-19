@@ -1061,5 +1061,60 @@
       19.59
     ],
     "size_mb": 25
+  },
+  {
+    "region_key": "south-america/brazil/norte",
+    "url": "https://download.geofabrik.de/south-america/brazil/norte-latest.osm.pbf",
+    "bbox": [
+      -73.99,
+      -13.69,
+      -44.18,
+      5.27
+    ],
+    "size_mb": 149
+  },
+  {
+    "region_key": "south-america/brazil/nordeste",
+    "url": "https://download.geofabrik.de/south-america/brazil/nordeste-latest.osm.pbf",
+    "bbox": [
+      -48.54,
+      -18.36,
+      -34.79,
+      5.27
+    ],
+    "size_mb": 413
+  },
+  {
+    "region_key": "south-america/brazil/sudeste",
+    "url": "https://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf",
+    "bbox": [
+      -53.21,
+      -25.32,
+      -39.66,
+      -14.25
+    ],
+    "size_mb": 811
+  },
+  {
+    "region_key": "south-america/brazil/sul",
+    "url": "https://download.geofabrik.de/south-america/brazil/sul-latest.osm.pbf",
+    "bbox": [
+      -57.66,
+      -33.75,
+      -48.37,
+      -22.47
+    ],
+    "size_mb": 399
+  },
+  {
+    "region_key": "south-america/brazil/centro-oeste",
+    "url": "https://download.geofabrik.de/south-america/brazil/centro-oeste-latest.osm.pbf",
+    "bbox": [
+      -61.02,
+      -24.06,
+      -45.84,
+      -7.34
+    ],
+    "size_mb": 189
   }
 ]
