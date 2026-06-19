@@ -631,6 +631,54 @@ def _try_pbf_extraction(lat: float, lon: float, dist: int,
     return G
 
 
+def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
+    """Extract railway lines from a local PBF file via pyrosm.
+
+    Returns a GeoDataFrame (EPSG:4326, LineString/MultiLineString only) on
+    success, an *empty* GeoDataFrame when the region has no matching rail
+    (genuine absence), or None when pyrosm is unavailable or extraction
+    fails — so the caller can fall through to Overpass in all error cases.
+
+    pyrosm CRS is EPSG:4326, matching the Overpass GeoDataFrame pipeline.
+    """
+    try:
+        import pyrosm
+        import geopandas as gpd
+    except ImportError:
+        return None
+    try:
+        delta = (dist / 111_000) * 1.5
+        bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+        osm = pyrosm.OSM(pbf_path, bounding_box=bbox)
+        gdf = osm.get_data_by_custom_criteria(
+            custom_filter={'railway': ['rail', 'light_rail', 'subway', 'tram', 'monorail']},
+            osm_keys_to_keep=['railway', 'name'],
+            filter_type='keep',
+            keep_nodes=False,
+        )
+        # Guard: some pyrosm versions return None instead of an empty GDF
+        if gdf is None or len(gdf) == 0:
+            _log('PBF rail: no railway features in bbox')
+            return gpd.GeoDataFrame()
+        # Filter to linear geometries — exclude station Points
+        gdf = gdf[gdf.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
+        if gdf.empty:
+            return gpd.GeoDataFrame()
+        _log(f'PBF rail OK: {len(gdf)} features from {pbf_path}')
+        return gdf
+    except Exception as e:
+        err_str = str(e)
+        if 'BlobHeader' in err_str or 'StructError' in err_str or 'exceeds the' in err_str:
+            _log(f'PBF corrupted ({pbf_path}) — evicting: {e}')
+            try:
+                os.unlink(pbf_path)
+            except Exception:
+                pass
+        else:
+            _log(f'PBF rail extraction failed: {e}')
+        return None
+
+
 # ── Theme loading ─────────────────────────────────────────────────────────────
 
 _TERRACOTTA_DEFAULT = {
@@ -995,6 +1043,25 @@ def render(params: dict) -> bytes:
         if cached is not None:
             cache_hits['rail'] = True
             return cached
+        # ── PBF tier (Phase 2) ─────────────────────────────────────────────
+        # Prefer PBF over Overpass for all covered cities: DC Metro,
+        # London Underground, Paris Métro, Mexico City Metro.  Overpass's
+        # qdist=2000 m window is too tight for spread-out metro systems
+        # and frequently returns empty (triggering commit-77c91313 caching).
+        try:
+            import pyrosm  # noqa: F401 — guard before any PBF I/O
+            _rail_region = _coord_to_pbf_region(qlat, qlng)
+            if _rail_region is not None:
+                _rail_pbf = _ensure_pbf_local(_rail_region)
+                if _rail_pbf is not None:
+                    _pbf_rail = _fetch_rail_from_pbf(_rail_pbf, qlat, qlng, qdist)
+                    if _pbf_rail is not None and not _pbf_rail.empty:
+                        graph_cache_set(key, _pbf_rail)
+                        return _pbf_rail
+                    # empty or None → fall through to Overpass below
+        except ImportError:
+            pass
+        # ── Overpass fallback ──────────────────────────────────────────────
         try:
             gdf = _ox_call_with_mirror_failover(
                 ox.features_from_point,
