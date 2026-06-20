@@ -1279,32 +1279,44 @@ def render(params: dict) -> bytes:
             rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
     # ── 8. Roads ─────────────────────────────────────────────────────────────
-    edge_colors = get_edge_colors(g_proj, theme, minor_roads)
-    edge_widths = get_edge_widths(g_proj, minor_roads)
-    # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's
-    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide — sub-
-    # pixel, anti-aliased into a faint smudge or vanished entirely. Result: Clean
-    # (4 tiers visible) and Detailed (5 tiers — but the new 5th is invisible)
-    # look identical in the preview modal even though the toggle is wired end-
-    # to-end. Scale all widths by (300 / dpi) when dpi < 300 so the smallest
-    # tier crosses the 1 px threshold and the road-detail hierarchy stays
-    # readable at preview resolution. Capped at >= 1 so /fulfill at 300/400 DPI
-    # renders byte-identical to before.
-    # Cap the scale at 2.0× — the original 300/96 = 3.125× factor produced
-    # ~954 KB PNGs (3.5× the pre-patch baseline of ~268 KB) because thicker
-    # lines mean dramatically more dark pixels for PNG to encode. On flaky
-    # mobile networks that download could take 30+ s — long enough that the
-    # print-preview modal's spinner appeared to hang. At 2.0× residential
-    # still lands at 0.8 pt = 1.07 px (above the 1 px visibility threshold)
-    # while PNG output stays around 500 KB. Clamped at >= 1 so /fulfill at
-    # 300/400 DPI keeps renders byte-identical.
-    edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
-    edge_widths = [w * edge_width_scale for w in edge_widths]
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
     # background area around the road graph on tight-bounds previews.
     effective_crop_dist = int(crop_dist_param) if crop_dist_param is not None else dist
     crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
+
+    # ── 8a. Pre-clip graph to crop window (major speedup for large-dist renders) ──
+    # ox.plot_graph() renders ALL fetched edges and relies on ax.set_xlim/ylim to
+    # clip visually *after* rasterisation.  When dist >> effective_crop_dist (e.g.
+    # DC preview: dist=20 km, crop≈5 km) matplotlib processes ~23 k edges to
+    # produce a ~5 km viewport — off-screen work dominates and causes ~30 s render
+    # times that exceed the /preview timeout.  Filtering g_proj to nodes inside the
+    # crop bbox reduces the edge count 5-8× and cuts render time to ~3 s.
+    # A 5 % border guard keeps edges that straddle the crop boundary from vanishing
+    # at the frame edge.  For /fulfill (where effective_crop_dist ≈ dist) the filter
+    # is a near-no-op: the crop bbox covers the full graph and no subgraph is made.
+    _grd = max(abs(crop_xlim[1] - crop_xlim[0]), abs(crop_ylim[1] - crop_ylim[0])) * 0.05
+    _crop_nodes = {
+        n for n, d in g_proj.nodes(data=True)
+        if crop_xlim[0] - _grd <= d.get('x', 0) <= crop_xlim[1] + _grd
+        and crop_ylim[0] - _grd <= d.get('y', 0) <= crop_ylim[1] + _grd
+    }
+    if len(_crop_nodes) < len(g_proj.nodes):
+        g_proj = g_proj.subgraph(_crop_nodes).copy()
+
+    edge_colors = get_edge_colors(g_proj, theme, minor_roads)
+    # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's
+    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide — sub-
+    # pixel, anti-aliased into a faint smudge or vanished entirely. Scale all
+    # widths by (300 / dpi) when dpi < 300 so the smallest tier crosses the 1 px
+    # threshold and the road-detail hierarchy stays readable at preview resolution.
+    # Cap the scale at 2.0× — the original 300/96 = 3.125× factor produced
+    # ~954 KB PNGs (3.5× baseline) because thicker lines mean more dark pixels for
+    # PNG to encode. At 2.0× residential still lands at 0.8 pt = 1.07 px (above
+    # the 1 px visibility threshold) while PNG output stays around 500 KB.
+    # Clamped at >= 1 so /fulfill at 300/400 DPI keeps renders byte-identical.
+    edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
+    edge_widths = [w * edge_width_scale for w in get_edge_widths(g_proj, minor_roads)]
 
     ox.plot_graph(
         g_proj, ax=ax,
