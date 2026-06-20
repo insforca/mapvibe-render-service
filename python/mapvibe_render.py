@@ -647,6 +647,17 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
                 os.unlink(pbf_path)
             except Exception:
                 pass
+            # Also delete the R2 object so the next city doesn't re-download
+            # the same corrupt bytes (evicting local-only causes a re-download
+            # loop when R2 holds an error-XML stub from a failed upload).
+            try:
+                r2 = _get_r2_client()
+                if r2:
+                    r2.delete_object(Bucket=_R2_BUCKET_NAME,
+                                     Key=_pbf_r2_key(region_key))
+                    _log(f'PBF R2 corrupt object deleted ({region_key})')
+            except Exception:
+                pass
         else:
             _log(f'PBF graph extraction failed: {e}')
         return None
@@ -726,6 +737,17 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
             _log(f'PBF corrupted ({pbf_path}) — evicting: {e}')
             try:
                 os.unlink(pbf_path)
+            except Exception:
+                pass
+            # Also delete the R2 object so the next city doesn't re-download
+            # the same corrupt bytes (evicting local-only causes a re-download
+            # loop when R2 holds an error-XML stub from a failed upload).
+            try:
+                r2 = _get_r2_client()
+                if r2:
+                    r2.delete_object(Bucket=_R2_BUCKET_NAME,
+                                     Key=_pbf_r2_key(region_key))
+                    _log(f'PBF R2 corrupt object deleted ({region_key})')
             except Exception:
                 pass
         else:

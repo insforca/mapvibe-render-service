@@ -73,7 +73,11 @@ def _build_city(city: dict, force: bool) -> tuple[str, str]:
     try:
         lat  = float(city['lat'])
         lon  = float(city['lon'])
-        dist = min(int(city.get('dist', 8000)), PREVIEW_DIST_CAP)
+        # Always warm at PREVIEW_DIST_CAP so the L2 cache key matches what the
+        # /preview route requests (server.ts caps previewDist to PREVIEW_DIST_CAP).
+        # Using city['dist'] (e.g. 8 000 m for DC) produces a key that never
+        # matches the 20 000 m preview request — every first preview is cold.
+        dist = PREVIEW_DIST_CAP
 
         qlat, qlng, qdist = mv._graph_cache_quantize(lat, lon, dist)
         # mirror what the seed/warm endpoint does: minor_roads=False, network_type='drive'
