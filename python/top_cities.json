@@ -334,42 +334,48 @@
     "country": "Argentina",
     "lat": -31.4201,
     "lon": -64.1888,
-    "dist": 8000
+    "dist": 8000,
+    "overpass_only": true
   },
   {
     "city": "Rosario",
     "country": "Argentina",
     "lat": -32.9468,
     "lon": -60.6393,
-    "dist": 8000
+    "dist": 8000,
+    "overpass_only": true
   },
   {
     "city": "Mendoza",
     "country": "Argentina",
     "lat": -32.8908,
     "lon": -68.8272,
-    "dist": 7000
+    "dist": 7000,
+    "overpass_only": true
   },
   {
     "city": "Mar del Plata",
     "country": "Argentina",
     "lat": -38.0055,
     "lon": -57.5426,
-    "dist": 7000
+    "dist": 7000,
+    "overpass_only": true
   },
   {
     "city": "Salta",
     "country": "Argentina",
     "lat": -24.7821,
     "lon": -65.4232,
-    "dist": 6000
+    "dist": 6000,
+    "overpass_only": true
   },
   {
     "city": "San Miguel de Tucumán",
     "country": "Argentina",
     "lat": -26.8083,
     "lon": -65.2176,
-    "dist": 6000
+    "dist": 6000,
+    "overpass_only": true
   },
   {
     "city": "La Plata",
@@ -384,14 +390,16 @@
     "country": "Argentina",
     "lat": -31.5375,
     "lon": -68.5364,
-    "dist": 5000
+    "dist": 5000,
+    "overpass_only": true
   },
   {
     "city": "Bahía Blanca",
     "country": "Argentina",
     "lat": -38.7183,
     "lon": -62.2663,
-    "dist": 5000
+    "dist": 5000,
+    "overpass_only": true
   },
   {
     "city": "Santiago",
