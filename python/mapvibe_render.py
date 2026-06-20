@@ -402,6 +402,21 @@ os.makedirs(_PBF_CACHE_DIR, exist_ok=True)
 _pbf_regions = None
 _pbf_regions_lock = threading.Lock()
 
+# Per-region PBF download locks — one Lock per region_key.  Prevents
+# concurrent parallel render workers from downloading the same regional
+# PBF simultaneously, which caused duplicate "PBF L4: downloading …"
+# log lines (and wasted bandwidth on identical large downloads).
+_pbf_download_locks: dict = {}
+_pbf_download_locks_lock = threading.Lock()
+
+
+def _get_pbf_download_lock(region_key: str) -> threading.Lock:
+    """Return (creating if needed) the per-region singleton Lock."""
+    with _pbf_download_locks_lock:
+        if region_key not in _pbf_download_locks:
+            _pbf_download_locks[region_key] = threading.Lock()
+        return _pbf_download_locks[region_key]
+
 
 def _load_pbf_regions():
     global _pbf_regions
@@ -496,57 +511,64 @@ def _ensure_pbf_local(region: dict) -> str | None:
     region_key = region['region_key']
     local_path = _pbf_local_path(region_key)
 
-    # Already on disk and fresh
+    # Already on disk and fresh (fast path — no lock needed)
     if _pbf_local_fresh(region_key):
         return local_path
 
-    client = _get_r2_client()
-
-    # Try R2 first (fastest, no Geofabrik rate limits)
-    if client is not None:
-        try:
-            r2_key = _pbf_r2_key(region_key)
-            _log(f'PBF L4: downloading {region_key} from R2 ({region.get("size_mb")} MB)...')
-            tmp_path = local_path + '.tmp'
-            client.download_file(Bucket=_R2_BUCKET_NAME, Key=r2_key, Filename=tmp_path)
-            os.replace(tmp_path, local_path)
-            _pbf_evict_if_over_budget()
-            _log(f'PBF L4: {region_key} cached locally from R2')
+    # Hold a per-region lock so concurrent render workers for the same city
+    # don't trigger duplicate downloads.  We re-check freshness inside the
+    # lock in case a sibling worker completed the download while we waited.
+    with _get_pbf_download_lock(region_key):
+        if _pbf_local_fresh(region_key):
             return local_path
-        except Exception as e:
-            _log(f'PBF R2 download failed ({region_key}): {e}')
-            try: os.unlink(local_path + '.tmp')
-            except Exception: pass
 
-    # Fallback: direct Geofabrik download (seeds R2 too)
-    url = region.get('url')
-    if url:
-        try:
-            import requests as _requests
-            _log(f'PBF fallback: downloading {region_key} from Geofabrik ({region.get("size_mb")} MB)...')
-            tmp_path = local_path + '.tmp'
-            with _requests.get(url, stream=True, timeout=300) as resp:
-                resp.raise_for_status()
-                with open(tmp_path, 'wb') as f:
-                    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                        f.write(chunk)
-            os.replace(tmp_path, local_path)
-            _pbf_evict_if_over_budget()
-            _log(f'PBF fallback: {region_key} downloaded from Geofabrik')
-            # Seed to R2 in background so future restarts skip Geofabrik
-            if client is not None:
-                def _seed_r2():
-                    try:
-                        client.upload_file(local_path, _R2_BUCKET_NAME, _pbf_r2_key(region_key))
-                        _log(f'PBF seeded to R2: {region_key}')
-                    except Exception as e2:
-                        _log(f'PBF R2 seed failed ({region_key}): {e2}')
-                threading.Thread(target=_seed_r2, daemon=True).start()
-            return local_path
-        except Exception as e:
-            _log(f'PBF Geofabrik download failed ({region_key}): {e}')
-            try: os.unlink(local_path + '.tmp')
-            except Exception: pass
+        client = _get_r2_client()
+
+        # Try R2 first (fastest, no Geofabrik rate limits)
+        if client is not None:
+            try:
+                r2_key = _pbf_r2_key(region_key)
+                _log(f'PBF L4: downloading {region_key} from R2 ({region.get("size_mb")} MB)...')
+                tmp_path = local_path + '.tmp'
+                client.download_file(Bucket=_R2_BUCKET_NAME, Key=r2_key, Filename=tmp_path)
+                os.replace(tmp_path, local_path)
+                _pbf_evict_if_over_budget()
+                _log(f'PBF L4: {region_key} cached locally from R2')
+                return local_path
+            except Exception as e:
+                _log(f'PBF R2 download failed ({region_key}): {e}')
+                try: os.unlink(local_path + '.tmp')
+                except Exception: pass
+
+        # Fallback: direct Geofabrik download (seeds R2 too)
+        url = region.get('url')
+        if url:
+            try:
+                import requests as _requests
+                _log(f'PBF fallback: downloading {region_key} from Geofabrik ({region.get("size_mb")} MB)...')
+                tmp_path = local_path + '.tmp'
+                with _requests.get(url, stream=True, timeout=300) as resp:
+                    resp.raise_for_status()
+                    with open(tmp_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                            f.write(chunk)
+                os.replace(tmp_path, local_path)
+                _pbf_evict_if_over_budget()
+                _log(f'PBF fallback: {region_key} downloaded from Geofabrik')
+                # Seed to R2 in background so future restarts skip Geofabrik
+                if client is not None:
+                    def _seed_r2():
+                        try:
+                            client.upload_file(local_path, _R2_BUCKET_NAME, _pbf_r2_key(region_key))
+                            _log(f'PBF seeded to R2: {region_key}')
+                        except Exception as e2:
+                            _log(f'PBF R2 seed failed ({region_key}): {e2}')
+                    threading.Thread(target=_seed_r2, daemon=True).start()
+                return local_path
+            except Exception as e:
+                _log(f'PBF Geofabrik download failed ({region_key}): {e}')
+                try: os.unlink(local_path + '.tmp')
+                except Exception: pass
 
     return None
 
@@ -579,9 +601,13 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
                     _log('PBF extraction: no arterials after filter')
                     return None
         G = osm.to_graph(nodes, edges, graph_type='networkx', retain_all=False)
-        if G is None or len(G.nodes) == 0:
+        n_nodes = 0 if G is None else len(G.nodes)
+        n_edges = 0 if G is None else len(G.edges)
+        if G is None or n_nodes == 0 or n_edges == 0:
+            _log(f'[mapvibe_render] PBF extraction returned {n_nodes} nodes, '
+                 f'{n_edges} edges — falling back to Overpass')
             return None
-        _log(f'PBF extraction OK: {len(G.nodes)} nodes, {len(G.edges)} edges')
+        _log(f'PBF extraction OK: {n_nodes} nodes, {n_edges} edges')
         return G
     except Exception as e:
         err_str = str(e)
@@ -977,8 +1003,22 @@ def render(params: dict) -> bytes:
             'minor_roads': minor_roads, 'cache_key': key,
         })
         if cached is not None:
-            cache_hits['streets'] = True
-            return cached
+            # Guard: a 0-edge graph (broken PBF-extraction artifact, e.g. Dublin
+            # or Philadelphia where pyrosm returned 1 node / 0 edges) crashes
+            # ox.project_graph with "ValueError: Graph contains no edges".
+            # Evict the broken entry from L1 (disk) and fall through to Overpass
+            # so this render completes and overwrites the bad cache entry.
+            if hasattr(cached, 'number_of_edges') and cached.number_of_edges() == 0:
+                _log(f'[mapvibe_render] PBF extraction returned 0 edges for {key} '
+                     f'— evicting broken cache entry, falling back to Overpass')
+                try:
+                    os.unlink(_cache_path(key))
+                except Exception:
+                    pass
+                # R2 entry will be overwritten when the Overpass fetch succeeds below.
+            else:
+                cache_hits['streets'] = True
+                return cached
         if minor_roads:
             # Full drive network — residential/service/etc. are drawn.
             g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, network_type=network_type)
