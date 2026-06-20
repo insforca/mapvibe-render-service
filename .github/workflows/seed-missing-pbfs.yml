@@ -1,0 +1,66 @@
+# .github/workflows/seed-missing-pbfs.yml
+#
+# Automatically seeds any Geofabrik PBF regions in geofabrik_regions.json
+# that are NOT yet present in R2.  Runs on every push that touches
+# python/geofabrik_regions.json so newly-added sub-regions are seeded before
+# the next Railway deploy.
+#
+# Can also be dispatched manually from the Actions tab (useful for re-seeding
+# after a corrupt-R2-object eviction, or to backfill a priority tier).
+#
+# Required GitHub secrets (same values as the Railway service env vars):
+#   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+# Optional:
+#   R2_BUCKET_NAME (defaults to mapvibe-graph-cache)
+#
+# Runtime: ~2 min per missing region (download + upload).  117 ≤300 MB
+# regions × 2 min / 4 workers ≈ ~60 min worst case.  Timeout set to 360 min.
+
+name: Seed missing PBFs to R2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - python/geofabrik_regions.json
+  workflow_dispatch:
+    inputs:
+      priority:
+        description: "Max priority to include (1 = P1 only, 2 = P1+P2, 3 = all)"
+        required: false
+        default: "3"
+      max_size_mb:
+        description: "Skip regions larger than this (MB, default 300)"
+        required: false
+        default: "300"
+
+jobs:
+  seed:
+    name: Seed missing PBFs
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install boto3 requests
+
+      - name: Seed missing PBFs to R2
+        env:
+          R2_ACCOUNT_ID:        ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME:       ${{ secrets.R2_BUCKET_NAME || 'mapvibe-graph-cache' }}
+        run: |
+          python scripts/upload_pbfs_to_r2.py \
+            --resume \
+            --priority ${{ inputs.priority || '3' }} \
+            --max-size-mb ${{ inputs.max_size_mb || '300' }} \
+            --workers 4
