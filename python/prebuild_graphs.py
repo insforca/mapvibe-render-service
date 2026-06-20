@@ -127,6 +127,11 @@ def main() -> None:
     region_meta: dict[str, dict] = {}
 
     for city in all_cities:
+        # Skip cities explicitly flagged as Overpass-only (e.g. Buenos Aires,
+        # La Plata: Argentina PBF is 420 MB and has no Geofabrik sub-regions,
+        # so no prebuilt graph is possible — fall through to Overpass at runtime).
+        if city.get('overpass_only'):
+            continue
         region = mv._coord_to_pbf_region(city['lat'], city['lon'])
         if region is None:
             continue
