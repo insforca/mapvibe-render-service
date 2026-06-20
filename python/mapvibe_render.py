@@ -479,7 +479,16 @@ def _coord_to_pbf_region(lat: float, lon: float) -> dict | None:
             candidates.append(r)
     if not candidates:
         return None
-    candidates.sort(key=lambda r: r.get('size_mb', 9999))
+    # Sort by nearest centroid distance — this correctly routes cities that
+    # sit near a country border (e.g. Tegucigalpa near the Nicaragua bbox)
+    # to the PBF whose geographic centre is closest, rather than the PBF
+    # that happens to be smallest in MB.  The old sort-by-size made Nicaragua
+    # (55 MB) beat Honduras (60 MB) for Tegucigalpa even though Tegucigalpa
+    # is 1.2° from Honduras centroid vs 2.1° from Nicaragua centroid.
+    candidates.sort(key=lambda r: (
+        ((r['bbox'][0] + r['bbox'][2]) / 2 - lon) ** 2 +
+        ((r['bbox'][1] + r['bbox'][3]) / 2 - lat) ** 2
+    ))
     return candidates[0]
 
 

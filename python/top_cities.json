@@ -326,7 +326,8 @@
     "country": "Argentina",
     "lat": -34.6037,
     "lon": -58.3816,
-    "dist": 11000
+    "dist": 11000,
+    "overpass_only": true
   },
   {
     "city": "Córdoba",
@@ -375,7 +376,8 @@
     "country": "Argentina",
     "lat": -34.9205,
     "lon": -57.9536,
-    "dist": 6000
+    "dist": 6000,
+    "overpass_only": true
   },
   {
     "city": "San Juan",
