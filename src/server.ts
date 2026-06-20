@@ -1182,13 +1182,18 @@ async function renderConfigToBlobUrl(
 
 app.get('/health', (_req: Request, res: Response) => res.json({
   status: 'ok',
-  version: '3.5.0',
+  version: '3.5.1',
   engine:  RENDER_ENGINE,
   queue: {
     size:           renderQueue.size,
     pending:        renderQueue.pending,
     maxConcurrent:  MAX_CONCURRENT,
     maxQueueSize:   MAX_QUEUE_SIZE,
+  },
+  preview: {
+    size:           previewQueue.size,
+    pending:        previewQueue.pending,
+    concurrency:    2,
   },
   uptime: process.uptime(),
 }));
@@ -1436,6 +1441,125 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       if (!res.headersSent) res.status(500).json({ error: 'Render failed', elapsed });
     } finally {
       res.off('close', onClientClose);
+    }
+  });
+});
+
+
+// ── Preview queue ─────────────────────────────────────────────────────────────
+// Separate from the main render queue so fulfillment jobs never block previews.
+// concurrency=2 allows two simultaneous fast 480px renders without starving CPU.
+const PREVIEW_TIMEOUT_MS = 20_000;
+const previewQueue = new PQueue({ concurrency: 2 });
+
+// POST /preview — fast server-side matplotlib render for the print preview modal.
+//
+// Renders the OSM/matplotlib pipeline at 96 DPI, long edge capped to
+// preview_max_px=480, uploads to Vercel Blob, returns { url }.  Studio swaps
+// the MapLibre freeze-frame with this URL once it arrives (~3-7s seeded city).
+//
+// Returns 503 when the render exceeds 20 s — studio falls back to the MapLibre
+// snapshot.  Uses a separate previewQueue so /fulfill jobs cannot block previews.
+app.post('/preview', async (req: Request, res: Response): Promise<void> => {
+  if (!checkAuth(req, res)) return;
+
+  const {
+    center, zoom,
+    // Poster pixel dimensions — used to derive the figure aspect ratio.
+    // Studio sends actual poster px (e.g. 2400×3000); they are scaled down to
+    // preview_max_px so the final PNG is tiny and fast.
+    width  = 2400,
+    height = 3000,
+    displayCity, displayCountry, fontFamily,
+    showPosterText, textLayout,
+    osmTheme, osmDist, themeJson,
+    minorRoads,
+    // Caller may override the long-edge cap; default 480 px.
+    preview_max_px: pmxParam = 480,
+  } = req.body;
+
+  if (!center || zoom == null) {
+    res.status(400).json({ error: 'Missing required fields: center, zoom' });
+    return;
+  }
+
+  const dpi = 96; // preview DPI — never used for fulfillment (hard rule: ≥300 DPI)
+  const pmx = (Number.isFinite(pmxParam) && pmxParam > 0) ? Math.round(pmxParam) : 480;
+
+  // Scale poster dimensions down to preview_max_px long edge (aspect-preserving).
+  const scaleF = pmx / Math.max(width, height);
+  const capW   = (scaleF < 1) ? Math.round(width  * scaleF) : width;
+  const capH   = (scaleF < 1) ? Math.round(height * scaleF) : height;
+  const widthIn  = capW / dpi;
+  const heightIn = capH / dpi;
+
+  // Same dist-compensation math as /render — see comments there for derivation.
+  const userOsmDist     = typeof osmDist === 'number' ? osmDist : 2000;
+  const aspectRatio     = Math.max(widthIn, heightIn) / Math.min(widthIn, heightIn);
+  const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
+  const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
+
+  // Soft queue-depth guard — drop early rather than time out inside the queue.
+  if (previewQueue.size >= 4) {
+    console.warn(`[preview] Queue full (${previewQueue.size}) — rejecting`);
+    res.status(503).json({ error: 'Preview service busy', hint: 'fall back to MapLibre snapshot' });
+    return;
+  }
+
+  console.log(`[preview] Queued ${capW}×${capH}px @ ${dpi} DPI — queue size=${previewQueue.size}`);
+  await previewQueue.add(async () => {
+    const startMs = Date.now();
+    // Abort the Python child 1 s before the HTTP deadline so we can still write 503.
+    const abort      = new AbortController();
+    const abortTimer = setTimeout(() => {
+      console.warn('[preview] Aborting Python render (19 s deadline)');
+      abort.abort();
+    }, PREVIEW_TIMEOUT_MS - 1_000);
+
+    try {
+      const png = await renderOsmPython({
+        city:            '',
+        country:         '',
+        lat:             center[1],
+        lng:             center[0],
+        display_city:    displayCity    ?? '',
+        display_country: displayCountry ?? '',
+        theme_name:      osmTheme       ?? 'midnight_blue',
+        theme_json:      themeJson,
+        dist:            compensatedDist,
+        crop_dist:       cropDistOverride,
+        width_in:        widthIn,
+        height_in:       heightIn,
+        dpi,
+        show_text:       showPosterText !== false,
+        full_bleed:      true,
+        no_fade:         true,
+        minor_roads:     minorRoads === true,
+        preview_max_px:  pmx,
+      }, abort.signal);
+
+      clearTimeout(abortTimer);
+      if (res.headersSent) return; // 503 already sent by a race-condition timeout
+
+      const elapsed = Math.round((Date.now() - startMs) / 1_000);
+      const hash    = Math.random().toString(36).slice(2, 10);
+      const blob    = await put(`preview-${Date.now()}-${hash}.png`, png, {
+        access: 'public', contentType: 'image/png',
+        ...(process.env.BLOB_READ_WRITE_TOKEN ? { token: process.env.BLOB_READ_WRITE_TOKEN } : {}),
+      });
+      console.log(`[preview] Done in ${elapsed}s — ${blob.url} (${capW}×${capH}px)`);
+      res.json({ url: blob.url });
+    } catch (err: any) {
+      clearTimeout(abortTimer);
+      if (res.headersSent) return;
+      if (err?.code === 'ABORTED') {
+        const elapsed = Math.round((Date.now() - startMs) / 1_000);
+        console.warn(`[preview] Timed out after ${elapsed}s — returning 503`);
+        res.status(503).json({ error: 'Preview render timed out', hint: 'fall back to MapLibre snapshot' });
+        return;
+      }
+      console.error('[preview] Error:', err?.message || err);
+      res.status(500).json({ error: 'Preview render failed' });
     }
   });
 });
