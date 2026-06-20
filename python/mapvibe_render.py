@@ -111,6 +111,12 @@ def _ox_call_with_mirror_failover(fn, *args, **kwargs):
     TCP probe but then starts refusing connections under load mid-seeder-run.
 
     Back-off: 0 s on first failure, 2 s on second, 4 s on third.
+
+    Fast-fail on InsufficientResponseError: this exception means Overpass
+    returned no features matching the query — a data gap in OSM, not a
+    mirror failure.  All mirrors query the same OSM dataset, so retrying
+    other mirrors would return the same empty response.  Re-raise immediately
+    without rotating to avoid burning 30 s × N per data-gap city.
     """
     global _overpass_idx
     import requests as _req_mod
@@ -132,6 +138,12 @@ def _ox_call_with_mirror_failover(fn, *args, **kwargs):
             sleep_s = backoffs[min(attempt, len(backoffs) - 1)]
             if sleep_s:
                 time.sleep(sleep_s)
+        except Exception:
+            # InsufficientResponseError (and any other non-network exception)
+            # indicates the query itself returned no data — not a mirror issue.
+            # Stop immediately; rotating mirrors would only repeat the empty
+            # result and waste 30 s per attempt.
+            raise
     raise last_exc  # type: ignore[misc]
 from geopy.geocoders import Nominatim
 from matplotlib.font_manager import FontProperties
@@ -1080,6 +1092,16 @@ def render(params: dict) -> bytes:
             )
         except Exception as e:
             _log(f'Water fetch skipped: {e}')
+            # Cache empty result so we don't re-query Overpass on every render
+            # for cities with no mapped water features (inland cities, coastal
+            # geometry gaps, etc.).  Transient network errors are NOT cached —
+            # only confirmed "no data" responses get a permanent empty entry.
+            if ('No matching features' in str(e)
+                    or 'InsufficientResponse' in type(e).__name__):
+                import geopandas as gpd
+                empty = gpd.GeoDataFrame()
+                graph_cache_set(key, empty)
+                return empty
             return None
         graph_cache_set(key, gdf)
         return gdf
@@ -1099,6 +1121,15 @@ def render(params: dict) -> bytes:
             )
         except Exception as e:
             _log(f'Parks fetch skipped: {e}')
+            # Cache empty result so we don't re-query Overpass on every render
+            # for cities with no mapped park/grass features.  Transient network
+            # errors are NOT cached — only confirmed "no data" responses.
+            if ('No matching features' in str(e)
+                    or 'InsufficientResponse' in type(e).__name__):
+                import geopandas as gpd
+                empty = gpd.GeoDataFrame()
+                graph_cache_set(key, empty)
+                return empty
             return None
         graph_cache_set(key, gdf)
         return gdf
