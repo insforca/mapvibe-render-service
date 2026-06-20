@@ -1470,8 +1470,8 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
     // preview_max_px so the final PNG is tiny and fast.
     width  = 2400,
     height = 3000,
-    displayCity, displayCountry, fontFamily,
-    showPosterText, textLayout,
+    displayCity, displayCountry,
+    showPosterText,
     osmTheme, osmDist, themeJson,
     minorRoads,
     // Caller may override the long-edge cap; default 480 px.
