@@ -938,6 +938,11 @@ def render(params: dict) -> bytes:
     width_in        = float(params.get('width_in', 12.0))
     height_in       = float(params.get('height_in', 16.0))
     dpi             = int(params.get('dpi', 400))
+    # preview_max_px — optional pixel cap for the long edge of the figure.
+    # When set, width_in/height_in are rescaled so max(W,H)*dpi == preview_max_px.
+    # DPI and edge-width calibration are intentionally left unchanged so line
+    # weights remain readable at preview resolution regardless of canvas size.
+    preview_max_px  = params.get('preview_max_px')
     show_text       = bool(params.get('show_text', True))
     full_bleed      = bool(params.get('full_bleed', True))
     no_fade         = bool(params.get('no_fade', True))
@@ -961,8 +966,19 @@ def render(params: dict) -> bytes:
     if point is None:
         raise ValueError(f'Cannot resolve coordinates for city={city!r}, country={country!r}')
 
+    # Apply preview_max_px canvas cap: scale the figure so the output PNG's
+    # long edge is exactly preview_max_px pixels. Only figure dimensions
+    # change — DPI and edge-width calibration stay untouched.
+    if preview_max_px is not None:
+        _pmx = int(preview_max_px)
+        _long_px = max(width_in, height_in) * dpi
+        if _long_px > 0:
+            _scale = _pmx / _long_px
+            width_in  = width_in  * _scale
+            height_in = height_in * _scale
     _log(f'{display_city}, {display_country} @ {point[0]:.4f},{point[1]:.4f}  '
          f'dist={dist}m  {width_in}×{height_in}in  {dpi}DPI  '
+         f'{("preview_max_px="+str(preview_max_px)+"  ") if preview_max_px else ""}'
          f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}')
 
     # ── 2. Load theme ────────────────────────────────────────────────────────

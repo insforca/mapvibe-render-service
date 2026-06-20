@@ -1220,6 +1220,14 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     // user is looking at in the editor canvas. Falls back to false (the
     // historical hardcoded default) when omitted.
     minorRoads,
+    // dpi — explicit DPI override from the studio's two-stage preview.
+    //   Stage 1 (rough): dpi=32, preview_max_px=480 → ~3-6s
+    //   Stage 2 (full):  dpi=96, preview_max_px=480 → faster than today
+    // Falls back to the previewMode heuristic (96 / 300) when absent.
+    dpi: dpiOverride,
+    // preview_max_px — cap the PNG long edge so max(W,H) px == this value.
+    // Supersedes the OSM_MAX_PIXELS pixel-budget when present.
+    preview_max_px,
   } = req.body;
 
   // useOsm decides routing for THIS request. Per-request `engine` wins so a
@@ -1307,25 +1315,34 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         // higher for the in-app print preview. Derive DPI accordingly so
         // width_in / height_in stay accurate; the Python renderer uses these
         // to size the matplotlib figure and pick line weights.
-        const dpi = previewMode ? 96 : 300;
+        // DPI: explicit override wins (two-stage preview uses dpi=32 for rough,
+        // dpi=96 for full); falls back to the historical previewMode heuristic.
+        const dpi = (typeof dpiOverride === 'number' && Number.isFinite(dpiOverride) && dpiOverride > 0)
+          ? dpiOverride
+          : (previewMode ? 96 : 300);
 
-        // Vercel times out the proxy at 50s. renderOsmPython at 300 DPI on a
-        // 24×36" poster (7200×10800 ≈ 78 MP) routinely takes minutes. Cap the
-        // pixel budget so /render always returns under Vercel's window; the
-        // print preview is a fidelity simulation, not the fulfillment render
-        // (which goes through /fulfill and isn't behind the Vercel proxy).
-        //   previewMode  →  6 MP   (96 DPI ≈ 2400×2500, ~2-4s on Railway)
-        //   print preview→ 12 MP   (300 DPI ≈ 3000×4000, ~25-40s on Railway)
-        // When the requested figure exceeds the budget we scale both axes
-        // proportionally — aspect ratio is preserved, line weights / fonts
-        // scale with the smaller inch dimensions per maptoposter's spec.
-        const OSM_MAX_PIXELS = previewMode ? 6_000_000 : 12_000_000;
+        // Canvas sizing: preview_max_px caps the long edge so the PNG's longest
+        // dimension equals exactly preview_max_px pixels (aspect ratio preserved).
+        // When absent, fall through to the legacy pixel-budget cap.
         let capW = width, capH = height;
-        if (capW * capH > OSM_MAX_PIXELS) {
-          const k = Math.sqrt(OSM_MAX_PIXELS / (capW * capH));
-          capW = Math.round(capW * k);
-          capH = Math.round(capH * k);
-          console.warn(`[render][osm] Pixel budget exceeded: ${width}×${height} → ${capW}×${capH} (cap ${(OSM_MAX_PIXELS/1e6).toFixed(0)} MP)`);
+        if (typeof preview_max_px === 'number' && preview_max_px > 0) {
+          const pmx   = Math.round(preview_max_px);
+          const scale = pmx / Math.max(capW, capH);
+          if (scale < 1) {
+            capW = Math.round(capW * scale);
+            capH = Math.round(capH * scale);
+            console.log(`[render][osm] preview_max_px=${pmx}: ${width}×${height} → ${capW}×${capH}`);
+          }
+        } else {
+          // Legacy pixel-budget fallback — keeps existing behaviour when studio
+          // does not send preview_max_px (e.g. old clients, /fulfill path).
+          const OSM_MAX_PIXELS = previewMode ? 6_000_000 : 12_000_000;
+          if (capW * capH > OSM_MAX_PIXELS) {
+            const k = Math.sqrt(OSM_MAX_PIXELS / (capW * capH));
+            capW = Math.round(capW * k);
+            capH = Math.round(capH * k);
+            console.warn(`[render][osm] Pixel budget exceeded: ${width}×${height} → ${capW}×${capH} (cap ${(OSM_MAX_PIXELS/1e6).toFixed(0)} MP)`);
+          }
         }
         const widthIn  = capW / dpi;
         const heightIn = capH / dpi;
@@ -1387,6 +1404,9 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           // footway too. Defaults to the historical false when the studio
           // (or a non-studio caller) omits the field.
           minor_roads:     minorRoads === true,
+          // preview_max_px forwarded so Python can belt-and-suspenders scale
+          // the figure dimensions independently of the pixel cap above.
+          ...(typeof preview_max_px === 'number' ? { preview_max_px } : {}),
         }, clientAbort.signal);
       } else {
         png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
