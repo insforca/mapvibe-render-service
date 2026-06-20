@@ -1844,7 +1844,7 @@ app.post('/warm', (req: Request, res: Response): void => {
     width_in: 1,
     height_in: 1,
     dpi: 10,          // 10 px — minimal matplotlib figure, negligible CPU
-    dist: Math.min(Number(dist), 15_000),
+    dist: Math.min(Number(dist), 20_000),
     show_text: false,
     no_fade: true,
     minor_roads: false,
@@ -1889,7 +1889,7 @@ function runStartupCitySeed(): void {
       width_in:        1,
       height_in:       1,
       dpi:             10,
-      dist:            Math.min(c.dist ?? 8000, 15_000),
+      dist:            Math.min(c.dist ?? 8000, 20_000),
       show_text:       false,
       no_fade:         true,
       minor_roads:     false,

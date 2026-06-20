@@ -1552,5 +1552,264 @@
     "lat": -8.8399,
     "lon": 13.2894,
     "dist": 7000
+  },
+  {
+    "city": "Baltimore",
+    "country": "United States",
+    "lat": 39.2904,
+    "lon": -76.6122,
+    "dist": 20000
+  },
+  {
+    "city": "Pittsburgh",
+    "country": "United States",
+    "lat": 40.4406,
+    "lon": -79.9959,
+    "dist": 20000
+  },
+  {
+    "city": "Hartford",
+    "country": "United States",
+    "lat": 41.7658,
+    "lon": -72.6851,
+    "dist": 20000
+  },
+  {
+    "city": "Providence",
+    "country": "United States",
+    "lat": 41.824,
+    "lon": -71.4128,
+    "dist": 20000
+  },
+  {
+    "city": "Buffalo",
+    "country": "United States",
+    "lat": 42.8864,
+    "lon": -78.8784,
+    "dist": 20000
+  },
+  {
+    "city": "Albany",
+    "country": "United States",
+    "lat": 42.6526,
+    "lon": -73.7562,
+    "dist": 20000
+  },
+  {
+    "city": "Charlotte",
+    "country": "United States",
+    "lat": 35.2271,
+    "lon": -80.8431,
+    "dist": 20000
+  },
+  {
+    "city": "Raleigh",
+    "country": "United States",
+    "lat": 35.7796,
+    "lon": -78.6382,
+    "dist": 20000
+  },
+  {
+    "city": "Richmond",
+    "country": "United States",
+    "lat": 37.5407,
+    "lon": -77.436,
+    "dist": 20000
+  },
+  {
+    "city": "Memphis",
+    "country": "United States",
+    "lat": 35.1495,
+    "lon": -90.049,
+    "dist": 20000
+  },
+  {
+    "city": "Jacksonville",
+    "country": "United States",
+    "lat": 30.3322,
+    "lon": -81.6557,
+    "dist": 20000
+  },
+  {
+    "city": "Tampa",
+    "country": "United States",
+    "lat": 27.9506,
+    "lon": -82.4572,
+    "dist": 20000
+  },
+  {
+    "city": "Orlando",
+    "country": "United States",
+    "lat": 28.5383,
+    "lon": -81.3792,
+    "dist": 20000
+  },
+  {
+    "city": "Louisville",
+    "country": "United States",
+    "lat": 38.2527,
+    "lon": -85.7585,
+    "dist": 20000
+  },
+  {
+    "city": "Detroit",
+    "country": "United States",
+    "lat": 42.3314,
+    "lon": -83.0458,
+    "dist": 20000
+  },
+  {
+    "city": "Cleveland",
+    "country": "United States",
+    "lat": 41.4993,
+    "lon": -81.6944,
+    "dist": 20000
+  },
+  {
+    "city": "Columbus",
+    "country": "United States",
+    "lat": 39.9612,
+    "lon": -82.9988,
+    "dist": 20000
+  },
+  {
+    "city": "Indianapolis",
+    "country": "United States",
+    "lat": 39.7684,
+    "lon": -86.1581,
+    "dist": 20000
+  },
+  {
+    "city": "Kansas City",
+    "country": "United States",
+    "lat": 39.0997,
+    "lon": -94.5786,
+    "dist": 20000
+  },
+  {
+    "city": "St. Louis",
+    "country": "United States",
+    "lat": 38.627,
+    "lon": -90.1994,
+    "dist": 20000
+  },
+  {
+    "city": "Milwaukee",
+    "country": "United States",
+    "lat": 43.0389,
+    "lon": -87.9065,
+    "dist": 20000
+  },
+  {
+    "city": "Cincinnati",
+    "country": "United States",
+    "lat": 39.1031,
+    "lon": -84.512,
+    "dist": 20000
+  },
+  {
+    "city": "Omaha",
+    "country": "United States",
+    "lat": 41.2565,
+    "lon": -95.9345,
+    "dist": 20000
+  },
+  {
+    "city": "San Diego",
+    "country": "United States",
+    "lat": 32.7157,
+    "lon": -117.1611,
+    "dist": 20000
+  },
+  {
+    "city": "Sacramento",
+    "country": "United States",
+    "lat": 38.5816,
+    "lon": -121.4944,
+    "dist": 20000
+  },
+  {
+    "city": "Salt Lake City",
+    "country": "United States",
+    "lat": 40.7608,
+    "lon": -111.891,
+    "dist": 20000
+  },
+  {
+    "city": "Albuquerque",
+    "country": "United States",
+    "lat": 35.0844,
+    "lon": -106.6504,
+    "dist": 20000
+  },
+  {
+    "city": "Tucson",
+    "country": "United States",
+    "lat": 32.2226,
+    "lon": -110.9747,
+    "dist": 20000
+  },
+  {
+    "city": "Honolulu",
+    "country": "United States",
+    "lat": 21.3069,
+    "lon": -157.8583,
+    "dist": 20000
+  },
+  {
+    "city": "Anchorage",
+    "country": "United States",
+    "lat": 61.2181,
+    "lon": -149.9003,
+    "dist": 20000
+  },
+  {
+    "city": "Boise",
+    "country": "United States",
+    "lat": 43.615,
+    "lon": -116.2023,
+    "dist": 20000
+  },
+  {
+    "city": "Spokane",
+    "country": "United States",
+    "lat": 47.6588,
+    "lon": -117.426,
+    "dist": 20000
+  },
+  {
+    "city": "Reno",
+    "country": "United States",
+    "lat": 39.5296,
+    "lon": -119.8138,
+    "dist": 20000
+  },
+  {
+    "city": "Oklahoma City",
+    "country": "United States",
+    "lat": 35.4676,
+    "lon": -97.5164,
+    "dist": 20000
+  },
+  {
+    "city": "Tulsa",
+    "country": "United States",
+    "lat": 36.154,
+    "lon": -95.9928,
+    "dist": 20000
+  },
+  {
+    "city": "El Paso",
+    "country": "United States",
+    "lat": 31.7619,
+    "lon": -106.485,
+    "dist": 20000
+  },
+  {
+    "city": "Fort Worth",
+    "country": "United States",
+    "lat": 32.7555,
+    "lon": -97.3308,
+    "dist": 20000
   }
 ]
