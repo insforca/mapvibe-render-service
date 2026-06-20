@@ -1046,7 +1046,22 @@ def render(params: dict) -> bytes:
             # the Overpass bandwidth by not downloading them in the first place.
             # The regex matches *_link suffixes for free (no anchors).
             major_roads_filter = '["highway"~"motorway|trunk|primary"]'
-            g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, custom_filter=major_roads_filter)
+            try:
+                g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, custom_filter=major_roads_filter)
+            except Exception as e:
+                # InsufficientResponseError: Overpass returned no nodes with the strict
+                # arterial filter (common in Caribbean/LatAm cities with sparse trunk/
+                # primary OSM coverage — Punta del Este, Punta Cana, etc.).
+                # Fall back to a broader filter that includes secondary roads.
+                if 'InsufficientResponse' in type(e).__name__:
+                    _log(f'Major roads filter returned no data — falling back to secondary: {e}')
+                    wider_filter = '["highway"~"motorway|trunk|primary|secondary"]'
+                    g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, custom_filter=wider_filter)
+                else:
+                    raise
+        # Belt-and-suspenders: guard against 0-edge graph before ox.project_graph.
+        if g_ is not None and hasattr(g_, 'number_of_edges') and g_.number_of_edges() == 0:
+            raise ValueError(f'Graph has 0 edges for {city!r} — OSM data gap or filter too strict')
         graph_cache_set(key, g_)
         return g_
 
