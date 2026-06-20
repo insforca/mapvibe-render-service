@@ -843,6 +843,7 @@ interface OsmRenderParams {
   full_bleed?:     boolean;
   no_fade?:        boolean;
   minor_roads?:    boolean;
+  preview_max_px?: number;     // cap long edge of matplotlib figure; Python scales width_in/height_in
 }
 
 /**
