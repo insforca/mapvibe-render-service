@@ -39,6 +39,7 @@ import io
 import pickle
 import time
 import hashlib
+import math
 import threading
 import tempfile
 import struct
@@ -1264,13 +1265,42 @@ def render(params: dict) -> bytes:
 
     # ── 4. Setup figure ──────────────────────────────────────────────────────
     _log('Rendering figure...')
+    _render_t0 = time.time()
     fig, ax = plt.subplots(figsize=(width_in, height_in), facecolor=theme['bg'])
     ax.set_facecolor(theme['bg'])
     ax.set_position((0.0, 0.0, 1.0, 1.0))
     if full_bleed:
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
 
-    # ── 5. Project graph ─────────────────────────────────────────────────────
+    # ── 5. Pre-clip graph in WGS-84 (BEFORE projection) ─────────────────────
+    # ox.project_graph calls geopandas CRS conversion on every node and edge.
+    # For a dense DC-style graph fetched at qdist=7000 m (~20k nodes) this
+    # takes 20-30 s — the dominant cost of the preview path.  Filtering to
+    # the poster viewport in unprojected lat/lng first (cheap Python loop)
+    # shrinks the graph 5-8× before the expensive CRS pass runs.
+    #
+    # crop_dist (metres) → approximate lat/lng half-extents:
+    #   1° lat  ≈ 111,111 m  (constant)
+    #   1° lng  ≈ 111,111 m × cos(lat)  (varies with latitude)
+    # A 10 % border guard keeps edges that straddle the crop boundary.
+    _pre_cd = int(crop_dist_param) if crop_dist_param is not None else dist
+    _dlat = _pre_cd / 111_111 * 1.10
+    _dlng = _pre_cd / (111_111 * math.cos(math.radians(point[0]))) * 1.10
+    _lat0 = point[0] - _dlat
+    _lat1 = point[0] + _dlat
+    _lng0 = point[1] - _dlng
+    _lng1 = point[1] + _dlng
+    _pre_nodes = {
+        n for n, d in g.nodes(data=True)
+        if _lat0 <= d.get('y', point[0]) <= _lat1
+        and _lng0 <= d.get('x', point[1]) <= _lng1
+    }
+    if 0 < len(_pre_nodes) < len(g.nodes):
+        _log(f'WGS-84 pre-clip: {len(g.nodes)} → {len(_pre_nodes)} nodes '
+             f'(crop_dist={_pre_cd} m)')
+        g = g.subgraph(_pre_nodes).copy()
+
+    # ── 5b. Project pre-clipped graph ────────────────────────────────────────
     g_proj = ox.project_graph(g)
 
     # ── 6. Water layer ───────────────────────────────────────────────────────
@@ -1349,6 +1379,7 @@ def render(params: dict) -> bytes:
     edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
     edge_widths = [w * edge_width_scale for w in get_edge_widths(g_proj, minor_roads)]
 
+    _plot_t0 = time.time()
     ox.plot_graph(
         g_proj, ax=ax,
         bgcolor=theme['bg'],
@@ -1358,6 +1389,8 @@ def render(params: dict) -> bytes:
         show=False,
         close=False,
     )
+    _log(f'plot_graph: {time.time()-_plot_t0:.1f}s '
+         f'({g_proj.number_of_nodes()} nodes, {g_proj.number_of_edges()} edges)')
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlim(crop_xlim)
     ax.set_ylim(crop_ylim)
