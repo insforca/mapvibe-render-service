@@ -376,13 +376,29 @@ def r2_cache_get(cache_key: str):
 
 
 def r2_cache_set(cache_key: str, value) -> None:
-    """Upload a graph entry to R2 in a background daemon thread."""
+    """Upload a graph entry to R2 in a background daemon thread.
+
+    Serialisation (pickle.dumps) is done **synchronously in the calling thread**
+    before the background thread is spawned.  The alternative — serialising
+    inside the daemon thread — causes a race condition: the calling thread may
+    continue mutating the same NetworkX graph (e.g. ox.project_graph modifies
+    node-attribute dicts in-place) while pickle is iterating over those very
+    same dicts, raising 'dictionary changed size during iteration'.  Serialising
+    eagerly, before control returns to the caller, eliminates the race because
+    pickle runs while the graph is still in a consistent, unmutated state.
+    Only the S3 upload (pure I/O) stays in the background.
+    """
+    client = _get_r2_client()
+    if client is None:
+        return
+    try:
+        data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception as e:
+        _log(f'R2 cache serialize failed ({cache_key}): {e}')
+        return
+
     def _upload():
-        client = _get_r2_client()
-        if client is None:
-            return
         try:
-            data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
             client.put_object(
                 Bucket=_R2_BUCKET_NAME,
                 Key=_r2_obj_key(cache_key),
