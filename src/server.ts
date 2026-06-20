@@ -1385,6 +1385,12 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         // half-diagonal), so preview scale matches what the user designed.
         const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
 
+  // Preview dist cap — see PREVIEW_DIST_CAP constant above.
+  // Scale crop_dist by the same factor so the crop window stays proportional.
+  const distScale       = compensatedDist > PREVIEW_DIST_CAP ? PREVIEW_DIST_CAP / compensatedDist : 1;
+  const previewDist     = Math.min(compensatedDist, PREVIEW_DIST_CAP);
+  const previewCropDist = Math.round(cropDistOverride * distScale);
+
         png = await renderOsmPython({
           city:            '',                                     // OSMnx geocodes from lat/lng
           country:         '',
@@ -1397,8 +1403,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           // when an explicit dict is passed in. Studio + Vercel proxy build
           // this from the full MapVibe palette so editor and preview agree.
           theme_json:      themeJson,
-          dist:            compensatedDist,
-          crop_dist:       cropDistOverride,
+          dist:            previewDist,     // capped to PREVIEW_DIST_CAP
+          crop_dist:       previewCropDist, // scaled proportionally to previewDist
           width_in:        widthIn,
           height_in:       heightIn,
           dpi,
@@ -1450,7 +1456,12 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 // ── Preview queue ─────────────────────────────────────────────────────────────
 // Separate from the main render queue so fulfillment jobs never block previews.
 // concurrency=2 allows two simultaneous fast 480px renders without starving CPU.
-const PREVIEW_TIMEOUT_MS = 20_000;
+const PREVIEW_TIMEOUT_MS = 35_000;  // increased: gives large cities (dist>20km) sufficient headroom
+// Maximum OSM dist for preview renders — limits matplotlib segment count.
+// 20 km covers the city centre and inner suburbs clearly at 480 px; area
+// scales as dist², so capping 45km→20km cuts ~80 % of road-segment draw
+// calls and brings large cities (DC, Moscow, Tokyo) well under the deadline.
+const PREVIEW_DIST_CAP   = 20_000;  // metres
 const previewQueue = new PQueue({ concurrency: 2 });
 
 // POST /preview — fast server-side matplotlib render for the print preview modal.
@@ -1527,8 +1538,8 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
         display_country: displayCountry ?? '',
         theme_name:      osmTheme       ?? 'midnight_blue',
         theme_json:      themeJson,
-        dist:            compensatedDist,
-        crop_dist:       cropDistOverride,
+        dist:            previewDist,     // capped to PREVIEW_DIST_CAP
+        crop_dist:       previewCropDist, // scaled proportionally to previewDist
         width_in:        widthIn,
         height_in:       heightIn,
         dpi,
