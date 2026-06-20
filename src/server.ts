@@ -1902,7 +1902,30 @@ function runStartupCitySeed(): void {
   setTimeout(warmNext, 15_000);
 }
 
+// ── Startup PBF graph prebuild ───────────────────────────────────────────────
+// Spawns prebuild_graphs.py immediately at boot (no delay) to write R2 L2
+// graph pickles for PBF regions ≤ 200 MB.  Smallest regions first:
+//   DC (7 MB)          → warm in ~30 s
+//   London / Paris     → warm in ~2–3 min
+//   Boston / Denver /… → warm in ~3–5 min
+// This runs in parallel with runStartupCitySeed() (Overpass path) — PBF
+// extractions never touch Overpass so there is no rate-limit concern.
+// Without this, the sequential Overpass seed reaches DC at position ~51
+// (10 s × 51 = 8.5 min) — long after the first user request might land.
+function runPrebuildGraphs(): void {
+  const prebuildScript = join(__dirname, '..', 'python', 'prebuild_graphs.py');
+  const child = spawn(
+    MAPVIBE_PYTHON,
+    [prebuildScript, '--workers', '2', '--max-size-mb', '200'],
+    { stdio: 'inherit', detached: false },
+  );
+  child.on('close', (code: number | null) => {
+    console.log(`[prebuild] graphs done (exit ${code ?? '?'})`);
+  });
+  child.on('error', (err: Error) => {
+    console.warn(`[prebuild] spawn error: ${err.message}`);
+  });
+}
+
 runStartupCitySeed();
-
-
-
+runPrebuildGraphs();
