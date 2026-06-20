@@ -1731,7 +1731,7 @@ function runStartupCitySeed(): void {
     console.warn('[seed] top_cities.json not found or invalid — skipping startup seed:', (e as Error).message);
     return;
   }
-  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 10s intervals, 180s timeout per city`);
+  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 10s intervals, 600s timeout per city`);
   let idx = 0;
   function warmNext(): void {
     if (idx >= cities.length) {
@@ -1751,7 +1751,7 @@ function runStartupCitySeed(): void {
       show_text:       false,
       no_fade:         true,
       minor_roads:     false,
-    }, AbortSignal.timeout(180_000)).then(
+    }, AbortSignal.timeout(600_000)).then(
       () => console.log(`[seed] ✓ ${c.city}, ${c.country} (${idx}/${cities.length})`),
       (e: Error) => console.log(`[seed] ✗ ${c.city}: ${e.message}`),
     ).finally(() => setTimeout(warmNext, 10_000));
