@@ -1916,7 +1916,7 @@ function runPrebuildGraphs(): void {
   const prebuildScript = join(__dirname, '..', 'python', 'prebuild_graphs.py');
   const child = spawn(
     MAPVIBE_PYTHON,
-    [prebuildScript, '--workers', '2', '--max-size-mb', '200'],
+    [prebuildScript, '--workers', '2', '--max-size-mb', '300'],
     { stdio: 'inherit', detached: false },
   );
   child.on('close', (code: number | null) => {
