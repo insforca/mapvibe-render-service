@@ -978,7 +978,7 @@ def render(params: dict) -> bytes:
             height_in = height_in * _scale
     _log(f'{display_city}, {display_country} @ {point[0]:.4f},{point[1]:.4f}  '
          f'dist={dist}m  {width_in}×{height_in}in  {dpi}DPI  '
-         f'{("preview_max_px="+str(preview_max_px)+"  ") if preview_max_px else ""}'
+         f'{"pmx="+str(_pmx)+"  " if preview_max_px else ""}'
          f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}')
 
     # ── 2. Load theme ────────────────────────────────────────────────────────

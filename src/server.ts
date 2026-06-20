@@ -1317,7 +1317,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         // to size the matplotlib figure and pick line weights.
         // DPI: explicit override wins (two-stage preview uses dpi=32 for rough,
         // dpi=96 for full); falls back to the historical previewMode heuristic.
-        const dpi = (typeof dpiOverride === 'number' && Number.isFinite(dpiOverride) && dpiOverride > 0)
+        const dpi = (Number.isFinite(dpiOverride) && dpiOverride > 0)
           ? dpiOverride
           : (previewMode ? 96 : 300);
 
