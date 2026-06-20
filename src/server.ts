@@ -1511,6 +1511,12 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
   const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
   const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
 
+  // Preview dist cap — keeps matplotlib segment count bounded for large cities.
+  // Area scales as dist², so 45km→20km cuts ~80 % of road-segment draw calls.
+  const distScale       = compensatedDist > PREVIEW_DIST_CAP ? PREVIEW_DIST_CAP / compensatedDist : 1;
+  const previewDist     = Math.min(compensatedDist, PREVIEW_DIST_CAP);
+  const previewCropDist = Math.round(cropDistOverride * distScale);
+
   // Soft queue-depth guard — drop early rather than time out inside the queue.
   if (previewQueue.size >= 4) {
     console.warn(`[preview] Queue full (${previewQueue.size}) — rejecting`);
@@ -1524,7 +1530,7 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
     // Abort the Python child 1 s before the HTTP deadline so we can still write 503.
     const abort      = new AbortController();
     const abortTimer = setTimeout(() => {
-      console.warn('[preview] Aborting Python render (19 s deadline)');
+      console.warn('[preview] Aborting Python render (34 s deadline)');
       abort.abort();
     }, PREVIEW_TIMEOUT_MS - 1_000);
 
