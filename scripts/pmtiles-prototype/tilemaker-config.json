@@ -1,0 +1,51 @@
+{
+  "_comment": "MapVibe poster-rendering PMTiles profile. Designed to preserve the OSM tag fidelity that python/mapvibe_render.py reads (highway tiers, railway types, water/parks geometry) rather than the typical web-mapping profile which collapses tag values for tile-size reasons. We are not bandwidth-bound — we are pixel-fidelity-bound — so simplification is conservative and tag preservation is exhaustive.",
+
+  "layers": {
+    "streets": {
+      "_comment": "All road geometries. Lua keeps the raw highway= value as an attribute; Python's get_edge_colors / _CLEAN_HIDDEN_TYPES does tier filtering at draw time.",
+      "minzoom": 8,
+      "maxzoom": 14,
+      "simplify_below": 13,
+      "simplify_level": 0.0001,
+      "simplify_length": 0.0,
+      "_simplify_rationale": "Keep every node at z13+. Below z13 we tolerate ~10m simplification — invisible at the line weights we draw."
+    },
+    "water": {
+      "_comment": "Water polygons (natural=water, bay, strait, waterway=riverbank). Coastline accuracy matters visually — minimal simplification.",
+      "minzoom": 6,
+      "maxzoom": 14,
+      "simplify_below": 12,
+      "simplify_level": 0.0001
+    },
+    "parks": {
+      "_comment": "Green polygons (leisure=park, landuse=grass).",
+      "minzoom": 10,
+      "maxzoom": 14,
+      "simplify_below": 13,
+      "simplify_level": 0.0001
+    },
+    "rail": {
+      "_comment": "Railway lines (rail, light_rail, subway, tram, monorail). Lua keeps railway= value.",
+      "minzoom": 9,
+      "maxzoom": 14,
+      "simplify_below": 13,
+      "simplify_level": 0.0001
+    }
+  },
+
+  "settings": {
+    "minzoom": 6,
+    "maxzoom": 14,
+    "basezoom": 14,
+    "include_ids": false,
+    "name": "MapVibe Poster Tiles",
+    "version": "0.1.0",
+    "description": "Vector tiles tuned for poster-grade matplotlib rendering — full tag fidelity, conservative simplification.",
+    "compress": "gzip",
+    "filemetadata": {
+      "attribution": "© OpenStreetMap contributors"
+    },
+    "_simplification_rationale": "Web-mapping profiles simplify aggressively because their bottleneck is per-tile bytes over mobile data. Our reader is server-side; we range-fetch from R2 with zero egress cost. Larger tiles are fine. Geometry fidelity wins."
+  }
+}
