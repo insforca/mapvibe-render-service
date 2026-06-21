@@ -34,18 +34,12 @@ we're about to retire.
 
 ## Why promote it now
 
-Naming the existing toggle as a preset elevates the choice from a
-per-render setting to a **product positioning lever**:
-
-- **Clean** — major arteries only, no secondary / tertiary roads, strong
-  geometry, lots of breathing room. Premium feel at smaller sizes
-  (16×20). Continues the direction of render-service PR #28.
-- **Detailed** — full road hierarchy, finer grid, more city texture.
-  Reads better at large formats (24×36+) where density adds to the
-  "wow" effect at close viewing distance.
-
-Same city + same theme + two depth presets = two distinct products that
-appeal to different customer aesthetics.
+Naming the existing toggle as a preset is an **API hygiene** change, not
+a UI or pricing decision. The `bool` flag is a fine implementation but a
+weak API surface — it doesn't compose with future per-preset tunings
+(fade style, line weights, DPI defaults) without adding parallel
+parameters. A named dict clusters those knobs cleanly without exposing
+them to the customer or touching the editor UI.
 
 ## How they sit in the PMTiles pipeline
 
@@ -131,18 +125,11 @@ deprecation window, only `preset` is accepted.
 
 ### Studio UI surfacing
 
-**Out of scope for the spike branch.** Two product directions to decide
-separately:
-
-1. **Preset as checkout option** — alongside finish and size, the
-   customer picks Clean or Detailed as part of ordering. Higher friction,
-   clearer positioning, supports tier pricing if Detailed becomes a
-   premium SKU.
-2. **Preset as editor setting only** — current behaviour, preserved.
-   Customer toggles during design; whatever they last had selected is
-   what fulfils.
-
-Both work technically. Decision is product, not engineering.
+**Decision: preset stays editor-only.** No new UI work required.
+The customer toggles Clean/Detailed during design; whatever is selected
+at checkout is what fulfils. The Studio → server contract change is a
+one-line body mapping swap (`minorRoads: bool` → `preset: string`) with
+no visible change to the product UI or pricing.
 
 ## Cut-over sequence
 
@@ -153,10 +140,8 @@ Both work technically. Decision is product, not engineering.
    PR on `mapvibe-render-service`.
 4. Studio sends explicit `preset` field instead of `minorRoads`. Single
    PR on `mapvibe-studio`.
-5. Studio surfaces preset as product option (if that's the decision in
-   the "UI surfacing" section above). Separate PR, product-led.
 
-Steps 3–5 are independent and can ship in either order: backwards-compat
+Steps 3–4 are independent and can ship in either order: backwards-compat
 shims on each side let them roll out asynchronously.
 
 ## What the spike validates
