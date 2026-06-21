@@ -1069,6 +1069,28 @@ def render(params: dict) -> bytes:
     qpoint             = (qlat, qlng)
     cache_hits         = {"streets": False, "water": False, "parks": False, "rail": False}
 
+    # ── pview cache tier ─────────────────────────────────────────────────────
+    # Stores the post-projection pre-clipped graph (~1-3 MB, ~3-5k nodes) so
+    # subsequent preview requests skip BOTH the streets fetch (2-25 s) AND
+    # ox.project_graph (15-30 s for DC 20k-node graph).
+    # pview_only=True returns immediately after the cache write (no PNG).
+    _pview_filter   = 'minor' if minor_roads else 'major'
+    _pview_round_cd = round(
+        (int(crop_dist_param) if crop_dist_param is not None else dist) / 500
+    ) * 500
+    pview_key     = _graph_cache_key(
+        'pview', qlat, qlng, qdist, _pview_round_cd, _pview_filter, network_type
+    )
+    _pview_cached = graph_cache_get(pview_key)
+    if _pview_cached is not None:
+        _log(
+            f'pview cache hit ({pview_key[:16]}…) — '
+            f'skipping streets fetch + ox.project_graph '
+            f'({len(_pview_cached.nodes)} nodes, '
+            f'{_pview_cached.number_of_edges()} edges)'
+        )
+        cache_hits['streets'] = True  # streets implicitly covered
+
     def _fetch_streets():
         # Streets are the only fetch whose filter depends on minor_roads, so
         # the key carries that bit — Clean vs Detailed get separate entries.
@@ -1246,21 +1268,23 @@ def render(params: dict) -> bytes:
     # to outweigh the marginal tarpit risk. If we see Overpass 429s in
     # production this is the first knob to dial back to 3 (rail queued).
     with ThreadPoolExecutor(max_workers=4) as pool:
-        f_streets = pool.submit(_fetch_streets)
+        # Skip streets when the pview cache provides g_proj directly.
+        f_streets = (None if _pview_cached is not None
+                     else pool.submit(_fetch_streets))
         f_water   = pool.submit(_fetch_water)
         f_parks   = pool.submit(_fetch_parks)
         f_rail    = pool.submit(_fetch_rail)
         # Streets are mandatory — let any exception propagate (fails the
         # render exactly as the old sequential code did). Water / parks /
         # rail already swallow their own errors and return None.
-        g     = f_streets.result()
+        g     = (None if _pview_cached is not None else f_streets.result())
         water = f_water.result()
         parks = f_parks.result()
         rail  = f_rail.result()
     hit_summary = ','.join(f'{k}={"HIT" if v else "miss"}' for k, v in cache_hits.items())
     _log(f'Fetch phase {time.time() - fetch_start:.1f}s — {hit_summary} (qdist={qdist})')
 
-    if g is None or len(g.nodes) == 0:
+    if _pview_cached is None and (g is None or len(g.nodes) == 0):
         raise RuntimeError('Failed to retrieve street network data.')
 
     # ── 4. Setup figure ──────────────────────────────────────────────────────
@@ -1272,36 +1296,35 @@ def render(params: dict) -> bytes:
     if full_bleed:
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
 
-    # ── 5. Pre-clip graph in WGS-84 (BEFORE projection) ─────────────────────
-    # ox.project_graph calls geopandas CRS conversion on every node and edge.
-    # For a dense DC-style graph fetched at qdist=7000 m (~20k nodes) this
-    # takes 20-30 s — the dominant cost of the preview path.  Filtering to
-    # the poster viewport in unprojected lat/lng first (cheap Python loop)
-    # shrinks the graph 5-8× before the expensive CRS pass runs.
-    #
-    # crop_dist (metres) → approximate lat/lng half-extents:
-    #   1° lat  ≈ 111,111 m  (constant)
-    #   1° lng  ≈ 111,111 m × cos(lat)  (varies with latitude)
-    # A 10 % border guard keeps edges that straddle the crop boundary.
-    _pre_cd = int(crop_dist_param) if crop_dist_param is not None else dist
-    _dlat = _pre_cd / 111_111 * 1.10
-    _dlng = _pre_cd / (111_111 * math.cos(math.radians(point[0]))) * 1.10
-    _lat0 = point[0] - _dlat
-    _lat1 = point[0] + _dlat
-    _lng0 = point[1] - _dlng
-    _lng1 = point[1] + _dlng
-    _pre_nodes = {
-        n for n, d in g.nodes(data=True)
-        if _lat0 <= d.get('y', point[0]) <= _lat1
-        and _lng0 <= d.get('x', point[1]) <= _lng1
-    }
-    if 0 < len(_pre_nodes) < len(g.nodes):
-        _log(f'WGS-84 pre-clip: {len(g.nodes)} → {len(_pre_nodes)} nodes '
-             f'(crop_dist={_pre_cd} m)')
-        g = g.subgraph(_pre_nodes).copy()
+    # ── 5. Project graph ─────────────────────────────────────────────────────
+    if _pview_cached is not None:
+        # pview cache hit: g_proj is pre-projected+pre-clipped.
+        # Skip the 15-30 s ox.project_graph CRS conversion entirely.
+        g_proj = _pview_cached
+    else:
+        # ── 5a. Pre-clip in WGS-84 BEFORE projection ─────────────────────
+        _pre_cd = int(crop_dist_param) if crop_dist_param is not None else dist
+        _dlat = _pre_cd / 111_111 * 1.10
+        _dlng = _pre_cd / (111_111 * math.cos(math.radians(point[0]))) * 1.10
+        _lat0 = point[0] - _dlat
+        _lat1 = point[0] + _dlat
+        _lng0 = point[1] - _dlng
+        _lng1 = point[1] + _dlng
+        _pre_nodes = {
+            n for n, d in g.nodes(data=True)
+            if _lat0 <= d.get('y', point[0]) <= _lat1
+            and _lng0 <= d.get('x', point[1]) <= _lng1
+        }
+        if 0 < len(_pre_nodes) < len(g.nodes):
+            _log(f'WGS-84 pre-clip: {len(g.nodes)} → {len(_pre_nodes)} nodes '
+                 f'(crop_dist={_pre_cd} m)')
+            g = g.subgraph(_pre_nodes).copy()
 
-    # ── 5b. Project pre-clipped graph ────────────────────────────────────────
-    g_proj = ox.project_graph(g)
+        # ── 5b. Project pre-clipped graph ─────────────────────────────────
+        _proj_t0 = time.time()
+        g_proj = ox.project_graph(g)
+        _log(f'project_graph: {time.time()-_proj_t0:.1f}s '
+             f'({len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
 
     # ── 6. Water layer ───────────────────────────────────────────────────────
     if water is not None and not water.empty:
@@ -1364,6 +1387,21 @@ def render(params: dict) -> bytes:
     }
     if len(_crop_nodes) < len(g_proj.nodes):
         g_proj = g_proj.subgraph(_crop_nodes).copy()
+
+    # ── Write pview cache for future requests ────────────────────────────
+    # Only when freshly built — never re-cache what was loaded from pview.
+    # This small graph in R2 L2 means the next preview skips
+    # both streets fetch and ox.project_graph → DC warm-path ~6 s.
+    if _pview_cached is None:
+        graph_cache_set(pview_key, g_proj)
+        _log(f'pview cached ({pview_key[:16]}…, '
+             f'{len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
+
+    # pview_only=True: return after warming cache (no PNG needed).
+    # Used by prebuild_graphs.py to pre-heat pview at boot.
+    if params.get('pview_only'):
+        _log('pview_only=True — returning after cache warm (skipping PNG)')
+        return b''
 
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
     # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's

@@ -99,6 +99,47 @@ def _build_city(city: dict, force: bool) -> tuple[str, str]:
         return 'fail', f'FAIL  {name}: {e}'
 
 
+# ── pview warm phase ─────────────────────────────────────────────────────────
+# 3.75×5 poster at 96 DPI — must match server.ts preview params.
+_PVIEW_ASPECT    = 4.0 / 3.0
+_PVIEW_WIDTH_IN  = 3.75
+_PVIEW_HEIGHT_IN = 5.0
+_PVIEW_DPI       = 96
+
+import math as _math
+
+
+def _build_preview(city: dict, force: bool) -> tuple[str, str]:
+    """Warm the pview cache for this city via render(pview_only=True)."""
+    name = f"{city['city']}, {city.get('country', '')}"
+    try:
+        lat = float(city['lat'])
+        lon = float(city['lon'])
+        # Reproduce server.ts crop_dist:
+        user_osm_dist     = float(city.get('dist', 15_000))
+        comp              = user_osm_dist * 4.0 / _PVIEW_ASPECT
+        scale             = min(1.0, PREVIEW_DIST_CAP / comp) if comp > 0 else 1.0
+        crop_override     = user_osm_dist / _math.sqrt(1 + _PVIEW_ASPECT ** 2)
+        preview_crop_dist = round(crop_override * scale)
+        # Check pview key
+        qlat, qlng, qdist = mv._graph_cache_quantize(lat, lon, PREVIEW_DIST_CAP)
+        round_cd  = round(preview_crop_dist / 500) * 500
+        pview_key = mv._graph_cache_key('pview', qlat, qlng, qdist, round_cd, 'major', 'drive')
+        if not force and _r2_key_exists(pview_key):
+            return 'skip', f'SKIP  {name} (pview R2 hit)'
+        mv.render({
+            'lat': lat, 'lng': lon,
+            'display_city': city['city'], 'display_country': city.get('country', ''),
+            'dist': PREVIEW_DIST_CAP, 'crop_dist': preview_crop_dist,
+            'width_in': _PVIEW_WIDTH_IN, 'height_in': _PVIEW_HEIGHT_IN, 'dpi': _PVIEW_DPI,
+            'show_text': False, 'full_bleed': True, 'no_fade': True,
+            'minor_roads': False, 'pview_only': True,
+        })
+        return 'ok', f'OK    {name} (pview warmed)'
+    except Exception as e:
+        return 'fail', f'FAIL  {name} preview: {e}'
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser(
@@ -175,6 +216,18 @@ def main() -> None:
             for city in region_groups[rk]
         }
         for fut in as_completed(futures):
+            status, label = fut.result()
+            counts[status] += 1
+            _log(label)
+
+    # ── Phase 2: warm pview cache ────────────────────────────────────────
+    _log(f'Phase 2: warming pview for {total_cities} cities ({args.workers} workers) ...')
+    with ThreadPoolExecutor(max_workers=args.workers) as pool2:
+        p2_futs = {
+            pool2.submit(_build_preview, city, args.force): city
+            for rk in ordered_regions for city in region_groups[rk]
+        }
+        for fut in as_completed(p2_futs):
             status, label = fut.result()
             counts[status] += 1
             _log(label)
