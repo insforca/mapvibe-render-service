@@ -55,11 +55,11 @@ import mapvibe_render as mv  # noqa: E402
 # poster after the studio's osmDist compensation (boundsToOsmDist + server.ts
 # compensatedDist formula). Keep this stable so the comparison is reproducible.
 DC_LAT, DC_LNG = 38.8895, -77.0091
-RADIUS_M = 9_000
+RADIUS_M = 3_000
 
 # Output dimensions — match what /render uses for preview-grade output.
-WIDTH_IN, HEIGHT_IN = 12.5, 16.67
-DPI = 96
+WIDTH_IN, HEIGHT_IN = 10, 13.3
+DPI = 72
 
 # Theme — pick something with a visible rail color so the rail layer diff is
 # obvious if Tilemaker drops something.
@@ -116,8 +116,13 @@ def fetch_layer_from_pmtiles(pmtiles_path: Path, layer: str, zoom: int,
                 continue
             if tile_bytes is None:
                 continue
-            # MVT decode — returns dict of layer_name -> { features: [...] }
+            # MVT decode — tiles are gzip-compressed by tippecanoe
+            import gzip as _gz
             try:
+                try:
+                    tile_bytes = _gz.decompress(tile_bytes)
+                except Exception:
+                    pass
                 decoded = mvt.decode(tile_bytes)
             except Exception:
                 continue
@@ -218,20 +223,35 @@ def render_panel(ax, streets_gdf, water_gdf, parks_gdf, rail_gdf, theme, title, 
             rail_color = theme.get("rail", theme.get("road_default", theme["text"]))
             lines.to_crs(epsg=3857).plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
-    # Streets — both paths converge here. streets_gdf carries a `highway`
-    # column with raw OSM tag values; tier filtering matches Python prod.
+    # Streets — LineCollection for memory efficiency (avoid geopandas patch alloc per row).
     if streets_gdf is not None and not streets_gdf.empty:
-        proj = streets_gdf.to_crs(epsg=3857)
-        for _idx, row in proj.iterrows():
-            hw = row.get("highway", "unclassified")
-            if isinstance(hw, list):
-                hw = hw[0] if hw else "unclassified"
-            if not minor_roads and hw in mv._CLEAN_HIDDEN_TYPES:
-                continue
-            color = _tier_color(hw, theme)
-            width = _tier_width(hw)
-            gpd.GeoSeries([row.geometry], crs=proj.crs).plot(ax=ax, color=color, linewidth=width, zorder=1)
+        from matplotlib.collections import LineCollection as _LC
+        import numpy as np
+        proj = streets_gdf.to_crs(epsg=3857).copy()
+        # Normalise highway column (may be list in PMTiles path)
+        proj["_hw"] = proj["highway"].apply(
+            lambda v: (v[0] if isinstance(v, list) and v else v)
+            if not isinstance(v, str) else v
+        ).fillna("unclassified")
+        if not minor_roads:
+            proj = proj[~proj["_hw"].isin(mv._CLEAN_HIDDEN_TYPES)]
+        if not proj.empty:
+            proj["_color"] = proj["_hw"].apply(lambda hw: _tier_color(hw, theme))
+            proj["_width"] = proj["_hw"].apply(_tier_width)
+            for (color, width), grp in proj.groupby(["_color", "_width"]):
+                segs = []
+                for geom in grp.geometry:
+                    if geom is None or geom.is_empty:
+                        continue
+                    if geom.geom_type == "LineString":
+                        segs.append(np.array(geom.coords))
+                    elif geom.geom_type == "MultiLineString":
+                        segs.extend(np.array(g.coords) for g in geom.geoms)
+                if segs:
+                    lc = _LC(segs, colors=color, linewidths=width, zorder=1)
+                    ax.add_collection(lc)
 
+    ax.autoscale_view()
     ax.set_aspect("equal")
     ax.set_axis_off()
     ax.set_title(title, fontsize=10, color="white", pad=8)
@@ -288,21 +308,34 @@ def main():
     print(f"    PMTiles fetch: {time.time() - t0:.1f}s")
     print(f"    streets={len(streets_p)} water={len(water_p)} parks={len(parks_p)} rail={len(rail_p)}")
 
-    # ── Render both, side by side ────────────────────────────────────────────
-    print("\nRendering comparison...")
-    fig, axes = plt.subplots(1, 2, figsize=(WIDTH_IN * 2 + 0.5, HEIGHT_IN),
+    # ── Render 4-panel grid ──────────────────────────────────────────────────
+    # Rows = preset (Clean / Detailed). Cols = data source (OSMnx / PMTiles).
+    # Top-row left/right identical = Clean preset works with PMTiles data.
+    # Bottom-row left/right identical = Detailed preset works with PMTiles data.
+    # Top row visibly sparser than bottom within a column = tier filter is
+    # actually filtering. See PRESETS-SPEC.md for full pass criteria.
+    print("\nRendering 4-panel preset comparison...")
+    fig, axes = plt.subplots(2, 2, figsize=(WIDTH_IN * 2 + 0.5, HEIGHT_IN * 2 + 0.5),
                              facecolor="#0e1320", dpi=DPI)
-    render_panel(axes[0], streets_o, water_o, parks_o, rail_o, theme,
-                 "Path A — OSMnx (today)", minor_roads=True)
-    render_panel(axes[1], streets_p, water_p, parks_p, rail_p, theme,
-                 "Path B — PMTiles (prototype)", minor_roads=True)
 
-    # Lock both axes to the same projected bbox so the comparison is honest.
-    minx = min(axes[0].get_xlim()[0], axes[1].get_xlim()[0])
-    maxx = max(axes[0].get_xlim()[1], axes[1].get_xlim()[1])
-    miny = min(axes[0].get_ylim()[0], axes[1].get_ylim()[0])
-    maxy = max(axes[0].get_ylim()[1], axes[1].get_ylim()[1])
-    for ax in axes:
+    # Row 0: Clean preset (minor_roads=False)
+    render_panel(axes[0][0], streets_o, water_o, parks_o, rail_o, theme,
+                 "OSMnx — Clean (today)",          minor_roads=False)
+    render_panel(axes[0][1], streets_p, water_p, parks_p, rail_p, theme,
+                 "PMTiles — Clean (prototype)",    minor_roads=False)
+    # Row 1: Detailed preset (minor_roads=True)
+    render_panel(axes[1][0], streets_o, water_o, parks_o, rail_o, theme,
+                 "OSMnx — Detailed (today)",       minor_roads=True)
+    render_panel(axes[1][1], streets_p, water_p, parks_p, rail_p, theme,
+                 "PMTiles — Detailed (prototype)", minor_roads=True)
+
+    # Lock every panel's axes to the same projected bbox so visual diffs are
+    # honest (not artefacts of differing auto-fit limits).
+    minx = min(ax.get_xlim()[0] for ax in axes.flat)
+    maxx = max(ax.get_xlim()[1] for ax in axes.flat)
+    miny = min(ax.get_ylim()[0] for ax in axes.flat)
+    maxy = max(ax.get_ylim()[1] for ax in axes.flat)
+    for ax in axes.flat:
         ax.set_xlim(minx, maxx)
         ax.set_ylim(miny, maxy)
 
@@ -312,14 +345,40 @@ def main():
 
     size_mb = os.path.getsize(OUT_IMAGE) / (1024 * 1024)
     print(f"\nWrote {OUT_IMAGE} ({size_mb:.1f} MB)")
-    print("\nEyeball checklist:")
-    print("  1. Same road TIERS visible (motorways, primary, secondary all present)?")
-    print("  2. Potomac shoreline shape matches?")
-    print("  3. Metro / Amtrak rail corridors present in both?")
-    print("  4. Park polygons (Mall, Rock Creek) match?")
-    print("  5. Density of residential streets comparable?")
-    print("\nIf any of those diverge, the fix is in tilemaker-process.lua")
-    print("(missing tag value) or tilemaker-config.json (too-aggressive simplify).")
+
+    # ── 400 DPI vector → raster validation ───────────────────────────────────
+    # The PMTiles pipeline's killer property: same vector source, any
+    # rasterization DPI. Render Detailed once at print-grade 400 DPI so the
+    # spike also proves the vector-to-print path scales cleanly. Look for
+    # crisp line edges, no aliasing artefacts, and a sensible file size
+    # (~5-15 MB JPEG for a 12.5x16.7 in poster at 400 DPI).
+    print("\nRendering 400 DPI print-grade pass from PMTiles data...")
+    PRINT_DPI = 400
+    fig_p, ax_p = plt.subplots(figsize=(WIDTH_IN, HEIGHT_IN),
+                               facecolor=theme["bg"], dpi=PRINT_DPI)
+    render_panel(ax_p, streets_p, water_p, parks_p, rail_p, theme,
+                 f"PMTiles \u2014 Detailed @ {PRINT_DPI} DPI", minor_roads=True)
+    ax_p.set_title("")  # remove harness title at print resolution
+    fig_p.tight_layout(pad=0)
+    fig_p.savefig(OUT_DIR / "print-400dpi.jpg",
+                  facecolor=theme["bg"], dpi=PRINT_DPI,
+                  bbox_inches="tight", pad_inches=0, format="jpeg",
+                  pil_kwargs={"quality": 92})
+    plt.close(fig_p)
+    print_size_mb = os.path.getsize(OUT_DIR / "print-400dpi.jpg") / (1024 * 1024)
+    print(f"Wrote {OUT_DIR / 'print-400dpi.jpg'} ({print_size_mb:.1f} MB)")
+
+    print("\nEyeball checklist (comparison.png):")
+    print("  1. TOP ROW left vs right identical?  \u2192 Clean preset works with PMTiles")
+    print("  2. BOTTOM ROW left vs right identical? \u2192 Detailed preset works with PMTiles")
+    print("  3. Top row sparser than bottom within a column? \u2192 tier filter is filtering")
+    print("  4. Potomac shoreline shape consistent across all four panels?")
+    print("  5. Metro / Amtrak rail corridors present in PMTiles panels?")
+    print("\nEyeball checklist (print-400dpi.jpg):")
+    print("  6. Line edges crisp at full size, no aliasing? \u2192 vector\u219240 DPI is clean")
+    print("  7. File size 5-15 MB? \u2192 encoding is sane for POD upload")
+    print("\nIf any panel fails: fix in tilemaker-process.lua (missing tag value)")
+    print("or tilemaker-config.json (too-aggressive simplify); see PRESETS-SPEC.md.")
 
 if __name__ == "__main__":
     main()
