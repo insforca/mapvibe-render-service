@@ -196,110 +196,108 @@ def _safe_features(lat, lng, dist, tags):
         print(f"    features fetch skipped ({tags}): {e}")
         return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
 
-# ── Render helpers ────────────────────────────────────────────────────────────
+# ── Shared render logic ───────────────────────────────────────────────────────
 
-def render_panel(ax, streets_gdf, water_gdf, parks_gdf, rail_gdf, theme, title, minor_roads):
-    """Render one panel into an existing matplotlib Axes. Reuses
-    mapvibe_render's tier filtering logic to keep the two renders apples-to-
-    apples."""
-    ax.set_facecolor(theme["bg"])
+def render_panel(ax, streets_gdf, water_gdf, parks_gdf, rail_gdf,
+                 theme: dict, title: str, minor_roads: bool = True):
+    """Render a single panel onto `ax` using pre-fetched GeoDataFrames."""
+    bg = theme["bg"]
+    ax.set_facecolor(bg)
 
-    # Water
-    if water_gdf is not None and not water_gdf.empty:
-        polys = water_gdf[water_gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
-        if not polys.empty:
-            polys.to_crs(epsg=3857).plot(ax=ax, facecolor=theme["water"], edgecolor="none", zorder=0.5)
+    # ── Parks fill ────────────────────────────────────────────────────────────
+    if not parks_gdf.empty:
+        parks_proj = parks_gdf.to_crs(epsg=3857)
+        parks_proj = parks_proj[parks_proj.geometry.geom_type.isin(
+            ["Polygon", "MultiPolygon"])]
+        if not parks_proj.empty:
+            parks_proj.plot(ax=ax, color=theme.get("parks", "#1e3a1e"),
+                            alpha=0.6, linewidth=0)
 
-    # Parks
-    if parks_gdf is not None and not parks_gdf.empty:
-        polys = parks_gdf[parks_gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
-        if not polys.empty:
-            polys.to_crs(epsg=3857).plot(ax=ax, facecolor=theme["parks"], edgecolor="none", zorder=0.8)
+    # ── Water fill ────────────────────────────────────────────────────────────
+    if not water_gdf.empty:
+        water_proj = water_gdf.to_crs(epsg=3857)
+        water_proj = water_proj[water_proj.geometry.geom_type.isin(
+            ["Polygon", "MultiPolygon"])]
+        if not water_proj.empty:
+            water_proj.plot(ax=ax, color=theme.get("water", "#1a2e4a"),
+                            alpha=0.9, linewidth=0)
 
-    # Rail
-    if rail_gdf is not None and not rail_gdf.empty:
-        lines = rail_gdf[rail_gdf.geometry.type.isin(["LineString", "MultiLineString"])]
-        if not lines.empty:
-            rail_color = theme.get("rail", theme.get("road_default", theme["text"]))
-            lines.to_crs(epsg=3857).plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
-
-    # Streets — LineCollection for memory efficiency (avoid geopandas patch alloc per row).
-    if streets_gdf is not None and not streets_gdf.empty:
-        from matplotlib.collections import LineCollection as _LC
+    # ── Streets ───────────────────────────────────────────────────────────────
+    if not streets_gdf.empty:
+        import matplotlib.collections as mcol
         import numpy as np
-        proj = streets_gdf.to_crs(epsg=3857).copy()
-        # Normalise highway column (may be list in PMTiles path)
-        proj["_hw"] = proj["highway"].apply(
-            lambda v: (v[0] if isinstance(v, list) and v else v)
-            if not isinstance(v, str) else v
-        ).fillna("unclassified")
-        if not minor_roads:
-            proj = proj[~proj["_hw"].isin(mv._CLEAN_HIDDEN_TYPES)]
-        if not proj.empty:
-            proj["_color"] = proj["_hw"].apply(lambda hw: _tier_color(hw, theme))
-            proj["_width"] = proj["_hw"].apply(_tier_width)
-            for (color, width), grp in proj.groupby(["_color", "_width"]):
-                segs = []
-                for geom in grp.geometry:
-                    if geom is None or geom.is_empty:
-                        continue
-                    if geom.geom_type == "LineString":
-                        segs.append(np.array(geom.coords))
-                    elif geom.geom_type == "MultiLineString":
-                        segs.extend(np.array(g.coords) for g in geom.geoms)
-                if segs:
-                    lc = _LC(segs, colors=color, linewidths=width, zorder=1)
-                    ax.add_collection(lc)
 
-    ax.autoscale_view()
-    ax.set_aspect("equal")
-    ax.set_axis_off()
-    ax.set_title(title, fontsize=10, color="white", pad=8)
+        streets_proj = streets_gdf.to_crs(epsg=3857)
 
-def _tier_color(hw, theme):
-    if hw in ("motorway", "motorway_link"):                  return theme["road_motorway"]
-    if hw in ("trunk", "trunk_link", "primary", "primary_link"): return theme["road_primary"]
-    if hw in ("secondary", "secondary_link"):                return theme["road_secondary"]
-    if hw in ("tertiary",  "tertiary_link"):                 return theme["road_tertiary"]
-    return theme.get("road_residential", theme.get("road_default", "#888"))
+        # Tier filter
+        ARTERY_TAGS = {"motorway", "trunk", "primary", "secondary",
+                       "motorway_link", "trunk_link", "primary_link", "secondary_link"}
+        is_artery = (streets_proj.get("highway", pd.Series(dtype=str))
+                     .isin(ARTERY_TAGS)) if "highway" in streets_proj.columns else \
+                    pd.Series([True] * len(streets_proj), index=streets_proj.index)
 
-def _tier_width(hw):
-    if hw in ("motorway", "motorway_link"):                  return 1.2
-    if hw in ("trunk", "trunk_link", "primary", "primary_link"): return 1.0
-    if hw in ("secondary", "secondary_link"):                return 0.8
-    if hw in ("tertiary",  "tertiary_link"):                 return 0.6
-    return 0.4
+        def _collect(gdf_subset, color, lw):
+            if gdf_subset.empty:
+                return
+            segs = []
+            for geom in gdf_subset.geometry:
+                if geom is None or geom.is_empty:
+                    continue
+                if geom.geom_type == "LineString":
+                    segs.append(np.array(geom.coords))
+                elif geom.geom_type == "MultiLineString":
+                    for part in geom.geoms:
+                        segs.append(np.array(part.coords))
+            if segs:
+                lc = mcol.LineCollection(segs, colors=[color], linewidths=[lw],
+                                         zorder=3)
+                ax.add_collection(lc)
 
-def osmnx_to_streets_gdf(g) -> gpd.GeoDataFrame:
-    """Project the OSMnx multigraph's edges into a GeoDataFrame in EPSG:4326
-    so render_panel can treat both paths uniformly."""
-    gdf = ox.graph_to_gdfs(g, nodes=False)
-    if gdf.crs is None:
-        gdf = gdf.set_crs(epsg=4326)
-    else:
-        gdf = gdf.to_crs(epsg=4326)
-    return gdf
+        road_color = theme.get("roads", "#c8bfb0")
+        _collect(streets_proj[is_artery],  road_color, 0.8)
+        if minor_roads:
+            _collect(streets_proj[~is_artery], road_color, 0.4)
+
+    # ── Rail ─────────────────────────────────────────────────────────────────
+    if not rail_gdf.empty:
+        rail_proj = rail_gdf.to_crs(epsg=3857)
+        rail_lines = rail_proj[rail_proj.geometry.geom_type.isin(
+            ["LineString", "MultiLineString"])]
+        if not rail_lines.empty:
+            rail_lines.plot(ax=ax, color=theme.get("rail", "#aaaaaa"),
+                            linewidth=1.0, alpha=0.8)
+
+    ax.set_title(title, fontsize=8, color="#888888", pad=4)
+
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    if not PMTILES.exists():
-        sys.exit(f"PMTiles archive not found at {PMTILES}. Run build-dc.sh first.")
+    import pandas as pd
 
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load theme
     theme = mv.load_theme(THEME_NAME)
+
+    Z    = 14
     bbox = bbox_around(DC_LAT, DC_LNG, RADIUS_M)
-    print(f"DC bbox (W,S,E,N): {bbox}")
+    print(f"bbox (W,S,E,N): {bbox}")
+    print(f"tiles at z{Z}: {list(tiles_for_bbox(*bbox, zoom=Z))}")
 
-    # ── Path A: OSMnx baseline ───────────────────────────────────────────────
-    print("\n[A] Fetching via OSMnx (baseline)...")
-    g, water_o, parks_o, rail_o = fetch_via_osmnx(DC_LAT, DC_LNG, RADIUS_M)
-    streets_o = osmnx_to_streets_gdf(g)
-    print(f"    streets={len(streets_o)} water={len(water_o)} parks={len(parks_o)} rail={len(rail_o)}")
+    # ── Fetch OSMnx baseline ─────────────────────────────────────────────────
+    print("\nFetching via OSMnx...")
+    g_o, water_o, parks_o, rail_o = fetch_via_osmnx(DC_LAT, DC_LNG, RADIUS_M)
+    nodes_o, edges_o = ox.graph_to_gdfs(g_o)
+    streets_o = edges_o[["geometry"]].copy()
+    print(f"  OSMnx streets: {len(streets_o)}")
 
-    # ── Path B: PMTiles prototype ────────────────────────────────────────────
-    # z14 carries the most detail in our config; fetch at that zoom.
-    Z = 14
-    print(f"\n[B] Fetching via PMTiles @ z={Z}...")
+    # ── Fetch PMTiles ────────────────────────────────────────────────────────
+    if not PMTILES.exists():
+        print(f"\nERROR: {PMTILES} not found. Run build-dc.sh first.")
+        sys.exit(1)
+
+    print("\nFetching from PMTiles...")
     t0 = time.time()
     streets_p = fetch_layer_from_pmtiles(PMTILES, "streets", Z, bbox)
     water_p   = fetch_layer_from_pmtiles(PMTILES, "water",   Z, bbox)
@@ -329,15 +327,28 @@ def main():
     render_panel(axes[1][1], streets_p, water_p, parks_p, rail_p, theme,
                  "PMTiles — Detailed (prototype)", minor_roads=True)
 
-    # Lock every panel's axes to the same projected bbox so visual diffs are
-    # honest (not artefacts of differing auto-fit limits).
-    minx = min(ax.get_xlim()[0] for ax in axes.flat)
-    maxx = max(ax.get_xlim()[1] for ax in axes.flat)
-    miny = min(ax.get_ylim()[0] for ax in axes.flat)
-    maxy = max(ax.get_ylim()[1] for ax in axes.flat)
+    # Lock every panel's axes to the bbox we ACTUALLY requested, projected to
+    # EPSG:3857 (the metric CRS the panels render in). The earlier version
+    # took `min(ax.get_xlim())` across all axes — but matplotlib's
+    # autoscale_view() doesn't reliably account for LineCollection bounds
+    # when geopandas plots through it, so the PMTiles panels' auto-fit limits
+    # came out wrong and the auto-fit-min calculation propagated those wrong
+    # bounds to every panel. Visible as three horizontal "bands" of DC in the
+    # original spike comparison.png — pure rendering artifact, the underlying
+    # PMTiles data was fine (proven by tile-grid overlay render showing
+    # streets cross every z14 tile boundary uninterrupted).
+    #
+    # Computing limits explicitly from the input bbox is both correct and
+    # immune to the autoscale gotcha — what we asked for is what we render.
+    corner_gs = gpd.GeoSeries(
+        [sgeom.Point(bbox[0], bbox[1]), sgeom.Point(bbox[2], bbox[3])],
+        crs="EPSG:4326",
+    ).to_crs(epsg=3857)
+    xmin, ymin = corner_gs.iloc[0].x, corner_gs.iloc[0].y
+    xmax, ymax = corner_gs.iloc[1].x, corner_gs.iloc[1].y
     for ax in axes.flat:
-        ax.set_xlim(minx, maxx)
-        ax.set_ylim(miny, maxy)
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
 
     fig.tight_layout()
     fig.savefig(OUT_IMAGE, facecolor=fig.get_facecolor(), dpi=DPI, bbox_inches="tight")
