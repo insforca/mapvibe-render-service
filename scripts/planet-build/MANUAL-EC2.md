@@ -83,6 +83,10 @@ EC2 → Launch instances:
 6. **Configure storage → Add new volume**:
    - Root: 100 GB gp3
    - Add another EBS volume: 500 GB gp3, device `/dev/sdb`, delete on termination ✓
+     (Nitro instances — m6i / m7i / c6i / c7i — surface this as `/dev/nvme1n1`
+     inside the OS, which is what the user-data `mkfs`/`mount` lines assume.
+     If you switch to a non-Nitro family later, run `lsblk` on first boot
+     and adjust the device path before letting the build run.)
 7. **Advanced details**:
    - **IAM instance profile**: `mapvibe-planet-build`
    - **Purchasing option**: Request Spot instances ✓
@@ -116,6 +120,8 @@ R2_ACCOUNT_ID=$(aws ssm get-parameter --region eu-west-1 \
 cd /opt
 git clone --branch feat/planet-build-tilemaker --depth 1 \
   https://github.com/insforca/mapvibe-render-service.git
+# TODO(post-merge): change "feat/planet-build-tilemaker" → "main"
+# (or a release tag) once the planet-build branch lands on main.
 cd mapvibe-render-service
 docker build -f scripts/planet-build/Dockerfile -t mapvibe-planet-build:latest .
 
