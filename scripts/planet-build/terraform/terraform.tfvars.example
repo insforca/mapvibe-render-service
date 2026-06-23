@@ -1,0 +1,13 @@
+# Copy this file to terraform.tfvars and fill in the two required variables.
+# terraform.tfvars is gitignored so credentials and operator IPs don't leak.
+
+# Name of an existing EC2 key pair in eu-west-1.
+key_name = "your-ec2-keypair-name"
+
+# CIDR block allowed SSH access. Use your current public IP as a /32 — find
+# it via `curl https://api.ipify.org`. Avoid 0.0.0.0/0 (world-open SSH).
+ssh_cidr = "203.0.113.5/32"
+
+# Optional overrides — uncomment to change defaults.
+# region        = "eu-west-1"
+# instance_type = "m6i.2xlarge"
