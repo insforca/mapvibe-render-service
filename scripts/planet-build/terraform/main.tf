@@ -150,7 +150,7 @@ locals {
       --name /mapvibe/r2-account-id --query Parameter.Value --output text)
 
     cd /opt
-    git clone --branch feat/planet-build-tilemaker --depth 1 \
+    git clone --branch ${var.build_branch} --depth 1 \
       https://github.com/insforca/mapvibe-render-service.git
     cd mapvibe-render-service
     docker build -f scripts/planet-build/Dockerfile -t mapvibe-planet-build:latest .
