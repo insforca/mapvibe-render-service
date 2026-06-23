@@ -16,7 +16,9 @@
 #        aws ssm put-parameter --name /mapvibe/r2-bucket --type String --value mapvibe-pmtiles
 #        aws ssm put-parameter --name /mapvibe/r2-account-id --type String --value <cf-account-id>
 #   4. IAM instance profile that grants ssm:GetParameter for the four
-#      parameters above (see iam-instance-profile.md sibling doc — TODO)
+#      parameters above. See `MANUAL-EC2.md` § "Pre-flight" step 4 — the
+#      JSON policy and trust relationship are documented there verbatim;
+#      duplicating them here would invite drift.
 
 set -euo pipefail
 
@@ -26,6 +28,13 @@ KEY_NAME="${KEY_NAME:?Set KEY_NAME to your EC2 SSH key pair name}"
 SECURITY_GROUP_ID="${SECURITY_GROUP_ID:?Set to a SG allowing SSH from your IP}"
 INSTANCE_PROFILE="${INSTANCE_PROFILE:-mapvibe-planet-build}"
 SUBNET_ID="${SUBNET_ID:-}"  # optional; lets EC2 pick if empty
+
+# Git branch the spot instance clones to assemble the build image. Defaults
+# to the unmerged feat branch so a launch from this branch's checkout works
+# without overrides.
+# TODO(post-merge): change default to "main" after feat/planet-build-tilemaker
+#                   lands. The user-data heredoc below also reads this var.
+BUILD_BRANCH="${BUILD_BRANCH:-feat/planet-build-tilemaker}"
 
 # Latest Ubuntu 22.04 LTS for eu-west-1 (HVM, SSD, x86_64). Refresh quarterly
 # from https://cloud-images.ubuntu.com/locator/ec2/ if this build branch
@@ -70,9 +79,14 @@ R2_BUCKET=$(aws ssm get-parameter --region eu-west-1 \
 R2_ACCOUNT_ID=$(aws ssm get-parameter --region eu-west-1 \
   --name /mapvibe/r2-account-id --query Parameter.Value --output text)
 
-# Clone the build branch and assemble the Docker image
+# Clone the build branch and assemble the Docker image.
+# __BUILD_BRANCH__ is a sentinel — the launching shell substitutes the
+# value of $BUILD_BRANCH below before sending user-data to EC2. We can't
+# use bash interpolation directly because this whole block lives in a
+# quoted heredoc (so the $R2_ACCESS_KEY etc. above expand on the instance,
+# not on the launching machine).
 cd /opt
-git clone --branch feat/planet-build-tilemaker --depth 1 \
+git clone --branch __BUILD_BRANCH__ --depth 1 \
   https://github.com/insforca/mapvibe-render-service.git
 cd mapvibe-render-service
 docker build -f scripts/planet-build/Dockerfile -t mapvibe-planet-build:latest .
@@ -93,9 +107,17 @@ shutdown -h now
 EOF
 )"
 
-# Block device mapping: 100 GB root + 500 GB gp3 data volume at /dev/sdb
-# (Nitro exposes this as /dev/nvme1n1 inside the OS). Auto-deletes when the
-# spot instance terminates.
+# Substitute the BUILD_BRANCH sentinel placed in the user-data heredoc above.
+# This is the one variable from the launching shell we need inside user-data;
+# everything else (R2_*, etc.) is fetched from SSM on the instance itself.
+USER_DATA="${USER_DATA//__BUILD_BRANCH__/${BUILD_BRANCH}}"
+
+# Block device mapping: 100 GB root + 500 GB gp3 data volume at /dev/sdb.
+# Nitro instance families (m6i / m7i / c6i / c7i) expose this as
+# /dev/nvme1n1 inside the OS — the user-data mkfs/mount above assumes that
+# path. If INSTANCE_TYPE is changed to a non-Nitro family (m5 / c5 / older),
+# verify the device path with `lsblk` on a test boot; older families use
+# /dev/xvdb. Auto-deletes when the spot instance terminates.
 BLOCK_DEVICE_MAPPINGS='[
   {"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 100, "VolumeType": "gp3", "DeleteOnTermination": true}},
   {"DeviceName": "/dev/sdb",  "Ebs": {"VolumeSize": 500, "VolumeType": "gp3", "DeleteOnTermination": true}}
