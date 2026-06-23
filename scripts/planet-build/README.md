@@ -73,3 +73,24 @@ For an off-cycle rebuild (e.g. a new region opens to customers and we
 want fresh data), re-run any of the three launch paths. They produce a
 new date-versioned archive next to the previous one; the env var swap
 gives you cut-over and rollback in seconds.
+
+## Known risks
+
+**Tilemaker phase 2 (tile generation) is not checkpoint-resumable.** If
+the spot instance gets reclaimed during the ~22-25 h tile build (vs the
+~6-8 h PBF download which IS resumable via the size-check in
+`build-planet.sh`), the tile build restarts from scratch when AWS
+relaunches under the persistent spot request. Tilemaker v3.0.0 has no
+native checkpointing and rolling our own would be more maintenance cost
+than it saves.
+
+Worst case if this happens: ~$3 wasted on the abandoned partial build
++ ~$3 on the second attempt = ~$6 total. Annoying, not catastrophic.
+
+**Mitigations available if it becomes a recurring problem**:
+- Switch the affected rebuild to on-demand: ~$9 total cost, zero
+  interruption risk. Cheap pivot once per quarter if needed.
+- Spot interruption rates in eu-west-1 for m6i are typically <5% on
+  jobs ≤24h. A 30h job is in the danger zone but still favourable.
+- Tilemaker's roadmap mentions resumable builds — recheck on each
+  version bump.
