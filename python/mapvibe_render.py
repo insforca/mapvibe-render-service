@@ -51,6 +51,8 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
+import geopandas as gpd
+import shapely.geometry as sgeom
 
 # ── Overpass mirror failover ──────────────────────────────────────────────────
 # OSMnx defaults to overpass-api.de which has been observed refusing
@@ -833,20 +835,12 @@ def get_edge_colors(g, theme: dict, minor_roads: bool) -> list:
         # Clean mode hides secondary / tertiary / residential family — matches
         # the editor's roadDetailMode='arteries' which toggles the same three
         # layer families together. Detailed mode falls through and tiers are
-        # coloured by their highway class below.
+        # coloured by their highway class via the shared _pmtiles_tier_color
+        # helper (single source of truth for the OSMnx and PMTiles paths).
         if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             colors.append('#00000000')
             continue
-        if hw in ('motorway', 'motorway_link'):
-            colors.append(theme['road_motorway'])
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            colors.append(theme['road_primary'])
-        elif hw in ('secondary', 'secondary_link'):
-            colors.append(theme['road_secondary'])
-        elif hw in ('tertiary', 'tertiary_link'):
-            colors.append(theme['road_tertiary'])
-        else:
-            colors.append(theme.get('road_residential', theme.get('road_default', '#888888')))
+        colors.append(_pmtiles_tier_color(hw, theme))
     return colors
 
 def get_edge_widths(g, minor_roads: bool) -> list:
@@ -859,17 +853,38 @@ def get_edge_widths(g, minor_roads: bool) -> list:
         if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             widths.append(0.0)
             continue
-        if hw in ('motorway', 'motorway_link'):
-            widths.append(1.2)
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            widths.append(1.0)
-        elif hw in ('secondary', 'secondary_link'):
-            widths.append(0.8)
-        elif hw in ('tertiary', 'tertiary_link'):
-            widths.append(0.6)
-        else:
-            widths.append(0.4)
+        widths.append(_pmtiles_tier_width(hw))
     return widths
+
+
+# ── Tier helpers shared by the OSMnx and PMTiles draw paths ───────────────────
+# Extracted so the PMTiles path (which iterates a GeoDataFrame, not a NetworkX
+# graph) can pick up the same per-tier color + width logic without duplicating
+# the if/elif chain. get_edge_colors/get_edge_widths still iterate the graph
+# and apply Clean/Detailed filtering, but the per-tier mapping lives here.
+
+def _pmtiles_tier_color(hw: str, theme: dict) -> str:
+    if hw in ('motorway', 'motorway_link'):
+        return theme['road_motorway']
+    if hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
+        return theme['road_primary']
+    if hw in ('secondary', 'secondary_link'):
+        return theme['road_secondary']
+    if hw in ('tertiary', 'tertiary_link'):
+        return theme['road_tertiary']
+    return theme.get('road_residential', theme.get('road_default', '#888888'))
+
+
+def _pmtiles_tier_width(hw: str) -> float:
+    if hw in ('motorway', 'motorway_link'):
+        return 1.2
+    if hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
+        return 1.0
+    if hw in ('secondary', 'secondary_link'):
+        return 0.8
+    if hw in ('tertiary', 'tertiary_link'):
+        return 0.6
+    return 0.4
 
 # ── Gradient fade ─────────────────────────────────────────────────────────────
 
@@ -1007,6 +1022,10 @@ def render(params: dict) -> bytes:
     full_bleed      = bool(params.get('full_bleed', True))
     no_fade         = bool(params.get('no_fade', True))
     minor_roads     = bool(params.get('minor_roads', False))
+    # `preset` supersedes `minor_roads` per PRESETS-SPEC.md. Server accepts
+    # both for one release as a backwards-compat shim; preset wins when both
+    # are supplied. None falls through to the minor_roads bool below.
+    preset          = params.get('preset')
     network_type    = params.get('network_type', 'drive')
     # crop_dist — optional override for the matplotlib axis half-extent.
     # Default (None) keeps the legacy behaviour: get_crop_limits is called
@@ -1064,6 +1083,42 @@ def render(params: dict) -> bytes:
     # maps to the same bucket is guaranteed to be covered. Serving a 4500 m
     # request from a cached 5000 m fetch is safe — matplotlib crops the view.
     from concurrent.futures import ThreadPoolExecutor
+
+    # ── USE_PMTILES feature flag ─────────────────────────────────────────────
+    # When true, the fetch + street-draw path swaps from OSMnx/Overpass to
+    # range-request reads against the planet PMTiles archive on R2. Same
+    # downstream theme/typography/save code. Default false during cut-over;
+    # flip on Railway once the archive URL is set and a smoke render passes.
+    # See docs/PMTILES-CUTOVER.md for the env var setup and rollback flow.
+    use_pmtiles = os.environ.get('USE_PMTILES', '').lower() == 'true'
+    streets_gdf = None  # populated only on the PMTiles path; signals the
+                        # street-draw branch below to skip ox.plot_graph
+
+    if use_pmtiles:
+        # Import here so OSMnx-only deploys don't pay the import cost (boto3
+        # adds ~150 ms; pmtiles + mapbox_vector_tile a similar amount).
+        from pmtiles_reader import get_reader
+        from render_presets import resolve_preset
+
+        # The PMTiles bbox needs to enclose the same circle OSMnx would have
+        # fetched. comp_dist is the half-radius post-aspect-compensation; we
+        # circumscribe a square around it.
+        EARTH_RADIUS_M = 6_371_000
+        dlat = (comp_dist / EARTH_RADIUS_M) * (180 / math.pi)
+        dlng = dlat / math.cos(math.radians(point[0]))
+        bbox = (point[1] - dlng, point[0] - dlat,
+                point[1] + dlng, point[0] + dlat)
+
+        reader = get_reader()
+        t_fetch = time.time()
+        streets_gdf = reader.fetch_layer('streets', bbox, zoom=14)
+        water       = reader.fetch_layer('water',   bbox, zoom=14)
+        parks       = reader.fetch_layer('parks',   bbox, zoom=14)
+        rail        = reader.fetch_layer('rail',    bbox, zoom=14)
+        g = None  # downstream branches on `streets_gdf is not None`
+        _log(f'Fetch phase {time.time() - t_fetch:.1f}s — PMTiles bbox={bbox}')
+        # Skip the rest of the OSMnx-path fetch logic + jump to figure setup.
+        # (See `if use_pmtiles` block before the ox.plot_graph call.)
 
     qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], comp_dist)
     qpoint             = (qlat, qlng)
@@ -1333,7 +1388,7 @@ def render(params: dict) -> bytes:
             try:
                 water_polys = ox.projection.project_gdf(water_polys)
             except Exception:
-                water_polys = water_polys.to_crs(g_proj.graph['crs'])
+                water_polys = water_polys.to_crs(target_crs)
             water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
 
     # ── 7. Parks layer ───────────────────────────────────────────────────────
@@ -1343,7 +1398,7 @@ def render(params: dict) -> bytes:
             try:
                 parks_polys = ox.projection.project_gdf(parks_polys)
             except Exception:
-                parks_polys = parks_polys.to_crs(g_proj.graph['crs'])
+                parks_polys = parks_polys.to_crs(target_crs)
             parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
 
     # ── 7b. Rail layer ───────────────────────────────────────────────────────
