@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-mapvibe_render.py — MapVibe OSM render adapter
+mapvibe_render.py â MapVibe OSM render adapter
 ===============================================
 Reads JSON params from stdin, renders a city map poster using
 OSMnx + matplotlib, writes PNG bytes to stdout (or a file).
 
 MapVibe customisations vs upstream maptoposter:
-  • full_bleed  — no padding, axes fill the entire figure (default True)
-  • no_fade     — skip top/bottom gradient vignettes (default True)
-  • minor_roads — render residential/service/footway roads (default False)
-  • dpi         — 400 for all standard sizes; caller sets 300+ for archival
-  • network     — 'drive' by default (faster, cleaner than 'all')
+  â¢ full_bleed  â no padding, axes fill the entire figure (default True)
+  â¢ no_fade     â skip top/bottom gradient vignettes (default True)
+  â¢ minor_roads â render residential/service/footway roads (default False)
+  â¢ dpi         â 400 for all standard sizes; caller sets 300+ for archival
+  â¢ network     â 'drive' by default (faster, cleaner than 'all')
 
 Params (JSON via stdin):
   city            str    city name (geocoding fallback)
@@ -40,21 +40,24 @@ import pickle
 import time
 import hashlib
 import math
+import math
 import threading
 import tempfile
 import struct
 
-# ── Headless matplotlib — MUST be set before any pyplot import ─────────────
+# ââ Headless matplotlib â MUST be set before any pyplot import âââââââââââââ
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import osmnx as ox
+import geopandas as gpd
+import shapely.geometry as sgeom
 
-# ── Overpass mirror failover ──────────────────────────────────────────────────
+# ââ Overpass mirror failover ââââââââââââââââââââââââââââââââââââââââââââââââââ
 # OSMnx defaults to overpass-api.de which has been observed refusing
-# connections (Errno 111) under sustained load — production 2026-06-17 logs:
+# connections (Errno 111) under sustained load â production 2026-06-17 logs:
 # every render burning 60 s + then dying because the primary mirror was
 # unreachable. Probe alternates at process start and pick the first one whose
 # TCP socket accepts a handshake; this Python subprocess is spawned per render
@@ -90,7 +93,7 @@ def _select_overpass_mirror() -> str:
                 return url
         except Exception:
             continue
-    # All mirrors unreachable — fall through to the first and let the actual
+    # All mirrors unreachable â fall through to the first and let the actual
     # fetch raise a meaningful error instead of swallowing it here.
     return _OVERPASS_CANDIDATES[0] if _OVERPASS_CANDIDATES else 'https://overpass-api.de/api/interpreter'
 
@@ -107,17 +110,17 @@ def _ox_call_with_mirror_failover(fn, *args, **kwargs):
     """Call fn(*args, **kwargs) (an osmnx Overpass-backed call).
 
     On ConnectionError / MaxRetryError / timeout, rotate to the next mirror
-    from _OVERPASS_CANDIDATES and retry — up to len(_OVERPASS_CANDIDATES)
+    from _OVERPASS_CANDIDATES and retry â up to len(_OVERPASS_CANDIDATES)
     attempts total.  This protects against a mirror that passed the startup
     TCP probe but then starts refusing connections under load mid-seeder-run.
 
     Back-off: 0 s on first failure, 2 s on second, 4 s on third.
 
     Fast-fail on InsufficientResponseError: this exception means Overpass
-    returned no features matching the query — a data gap in OSM, not a
+    returned no features matching the query â a data gap in OSM, not a
     mirror failure.  All mirrors query the same OSM dataset, so retrying
     other mirrors would return the same empty response.  Re-raise immediately
-    without rotating to avoid burning 30 s × N per data-gap city.
+    without rotating to avoid burning 30 s Ã N per data-gap city.
     """
     global _overpass_idx
     import requests as _req_mod
@@ -135,13 +138,13 @@ def _ox_call_with_mirror_failover(fn, *args, **kwargs):
                  f'{type(exc).__name__}: {exc}')
             _overpass_idx = (_overpass_idx + 1) % len(_OVERPASS_CANDIDATES)
             ox.settings.overpass_url = _OVERPASS_CANDIDATES[_overpass_idx]
-            _log(f'Rotating Overpass mirror → {ox.settings.overpass_url!r}')
+            _log(f'Rotating Overpass mirror â {ox.settings.overpass_url!r}')
             sleep_s = backoffs[min(attempt, len(backoffs) - 1)]
             if sleep_s:
                 time.sleep(sleep_s)
         except Exception:
             # InsufficientResponseError (and any other non-network exception)
-            # indicates the query itself returned no data — not a mirror issue.
+            # indicates the query itself returned no data â not a mirror issue.
             # Stop immediately; rotating mirrors would only repeat the empty
             # result and waste 30 s per attempt.
             raise
@@ -149,7 +152,7 @@ def _ox_call_with_mirror_failover(fn, *args, **kwargs):
 from geopy.geocoders import Nominatim
 from matplotlib.font_manager import FontProperties
 
-# ── Silence noisy osmnx / shapely logs ─────────────────────────────────────
+# ââ Silence noisy osmnx / shapely logs âââââââââââââââââââââââââââââââââââââ
 import logging
 logging.getLogger('osmnx').setLevel(logging.WARNING)
 
@@ -159,7 +162,7 @@ FONTS_DIR     = os.path.join(SCRIPT_DIR, 'fonts')
 CACHE_DIR     = os.environ.get('CACHE_DIR', '/tmp/mapvibe-osm-cache')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# ── Cache helpers ────────────────────────────────────────────────────────────
+# ââ Cache helpers ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _cache_path(key: str) -> str:
     safe = key.replace(os.sep, '_').replace('/', '_')
@@ -183,16 +186,16 @@ def cache_set(key: str, value):
     except Exception:
         pass
 
-# ── Graph cache (TTL + LRU eviction) ─────────────────────────────────────────
+# ââ Graph cache (TTL + LRU eviction) âââââââââââââââââââââââââââââââââââââââââ
 # OSMnx fetches (street network, water polygons, parks) are the dominant time
-# cost of a render — even parallelised they're ~4-6 s of Overpass round trips
+# cost of a render â even parallelised they're ~4-6 s of Overpass round trips
 # per render. Caching them by quantized (lat, lng, dist, filter) reduces a hot
 # re-render (theme swap, frame change, pan-back) to essentially the matplotlib
 # draw cost (~1-3 s).
 #
 # Design:
 #   - Storage: pickle to /tmp/mapvibe-osm-cache/ (same dir as the geocode
-#     cache). Ephemeral per Railway container, which is fine — cache rebuilds
+#     cache). Ephemeral per Railway container, which is fine â cache rebuilds
 #     on demand and a cold start just means the first render of each location
 #     pays the full Overpass cost.
 #   - TTL: 7 days. OSM updates daily but a poster of a city centre is
@@ -204,7 +207,7 @@ def cache_set(key: str, value):
 #     the nearest 1 km so adjacent requests share entries. CRUCIAL: fetches
 #     ALWAYS use the quantized (rounded-up) radius so the cached value is
 #     guaranteed to cover any later request that maps to the same bucket.
-#     A smaller real comp_dist served from a larger cached fetch is safe —
+#     A smaller real comp_dist served from a larger cached fetch is safe â
 #     matplotlib crops to the requested view.
 _GRAPH_CACHE_TTL_S      = 7 * 24 * 3600          # 7 days
 _GRAPH_CACHE_MAX_BYTES  = 512 * 1024 * 1024      # 512 MB
@@ -212,7 +215,7 @@ _GRAPH_CACHE_MAX_BYTES  = 512 * 1024 * 1024      # 512 MB
 def _graph_cache_quantize(lat: float, lng: float, comp_dist: float) -> tuple:
     """Quantize the (lat, lng, comp_dist) tuple for cache key derivation AND
     for the actual Overpass fetch. Returning both so the caller fetches at
-    the bucket centre/radius, not the raw values — that's what guarantees
+    the bucket centre/radius, not the raw values â that's what guarantees
     cached entries cover their bucket."""
     qlat = round(lat * 1e4) / 1e4
     qlng = round(lng * 1e4) / 1e4
@@ -226,11 +229,11 @@ def _graph_cache_key(prefix: str, qlat: float, qlng: float, qdist: int, *extras)
 
 def graph_cache_get(key: str, *, _pbf_context=None):
     """Return the cached value if fresh (within TTL), else None.
-    Lookup order: disk L1 (~1s) → R2 L2 graph (~2s) → local PBF (~5-10s) →
-                  R2 PBF download (~15-30s) → None (Overpass fallback).
-    _pbf_context: optional dict with keys lat, lon, dist, minor_roads — when
+    Lookup order: disk L1 (~1s) â R2 L2 graph (~2s) â local PBF (~5-10s) â
+                  R2 PBF download (~15-30s) â None (Overpass fallback).
+    _pbf_context: optional dict with keys lat, lon, dist, minor_roads â when
     present, enables the PBF tier (L3/L4) for street-graph lookups.
-    Never raises — any error is treated as a cache miss."""
+    Never raises â any error is treated as a cache miss."""
     path = _cache_path(key)
     # L1: disk
     try:
@@ -254,12 +257,12 @@ def graph_cache_get(key: str, *, _pbf_context=None):
 def graph_cache_set(key: str, value) -> None:
     """Write to disk L1 (atomic) and kick off a non-blocking R2 L2 upload."""
     _graph_cache_write_disk(key, value)
-    r2_cache_set(key, value)   # daemon thread — never blocks render
+    r2_cache_set(key, value)   # daemon thread â never blocks render
 
 
 def _graph_cache_write_disk(key: str, value) -> None:
     """Atomically write the entry (tmp + rename) and run an LRU eviction pass
-    so a long-running container can't blow past the disk budget. Never raises —
+    so a long-running container can't blow past the disk budget. Never raises â
     cache failure must not break the render."""
     path = _cache_path(key)
     tmp = path + '.tmp'
@@ -288,7 +291,7 @@ def _graph_cache_evict_if_over_budget() -> None:
                 continue
         if total <= _GRAPH_CACHE_MAX_BYTES:
             return
-        # Oldest first — drop until we're back under budget.
+        # Oldest first â drop until we're back under budget.
         entries.sort(key=lambda e: e[0])
         evicted = 0
         for _mtime, size, p in entries:
@@ -307,14 +310,14 @@ def _graph_cache_evict_if_over_budget() -> None:
 
 
 
-# ── R2 graph cache + PBF tier (Phase 1 + 2) ─────────────────────────────────
+# ââ R2 graph cache + PBF tier (Phase 1 + 2) âââââââââââââââââââââââââââââââââ
 # Phase 1: graph pickles in R2 (L2) survive Railway restarts.
 # Phase 2: Geofabrik PBFs seeded to R2 (~55 GB); pyrosm extracts any city or
 #          village locally, eliminating Overpass for all seeded regions.
 # Lookup order:
-#   disk L1 (~1s) → R2 L2 graph (~2s) → local PBF (~5-10s) →
-#   R2 PBF download (~15-30s, warms local PBF) → Overpass (~20-65s)
-# R2 writes run in daemon threads — they NEVER block a render.
+#   disk L1 (~1s) â R2 L2 graph (~2s) â local PBF (~5-10s) â
+#   R2 PBF download (~15-30s, warms local PBF) â Overpass (~20-65s)
+# R2 writes run in daemon threads â they NEVER block a render.
 # Falls back silently if R2 is not configured or any call fails.
 
 _R2_ACCOUNT_ID        = os.environ.get('R2_ACCOUNT_ID', '')
@@ -349,7 +352,7 @@ def _get_r2_client():
             )
             _log('R2 graph cache client initialised')
         except Exception as e:
-            _log(f'R2 client init failed — R2 disabled: {e}')
+            _log(f'R2 client init failed â R2 disabled: {e}')
             _r2_client = None
         return _r2_client
 
@@ -380,8 +383,8 @@ def r2_cache_set(cache_key: str, value) -> None:
     """Upload a graph entry to R2 in a background daemon thread.
 
     Serialisation (pickle.dumps) is done **synchronously in the calling thread**
-    before the background thread is spawned.  The alternative — serialising
-    inside the daemon thread — causes a race condition: the calling thread may
+    before the background thread is spawned.  The alternative â serialising
+    inside the daemon thread â causes a race condition: the calling thread may
     continue mutating the same NetworkX graph (e.g. ox.project_graph modifies
     node-attribute dicts in-place) while pickle is iterating over those very
     same dicts, raising 'dictionary changed size during iteration'.  Serialising
@@ -414,7 +417,7 @@ def r2_cache_set(cache_key: str, value) -> None:
 
 
 
-# ── PBF cache — L3/L4 Geofabrik-based tier (Phase 2) ─────────────────────────
+# ââ PBF cache â L3/L4 Geofabrik-based tier (Phase 2) âââââââââââââââââââââââââ
 # All Geofabrik regional PBFs are pre-seeded to R2 once by
 # scripts/upload_pbfs_to_r2.py (~55 GB total, ~$0.83/mo).
 # At runtime, the relevant country/regional PBF is fetched from R2 on demand
@@ -427,13 +430,13 @@ _PBF_CACHE_MAX_BYTES = int(os.environ.get('PBF_CACHE_MAX_MB', '8000')) * 1024 * 
 _PBF_CACHE_TTL_S  = 14 * 24 * 3600   # 14 days
 os.makedirs(_PBF_CACHE_DIR, exist_ok=True)
 
-# Lazy-loaded region table — loaded once on first PBF lookup
+# Lazy-loaded region table â loaded once on first PBF lookup
 _pbf_regions = None
 _pbf_regions_lock = threading.Lock()
 
-# Per-region PBF download locks — one Lock per region_key.  Prevents
+# Per-region PBF download locks â one Lock per region_key.  Prevents
 # concurrent parallel render workers from downloading the same regional
-# PBF simultaneously, which caused duplicate "PBF L4: downloading …"
+# PBF simultaneously, which caused duplicate "PBF L4: downloading â¦"
 # log lines (and wasted bandwidth on identical large downloads).
 _pbf_download_locks: dict = {}
 _pbf_download_locks_lock = threading.Lock()
@@ -465,7 +468,7 @@ def _load_pbf_regions():
                 _log(f'PBF region table loaded ({len(_pbf_regions)} regions)')
                 return _pbf_regions
         _pbf_regions = []
-        _log('PBF region table not found — PBF tier disabled')
+        _log('PBF region table not found â PBF tier disabled')
         return _pbf_regions
 
 
@@ -480,12 +483,12 @@ def _coord_to_pbf_region(lat: float, lon: float) -> dict | None:
             candidates.append(r)
     if not candidates:
         return None
-    # Sort by nearest centroid distance — this correctly routes cities that
+    # Sort by nearest centroid distance â this correctly routes cities that
     # sit near a country border (e.g. Tegucigalpa near the Nicaragua bbox)
     # to the PBF whose geographic centre is closest, rather than the PBF
     # that happens to be smallest in MB.  The old sort-by-size made Nicaragua
     # (55 MB) beat Honduras (60 MB) for Tegucigalpa even though Tegucigalpa
-    # is 1.2° from Honduras centroid vs 2.1° from Nicaragua centroid.
+    # is 1.2Â° from Honduras centroid vs 2.1Â° from Nicaragua centroid.
     candidates.sort(key=lambda r: (
         ((r['bbox'][0] + r['bbox'][2]) / 2 - lon) ** 2 +
         ((r['bbox'][1] + r['bbox'][3]) / 2 - lat) ** 2
@@ -544,12 +547,12 @@ def _pbf_evict_if_over_budget() -> None:
 def _ensure_pbf_local(region: dict) -> str | None:
     """Ensure the regional PBF is on local disk.
     Returns local path on success, None on failure.
-    Check order: local disk (fresh) → R2 download → Geofabrik direct download.
+    Check order: local disk (fresh) â R2 download â Geofabrik direct download.
     Never raises."""
     region_key = region['region_key']
     local_path = _pbf_local_path(region_key)
 
-    # Already on disk and fresh (fast path — no lock needed)
+    # Already on disk and fresh (fast path â no lock needed)
     if _pbf_local_fresh(region_key):
         return local_path
 
@@ -618,10 +621,10 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
     try:
         import pyrosm
     except ImportError:
-        _log('pyrosm not installed — PBF extraction unavailable')
+        _log('pyrosm not installed â PBF extraction unavailable')
         return None
     try:
-        # Bounding box: dist metres → degrees with 50% buffer
+        # Bounding box: dist metres â degrees with 50% buffer
         delta = (dist / 111_000) * 1.5
         bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
         osm = pyrosm.OSM(pbf_path, bounding_box=bbox)
@@ -643,16 +646,16 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
         n_edges = 0 if G is None else len(G.edges)
         if G is None or n_nodes == 0 or n_edges == 0:
             _log(f'[mapvibe_render] PBF extraction returned {n_nodes} nodes, '
-                 f'{n_edges} edges — falling back to Overpass')
+                 f'{n_edges} edges â falling back to Overpass')
             return None
         _log(f'PBF extraction OK: {n_nodes} nodes, {n_edges} edges')
         return G
     except Exception as e:
         err_str = str(e)
         # BlobHeader / StructError: the local PBF is corrupted (e.g. partial R2 upload).
-        # Evict it so the next request re-downloads a fresh copy from Geofabrik → R2.
+        # Evict it so the next request re-downloads a fresh copy from Geofabrik â R2.
         if 'BlobHeader' in err_str or 'exceeds the' in err_str or 'StructError' in err_str:
-            _log(f'PBF corrupted ({pbf_path}) — evicting: {e}')
+            _log(f'PBF corrupted ({pbf_path}) â evicting: {e}')
             try:
                 os.unlink(pbf_path)
             except Exception:
@@ -675,22 +678,22 @@ def _graph_from_pbf(pbf_path: str, lat: float, lon: float,
 
 def _try_pbf_extraction(lat: float, lon: float, dist: int,
                         minor_roads: bool, cache_key: str) -> object:
-    """Full PBF tier: find region → ensure local PBF → extract graph.
+    """Full PBF tier: find region â ensure local PBF â extract graph.
     On success, writes the graph to L1+L2 (graph cache) and returns it.
     Returns None on any failure so caller falls through to Overpass.
 
-    IMPORTANT: pyrosm availability is checked FIRST — before any PBF download.
+    IMPORTANT: pyrosm availability is checked FIRST â before any PBF download.
     Without this guard, _ensure_pbf_local eagerly downloads the full regional
     PBF (up to 4 GB) only to discover pyrosm is absent, wasting 40-60 s
     before falling through to Overpass and making every cold village render
     pay a full PBF download cost for zero benefit.
     """
     # Guard: bail immediately if pyrosm is not installed.
-    # This is the critical check — it must precede _ensure_pbf_local.
+    # This is the critical check â it must precede _ensure_pbf_local.
     try:
         import pyrosm  # noqa: F401
     except ImportError:
-        _log('pyrosm not installed — skipping PBF tier (Overpass fallback)')
+        _log('pyrosm not installed â skipping PBF tier (Overpass fallback)')
         return None
     region = _coord_to_pbf_region(lat, lon)
     if region is None:
@@ -712,7 +715,7 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
     Returns a GeoDataFrame (EPSG:4326, LineString/MultiLineString only) on
     success, an *empty* GeoDataFrame when the region has no matching rail
     (genuine absence), or None when pyrosm is unavailable or extraction
-    fails — so the caller can fall through to Overpass in all error cases.
+    fails â so the caller can fall through to Overpass in all error cases.
 
     pyrosm CRS is EPSG:4326, matching the Overpass GeoDataFrame pipeline.
     """
@@ -735,7 +738,7 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
         if gdf is None or len(gdf) == 0:
             _log('PBF rail: no railway features in bbox')
             return gpd.GeoDataFrame()
-        # Filter to linear geometries — exclude station Points
+        # Filter to linear geometries â exclude station Points
         gdf = gdf[gdf.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
         if gdf.empty:
             return gpd.GeoDataFrame()
@@ -744,7 +747,7 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
     except Exception as e:
         err_str = str(e)
         if 'BlobHeader' in err_str or 'StructError' in err_str or 'exceeds the' in err_str:
-            _log(f'PBF corrupted ({pbf_path}) — evicting: {e}')
+            _log(f'PBF corrupted ({pbf_path}) â evicting: {e}')
             try:
                 os.unlink(pbf_path)
             except Exception:
@@ -765,7 +768,7 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
         return None
 
 
-# ── Theme loading ─────────────────────────────────────────────────────────────
+# ââ Theme loading âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 _TERRACOTTA_DEFAULT = {
     "name": "Terracotta",
@@ -784,7 +787,7 @@ def load_theme(theme_name: str = 'midnight_blue') -> dict:
     _log(f'Theme {theme_name!r} not found; using terracotta fallback')
     return _TERRACOTTA_DEFAULT.copy()
 
-# ── Script detection ──────────────────────────────────────────────────────────
+# ââ Script detection ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def is_latin_script(text: str) -> bool:
     if not text:
@@ -795,9 +798,9 @@ def is_latin_script(text: str) -> bool:
     latin_count = sum(1 for c in text if c.isalpha() and ord(c) < 0x250)
     return (latin_count / total_alpha) > 0.8
 
-# ── Road helpers ──────────────────────────────────────────────────────────────
+# ââ Road helpers ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-# Lowest road tier — service / track / footway / etc. Always hidden in Clean,
+# Lowest road tier â service / track / footway / etc. Always hidden in Clean,
 # shown in Detailed. Pre-existing definition; semantically the "minor roads"
 # the studio's roadDetailMode never toggled on its own (these were tied to a
 # separate includeRoadMinorLow form field that defaults to off).
@@ -809,9 +812,9 @@ _MINOR_ROAD_TYPES = frozenset({
 
 # Mid-tier roads the editor's Clean / Arteries toggle hides alongside the
 # minor family. Matches MapVibeEditor.tsx's ROAD_DETAIL_LAYERS set:
-#   road-secondary       → secondary, secondary_link
-#   road-minor-mid       → tertiary, tertiary_link
-#   road-minor-low       → residential family (already in _MINOR_ROAD_TYPES)
+#   road-secondary       â secondary, secondary_link
+#   road-minor-mid       â tertiary, tertiary_link
+#   road-minor-low       â residential family (already in _MINOR_ROAD_TYPES)
 # So a true Clean-mode render shows only motorway / trunk / primary; anything
 # below gets transparent at draw time. Detailed (minor_roads=True) shows
 # every tier, matching the editor's Detailed = "everything visible".
@@ -830,48 +833,61 @@ def get_edge_colors(g, theme: dict, minor_roads: bool) -> list:
     colors = []
     for _u, _v, data in g.edges(data=True):
         hw = _highway(data)
-        # Clean mode hides secondary / tertiary / residential family — matches
+        # Clean mode hides secondary / tertiary / residential family â matches
         # the editor's roadDetailMode='arteries' which toggles the same three
         # layer families together. Detailed mode falls through and tiers are
-        # coloured by their highway class below.
+        # coloured by their highway class via the shared _pmtiles_tier_color
+        # helper (single source of truth for the OSMnx and PMTiles paths).
         if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             colors.append('#00000000')
             continue
-        if hw in ('motorway', 'motorway_link'):
-            colors.append(theme['road_motorway'])
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            colors.append(theme['road_primary'])
-        elif hw in ('secondary', 'secondary_link'):
-            colors.append(theme['road_secondary'])
-        elif hw in ('tertiary', 'tertiary_link'):
-            colors.append(theme['road_tertiary'])
-        else:
-            colors.append(theme.get('road_residential', theme.get('road_default', '#888888')))
+        colors.append(_pmtiles_tier_color(hw, theme))
     return colors
 
 def get_edge_widths(g, minor_roads: bool) -> list:
     widths = []
     for _u, _v, data in g.edges(data=True):
         hw = _highway(data)
-        # Same Clean / Detailed semantics as get_edge_colors — keep the two
+        # Same Clean / Detailed semantics as get_edge_colors â keep the two
         # hide-sets in lockstep so widths and colours never disagree on which
         # tier is drawn.
         if not minor_roads and hw in _CLEAN_HIDDEN_TYPES:
             widths.append(0.0)
             continue
-        if hw in ('motorway', 'motorway_link'):
-            widths.append(1.2)
-        elif hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
-            widths.append(1.0)
-        elif hw in ('secondary', 'secondary_link'):
-            widths.append(0.8)
-        elif hw in ('tertiary', 'tertiary_link'):
-            widths.append(0.6)
-        else:
-            widths.append(0.4)
+        widths.append(_pmtiles_tier_width(hw))
     return widths
 
-# ── Gradient fade ─────────────────────────────────────────────────────────────
+
+# ── Tier helpers shared by the OSMnx and PMTiles draw paths ───────────────────
+# Extracted so the PMTiles path (which iterates a GeoDataFrame, not a NetworkX
+# graph) can pick up the same per-tier color + width logic without duplicating
+# the if/elif chain. get_edge_colors/get_edge_widths still iterate the graph
+# and apply Clean/Detailed filtering, but the per-tier mapping lives here.
+
+def _pmtiles_tier_color(hw: str, theme: dict) -> str:
+    if hw in ('motorway', 'motorway_link'):
+        return theme['road_motorway']
+    if hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
+        return theme['road_primary']
+    if hw in ('secondary', 'secondary_link'):
+        return theme['road_secondary']
+    if hw in ('tertiary', 'tertiary_link'):
+        return theme['road_tertiary']
+    return theme.get('road_residential', theme.get('road_default', '#888888'))
+
+
+def _pmtiles_tier_width(hw: str) -> float:
+    if hw in ('motorway', 'motorway_link'):
+        return 1.2
+    if hw in ('trunk', 'trunk_link', 'primary', 'primary_link'):
+        return 1.0
+    if hw in ('secondary', 'secondary_link'):
+        return 0.8
+    if hw in ('tertiary', 'tertiary_link'):
+        return 0.6
+    return 0.4
+
+# ââ Gradient fade âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def create_gradient_fade(ax, color: str, location: str = 'bottom', zorder: int = 10):
     vals = np.linspace(0, 1, 256).reshape(-1, 1)
@@ -895,7 +911,7 @@ def create_gradient_fade(ax, color: str, location: str = 'bottom', zorder: int =
               extent=[xlim[0], xlim[1], ylim[0] + yr * ys, ylim[0] + yr * ye],
               aspect='auto', cmap=cmap, zorder=zorder, origin='lower')
 
-# ── Crop limits ───────────────────────────────────────────────────────────────
+# ââ Crop limits âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def get_crop_limits(g_proj, point: tuple, fig, dist: int):
     """
@@ -903,19 +919,19 @@ def get_crop_limits(g_proj, point: tuple, fig, dist: int):
     point. Returns (xlim, ylim) in the projected graph's CRS units (metres
     for the UTM projections OSMnx picks by default).
 
-    point is (lat, lng) — WGS84 degrees.
+    point is (lat, lng) â WGS84 degrees.
     g_proj is a *projected* graph: its node x/y are large metre values, not
     lat/lng. Earlier code called
         ox.distance.nearest_nodes(g_proj, point[1], point[0])
     which passed degree-scale numbers (e.g. (-77, 39)) into a metre-scale
     graph (e.g. (323420, 4307180)). nearest_nodes therefore returned the
-    node with the smallest cartesian distance to (-77, 39) — effectively a
+    node with the smallest cartesian distance to (-77, 39) â effectively a
     random node near the projection origin, several kilometres away from
     the user's actual location. That offset is why preview renders looked
     drifted (cluster in the upper-half of the figure instead of centred).
 
     Fix: project (lat, lng) into the graph's CRS first, then use those
-    coordinates directly as the centre. No need to snap to a graph node —
+    coordinates directly as the centre. No need to snap to a graph node â
     matplotlib's xlim/ylim accept any float and the crop is purely a view
     decision, not a data lookup.
     """
@@ -923,7 +939,7 @@ def get_crop_limits(g_proj, point: tuple, fig, dist: int):
     try:
         from shapely.geometry import Point as _Point
         graph_crs = g_proj.graph.get('crs', 'EPSG:4326')
-        # shapely Point uses (x, y) ⇒ (lng, lat) in WGS84.
+        # shapely Point uses (x, y) â (lng, lat) in WGS84.
         pt_proj, _ = ox.projection.project_geometry(
             _Point(point[1], point[0]),
             crs='EPSG:4326',
@@ -944,7 +960,7 @@ def get_crop_limits(g_proj, point: tuple, fig, dist: int):
     aspect = figh / figw
     return (cx - dist, cx + dist), (cy - dist * aspect, cy + dist * aspect)
 
-# ── Geocoding ─────────────────────────────────────────────────────────────────
+# ââ Geocoding âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def get_coordinates(city: str, country: str):
     key = f'coords_{city.lower()}_{country.lower()}'
@@ -964,7 +980,7 @@ def get_coordinates(city: str, country: str):
         _log(f'Geocoding failed: {e}')
     return None
 
-# ── Fonts ─────────────────────────────────────────────────────────────────────
+# ââ Fonts âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def load_fonts():
     result = {}
@@ -978,12 +994,12 @@ def load_fonts():
             result[variant] = path
     return result if len(result) == 3 else {}
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ââ Logging âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _log(msg: str):
     print(f'[mapvibe_render] {msg}', file=sys.stderr, flush=True)
 
-# ── Main render function ──────────────────────────────────────────────────────
+# ââ Main render function ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def render(params: dict) -> bytes:
     city            = params.get('city', '')
@@ -998,7 +1014,7 @@ def render(params: dict) -> bytes:
     width_in        = float(params.get('width_in', 12.0))
     height_in       = float(params.get('height_in', 16.0))
     dpi             = int(params.get('dpi', 400))
-    # preview_max_px — optional pixel cap for the long edge of the figure.
+    # preview_max_px â optional pixel cap for the long edge of the figure.
     # When set, width_in/height_in are rescaled so max(W,H)*dpi == preview_max_px.
     # DPI and edge-width calibration are intentionally left unchanged so line
     # weights remain readable at preview resolution regardless of canvas size.
@@ -1007,17 +1023,21 @@ def render(params: dict) -> bytes:
     full_bleed      = bool(params.get('full_bleed', True))
     no_fade         = bool(params.get('no_fade', True))
     minor_roads     = bool(params.get('minor_roads', False))
+    # `preset` supersedes `minor_roads` per PRESETS-SPEC.md. Server accepts
+    # both for one release as a backwards-compat shim; preset wins when both
+    # are supplied. None falls through to the minor_roads bool below.
+    preset          = params.get('preset')
     network_type    = params.get('network_type', 'drive')
-    # crop_dist — optional override for the matplotlib axis half-extent.
+    # crop_dist â optional override for the matplotlib axis half-extent.
     # Default (None) keeps the legacy behaviour: get_crop_limits is called
     # with `dist`, which is the original /fulfill contract.
     # /render passes crop_dist=userOsmDist so the visible axes equal the
-    # circle OSMnx actually fetched — without this override the road graph
+    # circle OSMnx actually fetched â without this override the road graph
     # appears as a tiny cluster in a sea of background colour because
-    # comp_dist = dist*(max/min)/4 is always 3-4× smaller than dist.
+    # comp_dist = dist*(max/min)/4 is always 3-4Ã smaller than dist.
     crop_dist_param = params.get('crop_dist')
 
-    # ── 1. Resolve coordinates ───────────────────────────────────────────────
+    # ââ 1. Resolve coordinates âââââââââââââââââââââââââââââââââââââââââââââââ
     point = None
     if lat is not None and lng is not None:
         point = (float(lat), float(lng))
@@ -1028,7 +1048,7 @@ def render(params: dict) -> bytes:
 
     # Apply preview_max_px canvas cap: scale the figure so the output PNG's
     # long edge is exactly preview_max_px pixels. Only figure dimensions
-    # change — DPI and edge-width calibration stay untouched.
+    # change â DPI and edge-width calibration stay untouched.
     if preview_max_px is not None:
         _pmx = int(preview_max_px)
         _long_px = max(width_in, height_in) * dpi
@@ -1037,39 +1057,75 @@ def render(params: dict) -> bytes:
             width_in  = width_in  * _scale
             height_in = height_in * _scale
     _log(f'{display_city}, {display_country} @ {point[0]:.4f},{point[1]:.4f}  '
-         f'dist={dist}m  {width_in}×{height_in}in  {dpi}DPI  '
+         f'dist={dist}m  {width_in}Ã{height_in}in  {dpi}DPI  '
          f'{"pmx="+str(_pmx)+"  " if preview_max_px else ""}'
          f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}')
 
-    # ── 2. Load theme ────────────────────────────────────────────────────────
+    # ââ 2. Load theme ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     theme = theme_override if isinstance(theme_override, dict) else load_theme(theme_name)
 
-    # ── 3. Fetch OSM data ────────────────────────────────────────────────────
+    # ââ 3. Fetch OSM data ââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # Compensated dist ensures the map fills poster aspect ratio without clipping
     comp_dist = dist * (max(height_in, width_in) / min(height_in, width_in)) / 4
 
     # The street / water / parks fetches are three independent Overpass round
-    # trips. Previously they ran sequentially (sum of three latencies ≈ 8-12 s
-    # on a busy Overpass mirror — the single largest chunk of the ~20 s preview
+    # trips. Previously they ran sequentially (sum of three latencies â 8-12 s
+    # on a busy Overpass mirror â the single largest chunk of the ~20 s preview
     # render). They share no state and OSMnx's `requests` calls release the
     # GIL during socket I/O, so a 3-worker ThreadPoolExecutor genuinely
     # overlaps them; the render now waits on the MAX of the three (~4-6 s).
     #
     # On top of that, each fetch consults the on-disk graph cache (TTL 7 days,
-    # LRU-bounded 512 MB). A repeat render of the same location — theme swap,
-    # frame change, pan-back — skips Overpass entirely and goes straight to
+    # LRU-bounded 512 MB). A repeat render of the same location â theme swap,
+    # frame change, pan-back â skips Overpass entirely and goes straight to
     # matplotlib, taking total render time to ~1-3 s. The cache key is
-    # quantized (lat/lng 4dp ≈ 11 m, comp_dist rounded UP to 1 km) and we
+    # quantized (lat/lng 4dp â 11 m, comp_dist rounded UP to 1 km) and we
     # ALWAYS fetch at the quantized point / radius so any later request that
     # maps to the same bucket is guaranteed to be covered. Serving a 4500 m
-    # request from a cached 5000 m fetch is safe — matplotlib crops the view.
+    # request from a cached 5000 m fetch is safe â matplotlib crops the view.
     from concurrent.futures import ThreadPoolExecutor
+
+    # ── USE_PMTILES feature flag ─────────────────────────────────────────────
+    # When true, the fetch + street-draw path swaps from OSMnx/Overpass to
+    # range-request reads against the planet PMTiles archive on R2. Same
+    # downstream theme/typography/save code. Default false during cut-over;
+    # flip on Railway once the archive URL is set and a smoke render passes.
+    # See docs/PMTILES-CUTOVER.md for the env var setup and rollback flow.
+    use_pmtiles = os.environ.get('USE_PMTILES', '').lower() == 'true'
+    streets_gdf = None  # populated only on the PMTiles path; signals the
+                        # street-draw branch below to skip ox.plot_graph
+
+    if use_pmtiles:
+        # Import here so OSMnx-only deploys don't pay the import cost (boto3
+        # adds ~150 ms; pmtiles + mapbox_vector_tile a similar amount).
+        from pmtiles_reader import get_reader
+        from render_presets import resolve_preset
+
+        # The PMTiles bbox needs to enclose the same circle OSMnx would have
+        # fetched. comp_dist is the half-radius post-aspect-compensation; we
+        # circumscribe a square around it.
+        EARTH_RADIUS_M = 6_371_000
+        dlat = (comp_dist / EARTH_RADIUS_M) * (180 / math.pi)
+        dlng = dlat / math.cos(math.radians(point[0]))
+        bbox = (point[1] - dlng, point[0] - dlat,
+                point[1] + dlng, point[0] + dlat)
+
+        reader = get_reader()
+        t_fetch = time.time()
+        streets_gdf = reader.fetch_layer('streets', bbox, zoom=14)
+        water       = reader.fetch_layer('water',   bbox, zoom=14)
+        parks       = reader.fetch_layer('parks',   bbox, zoom=14)
+        rail        = reader.fetch_layer('rail',    bbox, zoom=14)
+        g = None  # downstream branches on `streets_gdf is not None`
+        _log(f'Fetch phase {time.time() - t_fetch:.1f}s — PMTiles bbox={bbox}')
+        # Skip the rest of the OSMnx-path fetch logic + jump to figure setup.
+        # (See `if use_pmtiles` block before the ox.plot_graph call.)
 
     qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], comp_dist)
     qpoint             = (qlat, qlng)
     cache_hits         = {"streets": False, "water": False, "parks": False, "rail": False}
 
-    # ── pview cache tier ─────────────────────────────────────────────────────
+    # ââ pview cache tier âââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # Stores the post-projection pre-clipped graph (~1-3 MB, ~3-5k nodes) so
     # subsequent preview requests skip BOTH the streets fetch (2-25 s) AND
     # ox.project_graph (15-30 s for DC 20k-node graph).
@@ -1084,7 +1140,7 @@ def render(params: dict) -> bytes:
     _pview_cached = graph_cache_get(pview_key)
     if _pview_cached is not None:
         _log(
-            f'pview cache hit ({pview_key[:16]}…) — '
+            f'pview cache hit ({pview_key[:16]}â¦) â '
             f'skipping streets fetch + ox.project_graph '
             f'({len(_pview_cached.nodes)} nodes, '
             f'{_pview_cached.number_of_edges()} edges)'
@@ -1093,7 +1149,7 @@ def render(params: dict) -> bytes:
 
     def _fetch_streets():
         # Streets are the only fetch whose filter depends on minor_roads, so
-        # the key carries that bit — Clean vs Detailed get separate entries.
+        # the key carries that bit â Clean vs Detailed get separate entries.
         filter_tag = 'minor' if minor_roads else 'major'
         key = _graph_cache_key('streets', qlat, qlng, qdist, filter_tag, network_type)
         cached = graph_cache_get(key, _pbf_context={
@@ -1108,7 +1164,7 @@ def render(params: dict) -> bytes:
             # so this render completes and overwrites the bad cache entry.
             if hasattr(cached, 'number_of_edges') and cached.number_of_edges() == 0:
                 _log(f'[mapvibe_render] PBF extraction returned 0 edges for {key} '
-                     f'— evicting broken cache entry, falling back to Overpass')
+                     f'â evicting broken cache entry, falling back to Overpass')
                 try:
                     os.unlink(_cache_path(key))
                 except Exception:
@@ -1118,7 +1174,7 @@ def render(params: dict) -> bytes:
                 cache_hits['streets'] = True
                 return cached
         if minor_roads:
-            # Full drive network — residential/service/etc. are drawn.
+            # Full drive network â residential/service/etc. are drawn.
             g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, network_type=network_type)
         else:
             # Clean mode draws only motorway / trunk / primary (matches editor's
@@ -1133,17 +1189,17 @@ def render(params: dict) -> bytes:
             except Exception as e:
                 # InsufficientResponseError: Overpass returned no nodes with the strict
                 # arterial filter (common in Caribbean/LatAm cities with sparse trunk/
-                # primary OSM coverage — Punta del Este, Punta Cana, etc.).
+                # primary OSM coverage â Punta del Este, Punta Cana, etc.).
                 # Fall back to a broader filter that includes secondary roads.
                 if 'InsufficientResponse' in type(e).__name__:
-                    _log(f'Major roads filter returned no data — falling back to secondary: {e}')
+                    _log(f'Major roads filter returned no data â falling back to secondary: {e}')
                     wider_filter = '["highway"~"motorway|trunk|primary|secondary"]'
                     g_ = _ox_call_with_mirror_failover(ox.graph_from_point, qpoint, dist=qdist, custom_filter=wider_filter)
                 else:
                     raise
         # Belt-and-suspenders: guard against 0-edge graph before ox.project_graph.
         if g_ is not None and hasattr(g_, 'number_of_edges') and g_.number_of_edges() == 0:
-            raise ValueError(f'Graph has 0 edges for {city!r} — OSM data gap or filter too strict')
+            raise ValueError(f'Graph has 0 edges for {city!r} â OSM data gap or filter too strict')
         graph_cache_set(key, g_)
         return g_
 
@@ -1164,7 +1220,7 @@ def render(params: dict) -> bytes:
             _log(f'Water fetch skipped: {e}')
             # Cache empty result so we don't re-query Overpass on every render
             # for cities with no mapped water features (inland cities, coastal
-            # geometry gaps, etc.).  Transient network errors are NOT cached —
+            # geometry gaps, etc.).  Transient network errors are NOT cached â
             # only confirmed "no data" responses get a permanent empty entry.
             if ('No matching features' in str(e)
                     or 'InsufficientResponse' in type(e).__name__):
@@ -1193,7 +1249,7 @@ def render(params: dict) -> bytes:
             _log(f'Parks fetch skipped: {e}')
             # Cache empty result so we don't re-query Overpass on every render
             # for cities with no mapped park/grass features.  Transient network
-            # errors are NOT cached — only confirmed "no data" responses.
+            # errors are NOT cached â only confirmed "no data" responses.
             if ('No matching features' in str(e)
                     or 'InsufficientResponse' in type(e).__name__):
                 import geopandas as gpd
@@ -1215,13 +1271,13 @@ def render(params: dict) -> bytes:
         if cached is not None:
             cache_hits['rail'] = True
             return cached
-        # ── PBF tier (Phase 2) ─────────────────────────────────────────────
+        # ââ PBF tier (Phase 2) âââââââââââââââââââââââââââââââââââââââââââââ
         # Prefer PBF over Overpass for all covered cities: DC Metro,
-        # London Underground, Paris Métro, Mexico City Metro.  Overpass's
+        # London Underground, Paris MÃ©tro, Mexico City Metro.  Overpass's
         # qdist=2000 m window is too tight for spread-out metro systems
         # and frequently returns empty (triggering commit-77c91313 caching).
         try:
-            import pyrosm  # noqa: F401 — guard before any PBF I/O
+            import pyrosm  # noqa: F401 â guard before any PBF I/O
             _rail_region = _coord_to_pbf_region(qlat, qlng)
             if _rail_region is not None:
                 _rail_pbf = _ensure_pbf_local(_rail_region)
@@ -1230,10 +1286,10 @@ def render(params: dict) -> bytes:
                     if _pbf_rail is not None and not _pbf_rail.empty:
                         graph_cache_set(key, _pbf_rail)
                         return _pbf_rail
-                    # empty or None → fall through to Overpass below
+                    # empty or None â fall through to Overpass below
         except ImportError:
             pass
-        # ── Overpass fallback ──────────────────────────────────────────────
+        # ââ Overpass fallback ââââââââââââââââââââââââââââââââââââââââââââââ
         try:
             gdf = _ox_call_with_mirror_failover(
                 ox.features_from_point,
@@ -1260,34 +1316,38 @@ def render(params: dict) -> bytes:
         graph_cache_set(key, gdf)
         return gdf
 
-    _log('Fetching streets + water + parks + rail (parallel, cache-aware)...')
-    fetch_start = time.time()
-    # max_workers=4 — one per fetch. OSM-RENDER-PIPELINE.md previously
-    # warned against >3, but rail is a small Overpass query (railway lines
-    # only) and the editor parity gap from skipping it was visible enough
-    # to outweigh the marginal tarpit risk. If we see Overpass 429s in
-    # production this is the first knob to dial back to 3 (rail queued).
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        # Skip streets when the pview cache provides g_proj directly.
-        f_streets = (None if _pview_cached is not None
-                     else pool.submit(_fetch_streets))
-        f_water   = pool.submit(_fetch_water)
-        f_parks   = pool.submit(_fetch_parks)
-        f_rail    = pool.submit(_fetch_rail)
-        # Streets are mandatory — let any exception propagate (fails the
-        # render exactly as the old sequential code did). Water / parks /
-        # rail already swallow their own errors and return None.
-        g     = (None if _pview_cached is not None else f_streets.result())
-        water = f_water.result()
-        parks = f_parks.result()
-        rail  = f_rail.result()
-    hit_summary = ','.join(f'{k}={"HIT" if v else "miss"}' for k, v in cache_hits.items())
-    _log(f'Fetch phase {time.time() - fetch_start:.1f}s — {hit_summary} (qdist={qdist})')
+    # OSMnx fetch path — only runs when USE_PMTILES is false. The PMTiles
+    # path populated streets_gdf + water + parks + rail at the top of this
+    # function and left `g` as None to signal the street-draw branch.
+    if not use_pmtiles:
+        _log('Fetching streets + water + parks + rail (parallel, cache-aware)...')
+        fetch_start = time.time()
+        # max_workers=4 â one per fetch. OSM-RENDER-PIPELINE.md previously
+        # warned against >3, but rail is a small Overpass query (railway lines
+        # only) and the editor parity gap from skipping it was visible enough
+        # to outweigh the marginal tarpit risk. If we see Overpass 429s in
+        # production this is the first knob to dial back to 3 (rail queued).
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            # Skip streets when the pview cache provides g_proj directly.
+            f_streets = (None if _pview_cached is not None
+                         else pool.submit(_fetch_streets))
+            f_water   = pool.submit(_fetch_water)
+            f_parks   = pool.submit(_fetch_parks)
+            f_rail    = pool.submit(_fetch_rail)
+            # Streets are mandatory â let any exception propagate (fails the
+            # render exactly as the old sequential code did). Water / parks /
+            # rail already swallow their own errors and return None.
+            g     = (None if _pview_cached is not None else f_streets.result())
+            water = f_water.result()
+            parks = f_parks.result()
+            rail  = f_rail.result()
+        hit_summary = ','.join(f'{k}={"HIT" if v else "miss"}' for k, v in cache_hits.items())
+        _log(f'Fetch phase {time.time() - fetch_start:.1f}s â {hit_summary} (qdist={qdist})')
+    
+        if _pview_cached is None and (g is None or len(g.nodes) == 0):
+            raise RuntimeError('Failed to retrieve street network data.')
 
-    if _pview_cached is None and (g is None or len(g.nodes) == 0):
-        raise RuntimeError('Failed to retrieve street network data.')
-
-    # ── 4. Setup figure ──────────────────────────────────────────────────────
+    # ââ 4. Setup figure ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     _log('Rendering figure...')
     _render_t0 = time.time()
     fig, ax = plt.subplots(figsize=(width_in, height_in), facecolor=theme['bg'])
@@ -1296,13 +1356,13 @@ def render(params: dict) -> bytes:
     if full_bleed:
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
 
-    # ── 5. Project graph ─────────────────────────────────────────────────────
+    # ââ 5. Project graph âââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if _pview_cached is not None:
         # pview cache hit: g_proj is pre-projected+pre-clipped.
         # Skip the 15-30 s ox.project_graph CRS conversion entirely.
         g_proj = _pview_cached
     else:
-        # ── 5a. Pre-clip in WGS-84 BEFORE projection ─────────────────────
+        # ââ 5a. Pre-clip in WGS-84 BEFORE projection âââââââââââââââââââââ
         _pre_cd = int(crop_dist_param) if crop_dist_param is not None else dist
         _dlat = _pre_cd / 111_111 * 1.10
         _dlng = _pre_cd / (111_111 * math.cos(math.radians(point[0]))) * 1.10
@@ -1316,41 +1376,47 @@ def render(params: dict) -> bytes:
             and _lng0 <= d.get('x', point[1]) <= _lng1
         }
         if 0 < len(_pre_nodes) < len(g.nodes):
-            _log(f'WGS-84 pre-clip: {len(g.nodes)} → {len(_pre_nodes)} nodes '
+            _log(f'WGS-84 pre-clip: {len(g.nodes)} â {len(_pre_nodes)} nodes '
                  f'(crop_dist={_pre_cd} m)')
             g = g.subgraph(_pre_nodes).copy()
 
-        # ── 5b. Project pre-clipped graph ─────────────────────────────────
+        # ââ 5b. Project pre-clipped graph âââââââââââââââââââââââââââââââââ
         _proj_t0 = time.time()
-        g_proj = ox.project_graph(g)
+    # OSMnx path: project the NetworkX graph into the local UTM zone, then
+    # use that as the target CRS for water/parks/rail polygons so everything
+    # lines up. PMTiles path: g is None — project everything to Web Mercator
+    # (EPSG:3857) directly. Same visual result; both are metric CRSes that
+    # matplotlib treats as equal-scale axes.
+    g_proj = ox.project_graph(g) if g is not None else None
+    target_crs = g_proj.graph['crs'] if g_proj is not None else 'EPSG:3857'
         _log(f'project_graph: {time.time()-_proj_t0:.1f}s '
              f'({len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
 
-    # ── 6. Water layer ───────────────────────────────────────────────────────
+    # ââ 6. Water layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if water is not None and not water.empty:
         water_polys = water[water.geometry.type.isin(['Polygon', 'MultiPolygon'])]
         if not water_polys.empty:
             try:
                 water_polys = ox.projection.project_gdf(water_polys)
             except Exception:
-                water_polys = water_polys.to_crs(g_proj.graph['crs'])
+                water_polys = water_polys.to_crs(target_crs)
             water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
 
-    # ── 7. Parks layer ───────────────────────────────────────────────────────
+    # ââ 7. Parks layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if parks is not None and not parks.empty:
         parks_polys = parks[parks.geometry.type.isin(['Polygon', 'MultiPolygon'])]
         if not parks_polys.empty:
             try:
                 parks_polys = ox.projection.project_gdf(parks_polys)
             except Exception:
-                parks_polys = parks_polys.to_crs(g_proj.graph['crs'])
+                parks_polys = parks_polys.to_crs(target_crs)
             parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
 
-    # ── 7b. Rail layer ───────────────────────────────────────────────────────
+    # ââ 7b. Rail layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # Drawn ABOVE parks (zorder 0.9) but BELOW roads (zorder 1+) so road
     # overpasses cleanly cover rail crossings. Falls back to road_default
     # when the theme didn't include a 'rail' key (older themes, or callers
-    # that haven't been updated to forward railColor) — keeps rail visible
+    # that haven't been updated to forward railColor) â keeps rail visible
     # in some form instead of crashing on KeyError.
     if rail is not None and not rail.empty:
         rail_lines = rail[rail.geometry.type.isin(['LineString', 'MultiLineString'])]
@@ -1362,22 +1428,22 @@ def render(params: dict) -> bytes:
             rail_color = theme.get('rail', theme.get('road_default', theme['text']))
             rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
-    # ── 8. Roads ─────────────────────────────────────────────────────────────
+    # ââ 8. Roads âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
     # background area around the road graph on tight-bounds previews.
     effective_crop_dist = int(crop_dist_param) if crop_dist_param is not None else dist
     crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
 
-    # ── 8a. Pre-clip graph to crop window (major speedup for large-dist renders) ──
+    # ââ 8a. Pre-clip graph to crop window (major speedup for large-dist renders) ââ
     # ox.plot_graph() renders ALL fetched edges and relies on ax.set_xlim/ylim to
     # clip visually *after* rasterisation.  When dist >> effective_crop_dist (e.g.
-    # DC preview: dist=20 km, crop≈5 km) matplotlib processes ~23 k edges to
-    # produce a ~5 km viewport — off-screen work dominates and causes ~30 s render
+    # DC preview: dist=20 km, cropâ5 km) matplotlib processes ~23 k edges to
+    # produce a ~5 km viewport â off-screen work dominates and causes ~30 s render
     # times that exceed the /preview timeout.  Filtering g_proj to nodes inside the
-    # crop bbox reduces the edge count 5-8× and cuts render time to ~3 s.
+    # crop bbox reduces the edge count 5-8Ã and cuts render time to ~3 s.
     # A 5 % border guard keeps edges that straddle the crop boundary from vanishing
-    # at the frame edge.  For /fulfill (where effective_crop_dist ≈ dist) the filter
+    # at the frame edge.  For /fulfill (where effective_crop_dist â dist) the filter
     # is a near-no-op: the crop bbox covers the full graph and no subgraph is made.
     _grd = max(abs(crop_xlim[1] - crop_xlim[0]), abs(crop_ylim[1] - crop_ylim[0])) * 0.05
     _crop_nodes = {
@@ -1388,30 +1454,30 @@ def render(params: dict) -> bytes:
     if len(_crop_nodes) < len(g_proj.nodes):
         g_proj = g_proj.subgraph(_crop_nodes).copy()
 
-    # ── Write pview cache for future requests ────────────────────────────
-    # Only when freshly built — never re-cache what was loaded from pview.
+    # ââ Write pview cache for future requests ââââââââââââââââââââââââââââ
+    # Only when freshly built â never re-cache what was loaded from pview.
     # This small graph in R2 L2 means the next preview skips
-    # both streets fetch and ox.project_graph → DC warm-path ~6 s.
+    # both streets fetch and ox.project_graph â DC warm-path ~6 s.
     if _pview_cached is None:
         graph_cache_set(pview_key, g_proj)
-        _log(f'pview cached ({pview_key[:16]}…, '
+        _log(f'pview cached ({pview_key[:16]}â¦, '
              f'{len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
 
     # pview_only=True: return after warming cache (no PNG needed).
     # Used by prebuild_graphs.py to pre-heat pview at boot.
     if params.get('pview_only'):
-        _log('pview_only=True — returning after cache warm (skipping PNG)')
+        _log('pview_only=True â returning after cache warm (skipping PNG)')
         return b''
 
     edge_colors = get_edge_colors(g_proj, theme, minor_roads)
     # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's
-    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide — sub-
+    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide â sub-
     # pixel, anti-aliased into a faint smudge or vanished entirely. Scale all
     # widths by (300 / dpi) when dpi < 300 so the smallest tier crosses the 1 px
     # threshold and the road-detail hierarchy stays readable at preview resolution.
-    # Cap the scale at 2.0× — the original 300/96 = 3.125× factor produced
-    # ~954 KB PNGs (3.5× baseline) because thicker lines mean more dark pixels for
-    # PNG to encode. At 2.0× residential still lands at 0.8 pt = 1.07 px (above
+    # Cap the scale at 2.0Ã â the original 300/96 = 3.125Ã factor produced
+    # ~954 KB PNGs (3.5Ã baseline) because thicker lines mean more dark pixels for
+    # PNG to encode. At 2.0Ã residential still lands at 0.8 pt = 1.07 px (above
     # the 1 px visibility threshold) while PNG output stays around 500 KB.
     # Clamped at >= 1 so /fulfill at 300/400 DPI keeps renders byte-identical.
     edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
@@ -1437,21 +1503,21 @@ def render(params: dict) -> bytes:
     if full_bleed:
         ax.set_position((0.0, 0.0, 1.0, 1.0))
 
-    # ── 9. Gradient fades (only if not full-bleed / no_fade) ─────────────────
+    # ââ 9. Gradient fades (only if not full-bleed / no_fade) âââââââââââââââââ
     if not no_fade:
         create_gradient_fade(ax, theme['gradient_color'], location='bottom', zorder=10)
         create_gradient_fade(ax, theme['gradient_color'], location='top', zorder=10)
 
-    # ── 10. Typography ───────────────────────────────────────────────────────
+    # ââ 10. Typography âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if show_text:
         scale = min(height_in, width_in) / 12.0
         fonts = load_fonts()
 
-        # City label — single-space join for letter-spacing parity with the
+        # City label â single-space join for letter-spacing parity with the
         # studio editor. Original maptoposter aesthetic used '  '.join (two
         # spaces) which roughly doubles the rendered width; the editor moved
         # to CSS letter-spacing: 0.45em on .mvs-poster-city (studio PR #154
-        # — "Removes Array.from().join('  ') that tripled string length and
+        # â "Removes Array.from().join('  ') that tripled string length and
         # clipped names"). matplotlib has no letter-spacing primitive, so
         # ' '.join is the closest visual match: WAS HING TON stays wide-
         # tracked but no longer overflows the poster on 10-char names like
@@ -1463,14 +1529,14 @@ def render(params: dict) -> bytes:
 
         # 60 * scale rendered Playfair 700 + ' '.join letter-spacing at
         # ~95 % of poster width for 10-char names like WASHINGTON (production
-        # 2026-06-16 screenshot — print preview's "WASHINGTON" stretched
+        # 2026-06-16 screenshot â print preview's "WASHINGTON" stretched
         # corner-to-corner while the editor's MapLibre rendering sat at
         # ~50 % width). matplotlib has no letter-spacing primitive so the
         # spaced-glyph approach is the only way to match the editor's
         # CSS letter-spacing aesthetic, but the size factor was tuned for the
         # original two-space join and was never lowered after PR #154 moved
         # to single-space join. 38 lands the spaced glyphs at ~55 % poster
-        # width on a 12.5×16.7 in classic — parity with the editor's
+        # width on a 12.5Ã16.7 in classic â parity with the editor's
         # visual weight. n_chars > 10 still shrinks proportionally so very
         # long names (SAN FRANCISCO, JOHANNESBURG) stay inside the band.
         base_main = 24 * scale
@@ -1496,7 +1562,7 @@ def render(params: dict) -> bytes:
         lat_v, lon_v = point
         hem_ns = 'N' if lat_v >= 0 else 'S'
         hem_ew = 'E' if lon_v >= 0 else 'W'
-        coords_str = f'{abs(lat_v):.4f}° {hem_ns} / {abs(lon_v):.4f}° {hem_ew}'
+        coords_str = f'{abs(lat_v):.4f}Â° {hem_ns} / {abs(lon_v):.4f}Â° {hem_ew}'
 
         ax.text(0.5, 0.07, coords_str,
                 transform=ax.transAxes, color=theme['text'], alpha=0.7,
@@ -1506,11 +1572,11 @@ def render(params: dict) -> bytes:
                 transform=ax.transAxes,
                 color=theme['text'], linewidth=1 * scale, zorder=11)
 
-        ax.text(0.98, 0.02, '© OpenStreetMap contributors',
+        ax.text(0.98, 0.02, 'Â© OpenStreetMap contributors',
                 transform=ax.transAxes, color=theme['text'], alpha=0.5,
                 ha='right', va='bottom', fontproperties=fp('light', 8), zorder=11)
 
-    # ── 11. Save to buffer ───────────────────────────────────────────────────
+    # ââ 11. Save to buffer âââââââââââââââââââââââââââââââââââââââââââââââââââ
     buf = io.BytesIO()
     save_kwargs: dict = {'facecolor': theme['bg'], 'dpi': dpi}
 
@@ -1526,11 +1592,11 @@ def render(params: dict) -> bytes:
 
     buf.seek(0)
     data = buf.read()
-    _log(f'Done — {len(data):,} bytes ({dpi} DPI, {width_in}×{height_in}in)')
+    _log(f'Done â {len(data):,} bytes ({dpi} DPI, {width_in}Ã{height_in}in)')
     return data
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ââ Entry point âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 if __name__ == '__main__':
     try:
