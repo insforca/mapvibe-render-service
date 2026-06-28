@@ -50,6 +50,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import numpy as np
 import osmnx as ox
 import geopandas as gpd
@@ -1118,6 +1119,19 @@ def render(params: dict) -> bytes:
         rail        = reader.fetch_layer('rail',    bbox, zoom=14)
         g = None  # downstream branches on `streets_gdf is not None`
         _log(f'Fetch phase {time.time() - t_fetch:.1f}s — PMTiles bbox={bbox}')
+
+        # Fail loud on empty streets — mirrors the OSMnx path's
+        # `if g is None or len(g.nodes) == 0: raise` below. Without this an
+        # empty archive read (bad bbox, coverage gap, all-tiles-miss) would
+        # either throw an opaque AttributeError from streets_gdf.to_crs() or
+        # silently render a blank poster — the worst outcome for a printed
+        # product. Water / parks / rail stay soft (guarded by .empty before
+        # they draw) — only streets are load-bearing.
+        if streets_gdf is None or streets_gdf.empty:
+            raise RuntimeError(
+                f'PMTiles returned no street data for bbox={bbox} — '
+                f'check archive coverage at this location.'
+            )
         # Skip the rest of the OSMnx-path fetch logic + jump to figure setup.
         # (See `if use_pmtiles` block before the ox.plot_graph call.)
 
@@ -1389,6 +1403,7 @@ def render(params: dict) -> bytes:
     # matplotlib treats as equal-scale axes.
     g_proj = ox.project_graph(g) if g is not None else None
     target_crs = g_proj.graph['crs'] if g_proj is not None else 'EPSG:3857'
+    if g_proj is not None:
         _log(f'project_graph: {time.time()-_proj_t0:.1f}s '
              f'({len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
 
@@ -1424,84 +1439,123 @@ def render(params: dict) -> bytes:
             try:
                 rail_lines = ox.projection.project_gdf(rail_lines)
             except Exception:
-                rail_lines = rail_lines.to_crs(g_proj.graph['crs'])
+                rail_lines = rail_lines.to_crs(target_crs)
             rail_color = theme.get('rail', theme.get('road_default', theme['text']))
             rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
-    # ââ 8. Roads âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+    # ââ 8. Roads ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # crop_dist override lets the caller (server.ts /render) align the visible
     # axes with the actual fetch radius (comp_dist), eliminating the empty
     # background area around the road graph on tight-bounds previews.
     effective_crop_dist = int(crop_dist_param) if crop_dist_param is not None else dist
-    crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
-
-    # ââ 8a. Pre-clip graph to crop window (major speedup for large-dist renders) ââ
-    # ox.plot_graph() renders ALL fetched edges and relies on ax.set_xlim/ylim to
-    # clip visually *after* rasterisation.  When dist >> effective_crop_dist (e.g.
-    # DC preview: dist=20 km, cropâ5 km) matplotlib processes ~23 k edges to
-    # produce a ~5 km viewport â off-screen work dominates and causes ~30 s render
-    # times that exceed the /preview timeout.  Filtering g_proj to nodes inside the
-    # crop bbox reduces the edge count 5-8Ã and cuts render time to ~3 s.
-    # A 5 % border guard keeps edges that straddle the crop boundary from vanishing
-    # at the frame edge.  For /fulfill (where effective_crop_dist â dist) the filter
-    # is a near-no-op: the crop bbox covers the full graph and no subgraph is made.
-    _grd = max(abs(crop_xlim[1] - crop_xlim[0]), abs(crop_ylim[1] - crop_ylim[0])) * 0.05
-    _crop_nodes = {
-        n for n, d in g_proj.nodes(data=True)
-        if crop_xlim[0] - _grd <= d.get('x', 0) <= crop_xlim[1] + _grd
-        and crop_ylim[0] - _grd <= d.get('y', 0) <= crop_ylim[1] + _grd
-    }
-    if len(_crop_nodes) < len(g_proj.nodes):
-        g_proj = g_proj.subgraph(_crop_nodes).copy()
-
-    # ââ Write pview cache for future requests ââââââââââââââââââââââââââââ
-    # Only when freshly built â never re-cache what was loaded from pview.
-    # This small graph in R2 L2 means the next preview skips
-    # both streets fetch and ox.project_graph â DC warm-path ~6 s.
-    if _pview_cached is None:
-        graph_cache_set(pview_key, g_proj)
-        _log(f'pview cached ({pview_key[:16]}â¦, '
-             f'{len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
-
-    # pview_only=True: return after warming cache (no PNG needed).
-    # Used by prebuild_graphs.py to pre-heat pview at boot.
-    if params.get('pview_only'):
-        _log('pview_only=True â returning after cache warm (skipping PNG)')
-        return b''
-
-    edge_colors = get_edge_colors(g_proj, theme, minor_roads)
-    # Edge widths were calibrated for /fulfill's 300-400 DPI output. At /render's
-    # 96 DPI preview path a 0.4 pt residential line is only ~0.5 px wide â sub-
-    # pixel, anti-aliased into a faint smudge or vanished entirely. Scale all
-    # widths by (300 / dpi) when dpi < 300 so the smallest tier crosses the 1 px
-    # threshold and the road-detail hierarchy stays readable at preview resolution.
-    # Cap the scale at 2.0Ã â the original 300/96 = 3.125Ã factor produced
-    # ~954 KB PNGs (3.5Ã baseline) because thicker lines mean more dark pixels for
-    # PNG to encode. At 2.0Ã residential still lands at 0.8 pt = 1.07 px (above
-    # the 1 px visibility threshold) while PNG output stays around 500 KB.
-    # Clamped at >= 1 so /fulfill at 300/400 DPI keeps renders byte-identical.
     edge_width_scale = max(1.0, min(2.0, 300.0 / dpi))
-    edge_widths = [w * edge_width_scale for w in get_edge_widths(g_proj, minor_roads)]
 
-    _plot_t0 = time.time()
-    ox.plot_graph(
-        g_proj, ax=ax,
-        bgcolor=theme['bg'],
-        node_size=0,
-        edge_color=edge_colors,
-        edge_linewidth=edge_widths,
-        show=False,
-        close=False,
-    )
-    _log(f'plot_graph: {time.time()-_plot_t0:.1f}s '
-         f'({g_proj.number_of_nodes()} nodes, {g_proj.number_of_edges()} edges)')
-    ax.set_aspect('equal', adjustable='box')
-    ax.set_xlim(crop_xlim)
-    ax.set_ylim(crop_ylim)
+    if streets_gdf is not None:
+        # ââ 8 (PMTiles path). Draw streets via LineCollection ââââââââââââââââââ
+        # We deliberately do NOT use GeoDataFrame.plot(color=[...list...]):
+        # per-feature colouring via a list is undocumented and version-dependent.
+        # LineCollection is the matplotlib primitive geopandas calls under the hood
+        # and unambiguously accepts per-segment colors + linewidths arrays.
+        hidden = _CLEAN_HIDDEN_TYPES if not minor_roads else frozenset()
+        streets_proj = streets_gdf.to_crs(target_crs)
+        segments = []
+        seg_colors = []
+        seg_widths = []
+        for _idx, row in streets_proj.iterrows():
+            hw = row.get('highway', 'unclassified')
+            if isinstance(hw, list):
+                hw = hw[0] if hw else 'unclassified'
+            if hw in hidden:
+                continue
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            color = _pmtiles_tier_color(hw, theme)
+            width = _pmtiles_tier_width(hw) * edge_width_scale
+            # A street feature may be a LineString or a MultiLineString.
+            # Each component polyline becomes one entry in the collection,
+            # inheriting the parent feature's colour + width.
+            if geom.geom_type == 'LineString':
+                segments.append(list(geom.coords))
+                seg_colors.append(color)
+                seg_widths.append(width)
+            elif geom.geom_type == 'MultiLineString':
+                for part in geom.geoms:
+                    segments.append(list(part.coords))
+                    seg_colors.append(color)
+                    seg_widths.append(width)
+            # Any other geometry type (Point / Polygon) is not a street; skip.
 
-    # Re-assert full-bleed position after plot_graph may have adjusted it
-    if full_bleed:
-        ax.set_position((0.0, 0.0, 1.0, 1.0))
+        if segments:
+            lc = LineCollection(
+                segments,
+                colors=seg_colors,
+                linewidths=seg_widths,
+                capstyle='round',
+                joinstyle='round',
+                zorder=1,
+            )
+            ax.add_collection(lc)
+
+        # Set explicit axis limits from the projected fetch bbox.
+        # LineCollection has no auto-scale so matplotlib leaves the axes at
+        # (0,1) without this. Transform the WGS-84 bbox corners to target_crs.
+        from pyproj import Transformer
+        _tr = Transformer.from_crs('EPSG:4326', target_crs, always_xy=True)
+        _x0, _y0 = _tr.transform(bbox[0], bbox[1])  # SW corner (min_lng, min_lat)
+        _x1, _y1 = _tr.transform(bbox[2], bbox[3])  # NE corner (max_lng, max_lat)
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xlim(_x0, _x1)
+        ax.set_ylim(_y0, _y1)
+
+    else:
+        # ââ 8 (OSMnx path). crop + pre-clip + plot_graph ââââââââââââââââââââ
+        crop_xlim, crop_ylim = get_crop_limits(g_proj, point, fig, effective_crop_dist)
+
+        # ââ 8a. Pre-clip graph to crop window (major speedup for large-dist renders) ââ
+        # ox.plot_graph() renders ALL fetched edges and relies on ax.set_xlim/ylim to
+        # clip visually *after* rasterisation.  When dist >> effective_crop_dist the
+        # filtering g_proj to nodes inside the crop bbox reduces edge count 5-8x
+        # and cuts render time to ~3 s. A 5% border guard keeps edges that straddle
+        # the crop boundary from vanishing. For /fulfill (effective_crop_dist ~ dist)
+        # the filter is a near-no-op.
+        _grd = max(abs(crop_xlim[1] - crop_xlim[0]), abs(crop_ylim[1] - crop_ylim[0])) * 0.05
+        _crop_nodes = {
+            n for n, d in g_proj.nodes(data=True)
+            if crop_xlim[0] - _grd <= d.get('x', 0) <= crop_xlim[1] + _grd
+            and crop_ylim[0] - _grd <= d.get('y', 0) <= crop_ylim[1] + _grd
+        }
+        if len(_crop_nodes) < len(g_proj.nodes):
+            g_proj = g_proj.subgraph(_crop_nodes).copy()
+
+        # ââ Write pview cache for future requests ââââââââââââââââââââ
+        if _pview_cached is None:
+            graph_cache_set(pview_key, g_proj)
+            _log(f'pview cached ({pview_key[:16]}â¦, '
+                 f'{len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
+
+        if params.get('pview_only'):
+            _log('pview_only=True â returning after cache warm (skipping PNG)')
+            return b''
+
+        edge_colors = get_edge_colors(g_proj, theme, minor_roads)
+        edge_widths = [w * edge_width_scale for w in get_edge_widths(g_proj, minor_roads)]
+
+        _plot_t0 = time.time()
+        ox.plot_graph(
+            g_proj, ax=ax,
+            bgcolor=theme['bg'],
+            node_size=0,
+            edge_color=edge_colors,
+            edge_linewidth=edge_widths,
+            show=False,
+            close=False,
+        )
+        _log(f'plot_graph: {time.time()-_plot_t0:.1f}s '
+             f'({g_proj.number_of_nodes()} nodes, {g_proj.number_of_edges()} edges)')
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_xlim(crop_xlim)
+        ax.set_ylim(crop_ylim)
 
     # ââ 9. Gradient fades (only if not full-bleed / no_fade) âââââââââââââââââ
     if not no_fade:

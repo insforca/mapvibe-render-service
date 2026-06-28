@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 import math
 import os
-import sys
 import time
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -70,10 +69,14 @@ def get_reader() -> "PMTilesR2Reader":
 
 class _R2Source:
     """
-    pmtiles.reader.Reader expects a Source object implementing a single
-    get_bytes(offset, length) method. We back that with boto3 range requests
-    against R2. Authenticated reads — the bucket is private (Public Access:
-    Disabled in the Cloudflare R2 dashboard).
+    pmtiles.reader.Reader expects a CALLABLE `(offset, length) -> bytes`
+    (the stock `MmapSource` satisfies this via __call__). We back that with
+    boto3 range requests against R2. Authenticated reads — the bucket is
+    private (Public Access: Disabled in the Cloudflare R2 dashboard).
+
+    NOTE: this MUST be __call__, not a named method. Reader stores the passed
+    object and invokes it directly, so a non-callable object with a .get_bytes()
+    method raises TypeError at runtime.
     """
 
     def __init__(self, s3_client, bucket: str, key: str):
@@ -81,7 +84,7 @@ class _R2Source:
         self._bucket = bucket
         self._key = key
 
-    def get_bytes(self, offset: int, length: int) -> bytes:
+    def __call__(self, offset: int, length: int) -> bytes:
         end = offset + length - 1
         # boto3 retries transient 5xx and connection errors per the client
         # config below; this layer doesn't re-implement them.
@@ -291,6 +294,8 @@ def _decode_geom(g: dict, project):
 def _required_env(name: str) -> str:
     v = os.environ.get(name)
     if not v:
-        sys.exit(f"[pmtiles_reader] {name} env var must be set "
-                 f"(see docs/PMTILES-CUTOVER.md)")
+        raise RuntimeError(
+            f"[pmtiles_reader] {name} env var must be set "
+            f"(see docs/PMTILES-CUTOVER.md)"
+        )
     return v
