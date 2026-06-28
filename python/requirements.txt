@@ -17,4 +17,4 @@ boto3==1.38.26
 pyrosm==0.9.1
 # PMTiles cut-over (USE_PMTILES=true) — see python/pmtiles_reader.py
 pmtiles==3.4.0
-mapbox-vector-tile==2.1.0
+mapbox-vector-tile==2.2.0
