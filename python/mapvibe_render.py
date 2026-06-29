@@ -1388,7 +1388,7 @@ def render(params: dict) -> bytes:
         # pview cache hit: g_proj is pre-projected+pre-clipped.
         # Skip the 15-30 s ox.project_graph CRS conversion entirely.
         g_proj = _pview_cached
-    else:
+    elif g is not None:
         # ââ 5a. Pre-clip in WGS-84 BEFORE projection âââââââââââââââââââââ
         _pre_cd = int(crop_dist_param) if crop_dist_param is not None else dist
         _dlat = _pre_cd / 111_111 * 1.10
