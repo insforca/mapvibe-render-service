@@ -49,6 +49,27 @@ from pmtiles.reader import Reader as PMReader
 _log = logging.getLogger("mapvibe_render.pmtiles")
 
 
+# ── Protomaps basemaps schema mapping ──────────────────────────────────────────
+# planet.pmtiles is the Protomaps / planetiler basemaps build (confirmed via the
+# archive's own metadata: planetiler:buildtime / planetiler:githash). Its vector
+# layers are NOT the names this module originally assumed
+# ('streets' / 'parks' / 'rail'); they are:
+#   roads, water, landuse, landcover, places, buildings, boundaries, earth, pois
+# Streets live in `roads`; the per-feature OSM highway value is carried in the
+# `kind_detail` field (e.g. kind='highway', kind_detail='motorway'), with `kind`
+# as the coarse class. The draw code in mapvibe_render.py keys off a `highway`
+# attribute, so when add_highway=True we synthesise it from kind_detail (falling
+# back to a representative value per coarse kind). This single helper bridges the
+# Protomaps schema onto the OSM-tag-shaped draw path.
+_PROTOMAPS_KIND_TO_HIGHWAY = {
+    "highway": "motorway",
+    "major_road": "primary",
+    "medium_road": "secondary",
+    "minor_road": "residential",
+    "path": "path",
+}
+
+
 # ── Errors ────────────────────────────────────────────────────────────────────
 
 
@@ -207,8 +228,9 @@ class PMTilesR2Reader:
 
     # ── Layer fetch ───────────────────────────────────────────────────────────
 
-    def fetch_layer(self, layer_name: str, bbox: tuple, zoom: int = 14
-                    ) -> gpd.GeoDataFrame:
+    def fetch_layer(self, layer_name: str, bbox: tuple, zoom: int = 14,
+                    *, kind_filter: Optional[set] = None,
+                    add_highway: bool = False) -> gpd.GeoDataFrame:
         """
         Returns a GeoDataFrame in EPSG:4326 containing every feature of
         `layer_name` whose geometry intersects `bbox` (a tuple of
@@ -259,11 +281,28 @@ class PMTilesR2Reader:
             project = _tile_xy_to_lng_lat_factory(tz, tx, ty, extent)
 
             for feat in layer_data.get("features", []):
+                props = feat.get("properties", {})
+                # Protomaps layers are coarse-grained: `roads` holds rail/ferry/
+                # aeroway alongside streets, `landuse` holds residential/park/
+                # forest alike. kind_filter keeps only the kinds the caller wants
+                # so a single physical layer feeds several logical draw layers.
+                if kind_filter is not None and props.get("kind") not in kind_filter:
+                    continue
                 geom = _decode_geom(feat["geometry"], project)
                 if geom is None or geom.is_empty:
                     continue
+                if add_highway:
+                    # Bridge Protomaps kind/kind_detail onto the OSM `highway`
+                    # attribute the draw path expects. kind_detail already holds
+                    # the OSM value (motorway/primary/residential/...); the map is
+                    # only a fallback for features missing kind_detail.
+                    props = dict(props)
+                    props["highway"] = (
+                        props.get("kind_detail")
+                        or _PROTOMAPS_KIND_TO_HIGHWAY.get(props.get("kind"), "unclassified")
+                    )
                 geometries.append(geom)
-                properties.append(feat.get("properties", {}))
+                properties.append(props)
 
         elapsed = time.time() - t0
         _log.info("PMTiles layer=%s z=%d bbox=%s tiles=%d/%d errors=%d "
