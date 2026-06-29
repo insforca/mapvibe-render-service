@@ -37,6 +37,8 @@ import time
 from functools import lru_cache
 from typing import Iterable, Optional
 
+import gzip
+
 import boto3
 import geopandas as gpd
 import mapbox_vector_tile as mvt
@@ -160,7 +162,11 @@ class PMTilesR2Reader:
 
     def _get_tile_uncached(self, z: int, x: int, y: int) -> Optional[bytes]:
         try:
-            return self._reader.get(z, x, y)
+            data = self._reader.get(z, x, y)
+            # Protomaps planet builds store tiles gzip-compressed. The pmtiles
+            # Python library returns raw archive bytes without decompressing;
+            # mapbox_vector_tile.decode() expects uncompressed protobuf.
+            return _decompress_tile(data) if data is not None else None
         except Exception as e:
             # PMTiles get() raises on genuine errors; missing tiles return
             # None. Logged + swallowed at the layer-fetch level so a single
@@ -228,6 +234,23 @@ class PMTilesR2Reader:
         if not geometries:
             return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
         return gpd.GeoDataFrame(properties, geometry=geometries, crs="EPSG:4326")
+
+
+# ── Tile decompression ───────────────────────────────────────────────────────
+
+
+def _decompress_tile(data: bytes) -> bytes:
+    """
+    Decompress gzip-encoded tile data.
+
+    Protomaps planet PMTiles archives (and most tilemaker builds) store tiles
+    with gzip compression (tile_compression=gzip in the PMTiles header). The
+    pmtiles Python library returns raw bytes as stored in the archive without
+    decompressing; callers are responsible for decompression before decoding.
+    """
+    if data[:2] == b"\x1f\x8b":
+        return gzip.decompress(data)
+    return data
 
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
