@@ -1113,10 +1113,23 @@ def render(params: dict) -> bytes:
 
         reader = get_reader()
         t_fetch = time.time()
-        streets_gdf = reader.fetch_layer('streets', bbox, zoom=14)
-        water       = reader.fetch_layer('water',   bbox, zoom=14)
-        parks       = reader.fetch_layer('parks',   bbox, zoom=14)
-        rail        = reader.fetch_layer('rail',    bbox, zoom=14)
+        # planet.pmtiles uses the Protomaps basemaps schema: streets live in the
+        # `roads` layer (with rail/ferry/aeroway mixed in), parks in `landuse`,
+        # rail also in `roads` (kind='rail'). The legacy 'streets'/'parks'/'rail'
+        # layer names do not exist in this archive and returned empty frames —
+        # surfacing as the misleading "PMTiles returned no street data".
+        # See pmtiles_reader._PROTOMAPS_KIND_TO_HIGHWAY for the schema bridge.
+        _ROAD_KINDS = {'highway', 'major_road', 'medium_road', 'minor_road', 'path'}
+        _PARK_KINDS = {'park', 'forest', 'wood', 'grass', 'meadow',
+                       'nature_reserve', 'garden', 'recreation_ground',
+                       'pitch', 'golf_course', 'cemetery'}
+        streets_gdf = reader.fetch_layer('roads', bbox, zoom=14,
+                                         kind_filter=_ROAD_KINDS, add_highway=True)
+        water       = reader.fetch_layer('water', bbox, zoom=14)
+        parks       = reader.fetch_layer('landuse', bbox, zoom=14,
+                                         kind_filter=_PARK_KINDS)
+        rail        = reader.fetch_layer('roads', bbox, zoom=14,
+                                         kind_filter={'rail'})
         g = None  # downstream branches on `streets_gdf is not None`
         _log(f'Fetch phase {time.time() - t_fetch:.1f}s — PMTiles bbox={bbox}')
 
