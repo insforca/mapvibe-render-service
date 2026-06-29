@@ -49,6 +49,29 @@ from pmtiles.reader import Reader as PMReader
 _log = logging.getLogger("mapvibe_render.pmtiles")
 
 
+# ── Errors ────────────────────────────────────────────────────────────────────
+
+
+class PMTilesFetchError(RuntimeError):
+    """
+    Raised when a tile read against R2 *fails* — bad credentials, wrong
+    PMTILES_ENDPOINT_URL, missing bucket-read permission, or a transient
+    network error that exhausted boto3's retry budget.
+
+    This is deliberately distinct from a *missing* tile (the pmtiles reader
+    returns None for those, no exception). The difference matters: a missing
+    tile is normal sparse-coverage and is skipped silently, whereas a fetch
+    error means the archive is unreachable and EVERY tile will fail the same
+    way — which previously surfaced as the misleading "PMTiles returned no
+    street data" (looks like a coverage gap, is actually a config problem).
+    """
+
+    def __init__(self, z: int, x: int, y: int, cause: BaseException):
+        self.z, self.x, self.y = z, x, y
+        self.cause = cause
+        super().__init__(f"R2 fetch failed for tile z={z} x={x} y={y}: {cause}")
+
+
 # ── Module-level singleton ────────────────────────────────────────────────────
 # A single PMTilesR2Reader per process is correct: the PMTiles header + root
 # directory are fetched once and cached forever (they don't change for a
@@ -168,11 +191,16 @@ class PMTilesR2Reader:
             # mapbox_vector_tile.decode() expects uncompressed protobuf.
             return _decompress_tile(data) if data is not None else None
         except Exception as e:
-            # PMTiles get() raises on genuine errors; missing tiles return
-            # None. Logged + swallowed at the layer-fetch level so a single
-            # bad tile doesn't fail a whole render.
-            _log.warning("PMTiles get failed z=%d x=%d y=%d: %s", z, x, y, e)
-            return None
+            # A raised exception here is NOT a missing tile — the pmtiles
+            # reader returns None for those. It means the R2 read itself
+            # failed: bad credentials, wrong PMTILES_ENDPOINT_URL, the API
+            # token lacks bucket-read permission, or a network error that
+            # exhausted boto3's retry budget. Log it at ERROR so it reaches
+            # Railway logs (the old WARNING was swallowed), then re-raise as a
+            # typed error so the layer-fetch loop can tell a config failure
+            # apart from a genuine coverage gap.
+            _log.error("PMTiles R2 fetch failed z=%d x=%d y=%d: %s", z, x, y, e)
+            raise PMTilesFetchError(z, x, y, e) from e
 
     def get_tile(self, z: int, x: int, y: int) -> Optional[bytes]:
         return self._tile_lru(z, x, y)
@@ -194,9 +222,20 @@ class PMTilesR2Reader:
         properties = []
         tiles_fetched = 0
         tiles_hit = 0
+        fetch_errors = 0
+        last_fetch_error: Optional[PMTilesFetchError] = None
 
         for tz, tx, ty in _tiles_for_bbox(*bbox, zoom=zoom):
-            tile_bytes = self.get_tile(tz, tx, ty)
+            try:
+                tile_bytes = self.get_tile(tz, tx, ty)
+            except PMTilesFetchError as e:
+                # R2 read failure (not a missing tile). Count it and keep
+                # going so the post-loop check can tell "every tile failed to
+                # fetch" (config problem) apart from "some tiles are genuinely
+                # empty" (normal sparse coverage).
+                fetch_errors += 1
+                last_fetch_error = e
+                continue
             tiles_fetched += 1
             if tile_bytes is None:
                 continue
@@ -227,9 +266,24 @@ class PMTilesR2Reader:
                 properties.append(feat.get("properties", {}))
 
         elapsed = time.time() - t0
-        _log.info("PMTiles layer=%s z=%d bbox=%s tiles=%d/%d feats=%d in %.2fs",
+        _log.info("PMTiles layer=%s z=%d bbox=%s tiles=%d/%d errors=%d "
+                  "feats=%d in %.2fs",
                   layer_name, zoom, bbox, tiles_hit, tiles_fetched,
-                  len(geometries), elapsed)
+                  fetch_errors, len(geometries), elapsed)
+
+        # Every tile read errored out and not a single one succeeded — the
+        # archive is unreachable, not empty. Fail loud with the actionable
+        # cause instead of returning an empty frame that the caller would
+        # report as the misleading "PMTiles returned no street data".
+        if fetch_errors and tiles_fetched == 0:
+            cause = last_fetch_error.cause if last_fetch_error else None
+            raise RuntimeError(
+                f"PMTiles R2 unreachable for bbox={bbox} — all {fetch_errors} "
+                f"tile reads failed. This is an R2 ACCESS problem, not missing "
+                f"coverage: check R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY, "
+                f"PMTILES_ENDPOINT_URL, and that the API token has Object Read "
+                f"on the bucket. Underlying error: {cause}"
+            ) from cause
 
         if not geometries:
             return gpd.GeoDataFrame(columns=["geometry"], crs="EPSG:4326")
