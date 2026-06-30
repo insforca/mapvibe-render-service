@@ -981,6 +981,20 @@ interface MapvibeConfigSnapshot {
   // Customers who never touched the toggle have this undefined, which matches
   // the historical hardcoded behaviour at fulfillment.
   minorRoads?: boolean;
+  // Live palette forwarded by ShopifyExportOverlay (>= v3.1). When present,
+  // renderConfigToBlobUrl builds theme_json from these and bypasses load_theme(),
+  // making fulfillment immune to theme-filename drift (e.g. vintage_noir → no
+  // matching .json → silent terracotta fallback without this forwarding).
+  textColor?:          string;
+  bgColor?:            string;
+  waterColor?:         string;
+  parksColor?:         string;
+  roadMotorwayColor?:  string;
+  roadPrimaryColor?:   string;
+  roadSecondaryColor?: string;
+  roadTertiaryColor?:  string;
+  roadLocalColor?:     string;
+  railColor?:          string;
 }
 
 /**
@@ -1094,6 +1108,25 @@ async function renderConfigToBlobUrl(
   if (useOsm) {
     const widthIn  = widthCm  / CM_PER_INCH;
     const heightIn = heightCm / CM_PER_INCH;
+    // When the config snapshot includes flat palette fields (ShopifyExportOverlay >= v3.1),
+    // build a Python-shaped theme_json and forward it. Python uses theme_json over
+    // load_theme() when present — renders are then immune to filename drift
+    // (e.g. vintage_noir has no matching themes/vintage_noir.json, so load_theme
+    // silently falls back to terracotta without this forwarding).
+    const fulfillThemeJson = cfg.textColor ? {
+      bg:               cfg.bgColor             ?? '#1B2A4A',
+      text:             cfg.textColor,
+      gradient_color:   cfg.bgColor             ?? '#1B2A4A',
+      water:            cfg.waterColor          ?? cfg.bgColor    ?? '#1B2A4A',
+      parks:            cfg.parksColor          ?? cfg.bgColor    ?? '#1B2A4A',
+      road_motorway:    cfg.roadMotorwayColor   ?? cfg.textColor,
+      road_primary:     cfg.roadPrimaryColor    ?? cfg.roadMotorwayColor ?? cfg.textColor,
+      road_secondary:   cfg.roadSecondaryColor  ?? cfg.roadPrimaryColor  ?? cfg.textColor,
+      road_tertiary:    cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
+      road_residential: cfg.roadLocalColor      ?? cfg.roadTertiaryColor ?? cfg.textColor,
+      road_default:     cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
+      rail:             cfg.railColor           ?? cfg.roadSecondaryColor ?? cfg.textColor,
+    } : undefined;
     const osmParams: OsmRenderParams = {
       city:            cfg.city            ?? '',
       country:         cfg.country         ?? '',
@@ -1102,6 +1135,8 @@ async function renderConfigToBlobUrl(
       display_city:    cfg.displayCity     ?? '',
       display_country: cfg.displayCountry  ?? '',
       theme_name:      cfg.osmTheme        ?? 'midnight_blue',
+      // Python uses theme_json over load_theme() when present.
+      ...(fulfillThemeJson ? { theme_json: fulfillThemeJson } : {}),
       dist:            cfg.osmDist         ?? 15000,
       width_in:        widthIn,
       height_in:       heightIn,
