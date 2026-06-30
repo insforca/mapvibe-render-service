@@ -1152,27 +1152,32 @@ def render(params: dict) -> bytes:
     qpoint             = (qlat, qlng)
     cache_hits         = {"streets": False, "water": False, "parks": False, "rail": False}
 
-    # ââ pview cache tier âââââââââââââââââââââââââââââââââââââââââââââââââââââ
-    # Stores the post-projection pre-clipped graph (~1-3 MB, ~3-5k nodes) so
-    # subsequent preview requests skip BOTH the streets fetch (2-25 s) AND
-    # ox.project_graph (15-30 s for DC 20k-node graph).
-    # pview_only=True returns immediately after the cache write (no PNG).
-    _pview_filter   = 'minor' if minor_roads else 'major'
-    _pview_round_cd = round(
-        (int(crop_dist_param) if crop_dist_param is not None else dist) / 500
-    ) * 500
-    pview_key     = _graph_cache_key(
-        'pview', qlat, qlng, qdist, _pview_round_cd, _pview_filter, network_type
-    )
-    _pview_cached = graph_cache_get(pview_key)
-    if _pview_cached is not None:
-        _log(
-            f'pview cache hit ({pview_key[:16]}â¦) â '
-            f'skipping streets fetch + ox.project_graph '
-            f'({len(_pview_cached.nodes)} nodes, '
-            f'{_pview_cached.number_of_edges()} edges)'
+    # pview cache tier is OSMnx-path-only: it stores a post-projection
+    # pre-clipped NetworkX graph so repeat previews skip the streets fetch
+    # AND ox.project_graph. On the PMTiles path streets ride in streets_gdf
+    # and there is no graph to cache, so the lookup is meaningless there.
+    # Gating it under `not use_pmtiles` also drops the per-render R2
+    # graph-cache round-trip that previously fired on EVERY PMTiles render.
+    # _pview_cached stays None on the PMTiles path -> figure setup takes the
+    # g_proj=None branch and the street draw takes the streets_gdf branch.
+    _pview_cached = None
+    if not use_pmtiles:
+        _pview_filter   = 'minor' if minor_roads else 'major'
+        _pview_round_cd = round(
+            (int(crop_dist_param) if crop_dist_param is not None else dist) / 500
+        ) * 500
+        pview_key     = _graph_cache_key(
+            'pview', qlat, qlng, qdist, _pview_round_cd, _pview_filter, network_type
         )
-        cache_hits['streets'] = True  # streets implicitly covered
+        _pview_cached = graph_cache_get(pview_key)
+        if _pview_cached is not None:
+            _log(
+                f'pview cache hit ({pview_key[:16]}â¦) â '
+                f'skipping streets fetch + ox.project_graph '
+                f'({len(_pview_cached.nodes)} nodes, '
+                f'{_pview_cached.number_of_edges()} edges)'
+            )
+            cache_hits['streets'] = True  # streets implicitly covered
 
     def _fetch_streets():
         # Streets are the only fetch whose filter depends on minor_roads, so
