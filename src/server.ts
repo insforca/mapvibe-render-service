@@ -1927,5 +1927,18 @@ function runPrebuildGraphs(): void {
   });
 }
 
-runStartupCitySeed();
-runPrebuildGraphs();
+// ── Warm-up gate ────────────────────────────────────────────────────────────
+// The city seed (OSMnx/Overpass) and PBF prebuild (pyrosm graph extraction)
+// exist ONLY to warm the OSMnx graph cache. The PMTiles path reads tiles
+// directly from R2 and needs no warm-up whatsoever — every tile is already
+// addressable. Running these under USE_PMTILES=true is pure waste AND a
+// liability: production 2026-06-29 showed both daemons saturating the
+// container at boot, starving real preview requests until they hit the 34 s
+// deadline and returned 503. Gate them off entirely when PMTiles is live.
+const USE_PMTILES = (process.env.USE_PMTILES ?? '').toLowerCase() === 'true';
+if (USE_PMTILES) {
+  console.log('[startup] USE_PMTILES=true — skipping OSMnx city seed + PBF prebuild (PMTiles needs no warm-up)');
+} else {
+  runStartupCitySeed();
+  runPrebuildGraphs();
+}
