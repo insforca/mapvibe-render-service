@@ -1,0 +1,26 @@
+name: Task 1 preview modal log watch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Watch Railway logs for 90s
+        run: |
+          echo "=== LOG WATCH START $(date -u +%H:%M:%S) ==="
+          for i in $(seq 1 9); do
+            sleep 10
+            echo "--- tick $i at $(date -u +%H:%M:%S) ---"
+            railway logs --service render --tail 20 2>&1 | grep -E "(preview|Queued|render\]|Fetch phase|render done)" || echo "(none)"
+          done
+          echo "=== LOG WATCH DONE $(date -u +%H:%M:%S) ==="
+          echo "--- FINAL tail 200 filtered ---"
+          railway logs --service render --tail 200 2>&1 | grep -E "(preview|Queued|render\]|Fetch phase|render done)" || echo "(no matching lines)"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
