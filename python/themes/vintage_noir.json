@@ -1,0 +1,17 @@
+{
+  "name": "Vintage Noir",
+  "description": "Warm-tone silver gelatin monochrome — Rice White paper (ILFORD MGFB Warmtone reference), charcoal road hierarchy",
+  "bg": "#F3EFE6",
+  "text": "#111111",
+  "gradient_color": "#F3EFE6",
+  "water": "#DAD7CB",
+  "waterway": "#DAD7CB",
+  "parks": "#E7E3DB",
+  "road_motorway": "#222222",
+  "road_primary": "#222222",
+  "road_secondary": "#444444",
+  "road_tertiary": "#666666",
+  "road_residential": "#888888",
+  "road_default": "#888888",
+  "rail": "#111111"
+}
