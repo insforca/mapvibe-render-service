@@ -10,6 +10,13 @@ ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_LOADER_DRIVER_OVERRIDE=swrast
 ENV DISPLAY=:99
 
+# BUG 2 fix — UTF-8 end-to-end so the Python process reads/writes the source
+# and emits logs as UTF-8 (kills log mojibake like 1.0Ã1.0in / Done â, and
+# guarantees the renderer never re-corrupts the degree/copyright glyphs).
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV PYTHONUTF8=1
+
 # ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
 # xvfb: virtual X11 framebuffer display (needed by X11/GLX backend; no physical display or GPU required)
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
