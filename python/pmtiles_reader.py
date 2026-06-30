@@ -31,8 +31,10 @@ Env vars required (all set on Railway):
 from __future__ import annotations
 
 import logging
+import hashlib
 import math
 import os
+import pathlib
 import time
 from functools import lru_cache
 from typing import Iterable, Optional
@@ -110,6 +112,18 @@ def get_reader() -> "PMTilesR2Reader":
     return _reader_singleton
 
 
+# ── Disk-cache constants ──────────────────────────────────────────────────────
+
+#: Root directory for the on-disk PMTiles byte-range cache.
+_DISK_CACHE_DIR: pathlib.Path = pathlib.Path("/tmp/mapvibe-pmtiles-cache")
+
+#: Maximum total on-disk cache size in bytes (default 512 MB, override via env).
+_DISK_CACHE_MAX: int = int(os.getenv("PMTILES_CACHE_MAX_MB", "512")) * 1024 * 1024
+
+#: How many __call__ invocations trigger an opportunistic LRU eviction pass.
+_EVICT_EVERY: int = 200
+
+
 # ── R2-backed PMTiles Source ──────────────────────────────────────────────────
 
 
@@ -123,15 +137,98 @@ class _R2Source:
     NOTE: this MUST be __call__, not a named method. Reader stores the passed
     object and invokes it directly, so a non-callable object with a .get_bytes()
     method raises TypeError at runtime.
+
+    Two-tier byte-range cache
+    ─────────────────────────
+    Tier 1 — per-instance in-memory dict.
+        Eliminates duplicate reads *within a single render*. PMReader calls the
+        source callable several times for the same header/root-directory ranges
+        during Reader.__init__; the dict makes each a no-op after the first hit.
+
+    Tier 2 — on-disk directory at _DISK_CACHE_DIR (/tmp/mapvibe-pmtiles-cache).
+        Persists across subprocesses. Because render-service spawns a fresh Python
+        subprocess per render, the PMTiles header + root directory (~500 KB for the
+        planet archive) are otherwise re-fetched over R2 on every single render.
+        Caching them on /tmp drops the "fetch phase" from 66-75 s to <5 s on the
+        second render of any city.
+
+    Cache key: SHA-256( archive-key + ":" + offset + ":" + length )[:40] — stable
+    across restarts; unique per (archive, byte-range) triple.
+
+    Eviction: opportunistic LRU — every _EVICT_EVERY calls we total the cache
+    directory size and unlink oldest files (by mtime) until we are under
+    _DISK_CACHE_MAX (default 512 MB, configurable via PMTILES_CACHE_MAX_MB).
     """
 
-    def __init__(self, s3_client, bucket: str, key: str):
-        self._s3 = s3_client
+    def __init__(self, s3_client, bucket: str, key: str) -> None:
+        self._s3     = s3_client
         self._bucket = bucket
-        self._key = key
+        self._key    = key
+        # Tier 1: in-process memory cache for this _R2Source instance.
+        self._mem: dict[tuple[int, int], bytes] = {}
+        # Counter for opportunistic eviction (slight over-counting is fine).
+        self._calls: int = 0
+        # Ensure the disk cache directory exists on first use.
+        _DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── Cache helpers ─────────────────────────────────────────────────────────
+
+    def _disk_path(self, offset: int, length: int) -> pathlib.Path:
+        """Return the on-disk path for a (archive-key, offset, length) triple."""
+        digest = hashlib.sha256(
+            f"{self._key}:{offset}:{length}".encode()
+        ).hexdigest()[:40]
+        return _DISK_CACHE_DIR / digest
+
+    @staticmethod
+    def _evict_lru() -> None:
+        """Delete oldest-by-mtime cache files until usage is under _DISK_CACHE_MAX."""
+        try:
+            files = [p for p in _DISK_CACHE_DIR.iterdir()
+                     if p.is_file() and p.suffix != ".tmp"]
+            if not files:
+                return
+            files.sort(key=lambda p: p.stat().st_mtime)
+            total = sum(p.stat().st_size for p in files)
+            if total <= _DISK_CACHE_MAX:
+                return
+            for f in files:
+                if total <= _DISK_CACHE_MAX:
+                    break
+                try:
+                    sz = f.stat().st_size
+                    f.unlink()
+                    total -= sz
+                    _log.debug("pmtiles cache evicted %s (%d KB)", f.name, sz // 1024)
+                except OSError:
+                    pass  # concurrent eviction by another process — fine
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("pmtiles cache eviction skipped: %s", exc)
+
+    # ── Main callable ─────────────────────────────────────────────────────────
 
     def __call__(self, offset: int, length: int) -> bytes:
-        end = offset + length - 1
+        self._calls += 1
+        mem_key = (offset, length)
+
+        # ── Tier 1: in-memory ─────────────────────────────────────────────────
+        if mem_key in self._mem:
+            return self._mem[mem_key]
+
+        # ── Tier 2: on-disk ───────────────────────────────────────────────────
+        disk = self._disk_path(offset, length)
+        if disk.exists():
+            try:
+                data = disk.read_bytes()
+                self._mem[mem_key] = data
+                _log.debug("pmtiles disk-cache HIT  offset=%d length=%d", offset, length)
+                return data
+            except OSError:
+                # Partial write from a crashed process — fall through to R2.
+                disk.unlink(missing_ok=True)
+
+        # ── R2 fetch ──────────────────────────────────────────────────────────
+        end  = offset + length - 1
         # boto3 retries transient 5xx and connection errors per the client
         # config below; this layer doesn't re-implement them.
         resp = self._s3.get_object(
@@ -139,7 +236,31 @@ class _R2Source:
             Key=self._key,
             Range=f"bytes={offset}-{end}",
         )
-        return resp["Body"].read()
+        data = resp["Body"].read()
+        _log.debug("pmtiles R2 fetch          offset=%d length=%d", offset, length)
+
+        # Populate Tier 1.
+        self._mem[mem_key] = data
+
+        # Populate Tier 2 — atomic write: write to *.tmp then os.replace so
+        # a concurrent reader never sees a partially-written file.
+        tmp = disk.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, disk)
+        except OSError as exc:
+            _log.debug("pmtiles disk-cache write failed: %s", exc)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        # Opportunistic LRU eviction — only runs every _EVICT_EVERY calls so
+        # the hot path pays no stat() cost on most invocations.
+        if self._calls % _EVICT_EVERY == 0:
+            self._evict_lru()
+
+        return data
 
 
 # ── Reader ────────────────────────────────────────────────────────────────────
