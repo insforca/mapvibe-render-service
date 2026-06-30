@@ -1,0 +1,54 @@
+name: Railway Log Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_secret:
+        description: 'RENDER_API_SECRET'
+        required: true
+        type: string
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Render 1 (cold)
+        run: |
+          echo "=== RENDER 1 START $(date -u +%H:%M:%S) ==="
+          curl -s -X POST https://render-production-78ee.up.railway.app/render \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ inputs.api_secret }}" \
+            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
+            --max-time 120 \
+            -o /tmp/r1.bin \
+            -w "Render1: HTTP %{http_code} | time: %{time_total}s\n"
+          echo "=== RENDER 1 END $(date -u +%H:%M:%S) ==="
+          ls -lh /tmp/r1.bin
+          file /tmp/r1.bin
+
+      - name: Render 2 (warm — same params, should hit disk cache)
+        run: |
+          echo "=== RENDER 2 START $(date -u +%H:%M:%S) ==="
+          curl -s -X POST https://render-production-78ee.up.railway.app/render \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ inputs.api_secret }}" \
+            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
+            --max-time 120 \
+            -o /tmp/r2.bin \
+            -w "Render2: HTTP %{http_code} | time: %{time_total}s\n"
+          echo "=== RENDER 2 END $(date -u +%H:%M:%S) ==="
+          ls -lh /tmp/r2.bin
+          file /tmp/r2.bin
+
+      - name: Read Railway logs (Fetch phase lines)
+        run: |
+          echo "=== RAILWAY LOGS ==="
+          railway logs --service render --tail 200 2>&1 | grep -E "(Fetch phase|render done|cache|PMTiles|preview|Queued|osm\])" || true
+          echo "=== RAW TAIL ==="
+          railway logs --service render --tail 100 2>&1 | tail -50 || true
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
