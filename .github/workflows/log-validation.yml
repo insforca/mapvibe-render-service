@@ -16,40 +16,75 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Render 1 — cold fetch (new container, empty /tmp cache)
+      - name: Install Playwright (for Task 1 preview observation)
+        run: |
+          npm install -g playwright
+          npx playwright install chromium --with-deps 2>&1 | tail -3
+
+      - name: "Task 1: Open mapvibestudio.com print-preview modal, watch logs 30s"
+        run: |
+          echo "=== TASK 1 START $(date -u +%H:%M:%S) — opening preview modal ==="
+          # Navigate to studio home and click into the poster editor, then print preview
+          node - << 'JS'
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+            // Navigate to the studio
+            await page.goto('https://mapvibestudio.com', { waitUntil: 'domcontentloaded', timeout: 20000 });
+            console.log('Page title:', await page.title());
+            console.log('URL:', page.url());
+            // Look for any link that opens the map editor / poster editor
+            const links = await page.$$eval('a[href]', els => els.map(e => ({href: e.href, text: e.innerText.trim().slice(0,60)})));
+            const editorLinks = links.filter(l => l.href.includes('design') || l.href.includes('poster') || l.href.includes('editor') || l.href.includes('studio'));
+            console.log('Editor links found:', JSON.stringify(editorLinks.slice(0,5)));
+            await browser.close();
+          })().catch(e => { console.error('Browser error:', e.message); process.exit(0); });
+          JS
+          echo "=== TASK 1 browser step done ==="
+        continue-on-error: true
+
+      - name: "Task 1: Read Railway logs — check for [preview] Queued lines"
+        run: |
+          echo "=== TASK 1 LOG CHECK $(date -u +%H:%M:%S) ==="
+          railway logs --service render --tail 100 2>&1 | grep -E "(preview|Queued|render\])" || echo "(no preview/render lines in recent logs)"
+          echo "=== TASK 1 LOG CHECK DONE ==="
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: "Task 2 Render 1 — cold fetch (new container, empty /tmp cache)"
         run: |
           echo "=== RENDER 1 START $(date -u +%H:%M:%S) ==="
           curl -s -X POST https://render-production-78ee.up.railway.app/render \
             -H "Content-Type: application/json" \
             -H "x-api-key: ${{ inputs.api_secret }}" \
-            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
+            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":9000,"dist":9000,"width":2400,"height":3000,"dpi":150}' \
             --max-time 180 \
             -o /tmp/r1.bin \
             -w "Render1: HTTP %{http_code} | wall_time: %{time_total}s\n"
           echo "=== RENDER 1 END $(date -u +%H:%M:%S) ==="
           file /tmp/r1.bin
 
-      - name: Render 2 — warm fetch (same params, /tmp cache populated)
+      - name: "Task 2 Render 2 — warm fetch (same params, /tmp cache populated)"
         run: |
           echo "=== RENDER 2 START $(date -u +%H:%M:%S) ==="
           curl -s -X POST https://render-production-78ee.up.railway.app/render \
             -H "Content-Type: application/json" \
             -H "x-api-key: ${{ inputs.api_secret }}" \
-            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
+            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":9000,"dist":9000,"width":2400,"height":3000,"dpi":150}' \
             --max-time 120 \
             -o /tmp/r2.bin \
             -w "Render2: HTTP %{http_code} | wall_time: %{time_total}s\n"
           echo "=== RENDER 2 END $(date -u +%H:%M:%S) ==="
           file /tmp/r2.bin
 
-      - name: Wait for Railway log propagation
-        run: sleep 45
-
-      - name: Read Railway logs — Fetch phase lines
+      - name: "Wait for Railway log propagation"
         run: |
-          echo "=== RAILWAY LOGS (tail 500, filtered) ==="
-          railway logs --service render --tail 500 2>&1 | grep -E "(Fetch phase|render done|fetch=|PMTiles|Queued|preview|osm\]|mapvibe_render)" || echo "(no matching lines)"
-          echo "=== RAILWAY LOGS (tail 50, raw) ==="
-          railway logs --service render --tail 50 2>&1
+          for i in $(seq 1 9); do sleep 5 && railway logs --service render --tail 5 2>&1 | grep -q "Fetch phase" && echo "Logs ready at iteration $i" && break || true; done
+
+      - name: "Task 2: Read Railway logs — Fetch phase lines"
+        run: |
+          echo "=== RAILWAY LOGS (filtered) ==="
+          railway logs --service render --tail 500 2>&1 | grep -E "(Fetch phase|render done|fetch=|Queued|preview|mapvibe_render)" || echo "(no matching lines)"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
