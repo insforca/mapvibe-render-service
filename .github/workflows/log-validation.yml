@@ -1,4 +1,4 @@
-name: Railway Log Validation
+name: Railway Log Validation v2
 
 on:
   workflow_dispatch:
@@ -11,26 +11,25 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Render 1 (cold)
+      - name: Render 1 — cold fetch (new container, empty /tmp cache)
         run: |
           echo "=== RENDER 1 START $(date -u +%H:%M:%S) ==="
           curl -s -X POST https://render-production-78ee.up.railway.app/render \
             -H "Content-Type: application/json" \
             -H "x-api-key: ${{ inputs.api_secret }}" \
             -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
-            --max-time 120 \
+            --max-time 180 \
             -o /tmp/r1.bin \
-            -w "Render1: HTTP %{http_code} | time: %{time_total}s\n"
+            -w "Render1: HTTP %{http_code} | wall_time: %{time_total}s\n"
           echo "=== RENDER 1 END $(date -u +%H:%M:%S) ==="
-          ls -lh /tmp/r1.bin
           file /tmp/r1.bin
 
-      - name: Render 2 (warm — same params, should hit disk cache)
+      - name: Render 2 — warm fetch (same params, /tmp cache populated)
         run: |
           echo "=== RENDER 2 START $(date -u +%H:%M:%S) ==="
           curl -s -X POST https://render-production-78ee.up.railway.app/render \
@@ -39,16 +38,18 @@ jobs:
             -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":15000,"width":2400,"height":3000,"dpi":150}' \
             --max-time 120 \
             -o /tmp/r2.bin \
-            -w "Render2: HTTP %{http_code} | time: %{time_total}s\n"
+            -w "Render2: HTTP %{http_code} | wall_time: %{time_total}s\n"
           echo "=== RENDER 2 END $(date -u +%H:%M:%S) ==="
-          ls -lh /tmp/r2.bin
           file /tmp/r2.bin
 
-      - name: Read Railway logs (Fetch phase lines)
+      - name: Wait for Railway log propagation
+        run: sleep 45
+
+      - name: Read Railway logs — Fetch phase lines
         run: |
-          echo "=== RAILWAY LOGS ==="
-          railway logs --service render --tail 200 2>&1 | grep -E "(Fetch phase|render done|cache|PMTiles|preview|Queued|osm\])" || true
-          echo "=== RAW TAIL ==="
-          railway logs --service render --tail 100 2>&1 | tail -50 || true
+          echo "=== RAILWAY LOGS (tail 500, filtered) ==="
+          railway logs --service render --tail 500 2>&1 | grep -E "(Fetch phase|render done|fetch=|PMTiles|Queued|preview|osm\]|mapvibe_render)" || echo "(no matching lines)"
+          echo "=== RAILWAY LOGS (tail 50, raw) ==="
+          railway logs --service render --tail 50 2>&1
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
