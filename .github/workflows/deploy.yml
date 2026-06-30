@@ -19,6 +19,11 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Set USE_PMTILES env var on Railway
+        run: railway variables set USE_PMTILES=true --service render
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
       - name: Deploy to Railway
         run: railway up --detach --service render
         env:
