@@ -50,6 +50,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from matplotlib.collections import LineCollection
 import numpy as np
 import osmnx as ox
@@ -1429,20 +1430,18 @@ def render(params: dict) -> bytes:
     if water is not None and not water.empty:
         water_polys = water[water.geometry.type.isin(['Polygon', 'MultiPolygon'])]
         if not water_polys.empty:
-            try:
-                water_polys = ox.projection.project_gdf(water_polys)
-            except Exception:
-                water_polys = water_polys.to_crs(target_crs)
+            # BUG 1 fix: project to target_crs (3857 on PMTiles path, graph UTM
+            # on OSMnx path) so water aligns with streets+axes. project_gdf's
+            # auto-UTM fell outside the 3857 axis limits → drawn off-screen.
+            water_polys = water_polys.to_crs(target_crs)
             water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
 
     # ââ 7. Parks layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if parks is not None and not parks.empty:
         parks_polys = parks[parks.geometry.type.isin(['Polygon', 'MultiPolygon'])]
         if not parks_polys.empty:
-            try:
-                parks_polys = ox.projection.project_gdf(parks_polys)
-            except Exception:
-                parks_polys = parks_polys.to_crs(target_crs)
+            # BUG 1 fix: project to target_crs, not project_gdf's auto-UTM.
+            parks_polys = parks_polys.to_crs(target_crs)
             parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
 
     # ââ 7b. Rail layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -1454,10 +1453,8 @@ def render(params: dict) -> bytes:
     if rail is not None and not rail.empty:
         rail_lines = rail[rail.geometry.type.isin(['LineString', 'MultiLineString'])]
         if not rail_lines.empty:
-            try:
-                rail_lines = ox.projection.project_gdf(rail_lines)
-            except Exception:
-                rail_lines = rail_lines.to_crs(target_crs)
+            # BUG 1 fix: project to target_crs, not project_gdf's auto-UTM.
+            rail_lines = rail_lines.to_crs(target_crs)
             rail_color = theme.get('rail', theme.get('road_default', theme['text']))
             rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
 
@@ -1585,6 +1582,21 @@ def render(params: dict) -> bytes:
         scale = min(height_in, width_in) / 12.0
         fonts = load_fonts()
 
+        # BUG 3 fix — per-letter halo matching the editor's drawPosterText.
+        # Editor: ctx.shadowColor = land colour @ 0.90 alpha, shadowBlur =
+        # max(4, 7*ds) — a soft Gaussian glow in the LAND/background colour
+        # (NOT white), applied to city+country+coords, reset before credit.
+        # matplotlib has no shadowBlur; stack 3 strokes (widest+faintest →
+        # narrowest+strongest) in theme['bg'] to approximate the falloff.
+        _halo_rgb = theme.get('bg', '#FFFFFF')   # = editor's _ph(land)
+
+        def _glow(scale_factor: float):
+            return [
+                pe.withStroke(linewidth=7.0 * scale_factor, foreground=_halo_rgb, alpha=0.30),
+                pe.withStroke(linewidth=4.0 * scale_factor, foreground=_halo_rgb, alpha=0.55),
+                pe.withStroke(linewidth=2.0 * scale_factor, foreground=_halo_rgb, alpha=0.90),
+            ]
+
         # City label â single-space join for letter-spacing parity with the
         # studio editor. Original maptoposter aesthetic used '  '.join (two
         # spaces) which roughly doubles the rendered width; the editor moved
@@ -1625,26 +1637,29 @@ def render(params: dict) -> bytes:
 
         ax.text(0.5, 0.14, spaced_city,
                 transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('bold', adjusted_size), zorder=11)
+                ha='center', fontproperties=fp('bold', adjusted_size), zorder=11,
+                path_effects=_glow(scale))
 
         ax.text(0.5, 0.10, display_country.upper(),
                 transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('light', 22 * scale), zorder=11)
+                ha='center', fontproperties=fp('light', 22 * scale), zorder=11,
+                path_effects=_glow(scale * 0.7))
 
         lat_v, lon_v = point
         hem_ns = 'N' if lat_v >= 0 else 'S'
         hem_ew = 'E' if lon_v >= 0 else 'W'
-        coords_str = f'{abs(lat_v):.4f}Â° {hem_ns} / {abs(lon_v):.4f}Â° {hem_ew}'
+        coords_str = f'{abs(lat_v):.4f}\u00b0 {hem_ns} / {abs(lon_v):.4f}\u00b0 {hem_ew}'
 
         ax.text(0.5, 0.07, coords_str,
                 transform=ax.transAxes, color=theme['text'], alpha=0.7,
-                ha='center', fontproperties=fp('regular', 14 * scale), zorder=11)
+                ha='center', fontproperties=fp('regular', 14 * scale), zorder=11,
+                path_effects=_glow(scale * 0.55))
 
         ax.plot([0.4, 0.6], [0.125, 0.125],
                 transform=ax.transAxes,
                 color=theme['text'], linewidth=1 * scale, zorder=11)
 
-        ax.text(0.98, 0.02, 'Â© OpenStreetMap contributors',
+        ax.text(0.98, 0.02, '\u00a9 OpenStreetMap contributors',
                 transform=ax.transAxes, color=theme['text'], alpha=0.5,
                 ha='right', va='bottom', fontproperties=fp('light', 8), zorder=11)
 
