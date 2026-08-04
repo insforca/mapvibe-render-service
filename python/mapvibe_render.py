@@ -1386,6 +1386,12 @@ def render(params: dict) -> bytes:
     fig, ax = plt.subplots(figsize=(width_in, height_in), facecolor=theme['bg'])
     ax.set_facecolor(theme['bg'])
     ax.set_position((0.0, 0.0, 1.0, 1.0))
+    # Poster output must never show matplotlib axes chrome. Without this,
+    # axis ticks, tick labels and the scientific-notation offset text (e.g.
+    # "1e6" from projected metre coordinates) are drawn onto the print file
+    # (observed on order #1086 fulfillment renders, 2026-08-04). Artists
+    # added via ax.text/ax.plot (title, coords, credits) still render.
+    ax.set_axis_off()
     if full_bleed:
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
 
