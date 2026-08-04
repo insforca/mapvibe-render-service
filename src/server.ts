@@ -282,6 +282,61 @@ function patchStyleForHalo(style: Record<string, unknown>, bgHex?: string): Reco
   return style;
 }
 
+// ── Print line-width fidelity ───────────────────────────────────────────────
+// The editor renders in the browser at devicePixelRatio ≈ 3, while the native
+// renderer draws at ratio=1 with a bounds-derived zoom, so identical styleJson
+// line widths come out ~2.5x thinner (proportionally) on a print canvas than
+// on the preview the customer approved. Scaling every line-width by this
+// factor restores parity. Validated on order #1086 (2026-08-04): road pixel
+// coverage 0.340% with factor 2.5 vs 0.364% in the approved preview
+// (vs 0.052% with the legacy Option C 3.5px clamp).
+const PRINT_LINE_WIDTH_FACTOR = Number(process.env.PRINT_LINE_WIDTH_FACTOR ?? '2.5');
+
+function scaleWidthValue(v: unknown, f: number): unknown {
+  if (typeof v === 'number') return Math.round(v * f * 1000) / 1000;
+  if (Array.isArray(v) && v.length > 0) {
+    const op = v[0];
+    if (op === 'interpolate') {
+      // ["interpolate", interp, input, in1, out1, in2, out2, ...]
+      const out = [...v];
+      for (let i = 4; i < out.length; i += 2) out[i] = scaleWidthValue(out[i], f);
+      return out;
+    }
+    if (op === 'step') {
+      // ["step", input, default_out, in1, out1, ...]
+      const out = [...v];
+      out[2] = scaleWidthValue(out[2], f);
+      for (let i = 4; i < out.length; i += 2) out[i] = scaleWidthValue(out[i], f);
+      return out;
+    }
+    // Other numeric-producing expression. Top-level ["zoom"] interpolations are
+    // handled above, so wrapping in "*" here is expression-spec safe.
+    return ['*', f, v];
+  }
+  if (v && typeof v === 'object' && Array.isArray((v as Record<string, unknown>).stops)) {
+    const stops = ((v as Record<string, unknown>).stops as Array<[number, unknown]>)
+      .map(([z, w]) => [z, scaleWidthValue(w, f)] as [number, unknown]);
+    return { ...(v as Record<string, unknown>), stops };
+  }
+  return v;
+}
+
+function scaleStyleLineWidths(style: Record<string, unknown>, factor: number): Record<string, unknown> {
+  if (!isFinite(factor) || factor === 1) return style;
+  const layers = style.layers as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(layers)) return style;
+  let scaled = 0;
+  for (const layer of layers) {
+    if (String(layer.type ?? '') !== 'line') continue;
+    const paint = layer.paint as Record<string, unknown> | undefined;
+    if (!paint || paint['line-width'] === undefined) continue;
+    paint['line-width'] = scaleWidthValue(paint['line-width'], factor);
+    scaled++;
+  }
+  console.log(`[printWidth] line-width scaled x${factor} on ${scaled} line layers`);
+  return style;
+}
+
 function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
   const layers = style.layers as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(layers)) return style;
@@ -518,7 +573,7 @@ function textMetrics(w: any, h: any, layout: any, cfs?: any, ctFS?: any, coFS?: 
   var cx=w*.5,cY=h*.885;return{cX:cx,cY,dX:cx,dY:h*.900,coX:cx,coY:h*.915,crX:cx,crY:h*.934,al:'center',dW:w*.2};
 }
 function drawSpaced(ctx: any, text: any, x: any, y: any, sp: any, fs: any, al: any){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
-function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Playfair Display",serif':'"Playfair Display",serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds,m=textMetrics(W,H,layout||'centered',cfs,ctFS,coFS);ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;var _cW=ctx.measureText(cl).width+_CS*cfs*(cl.length>1?cl.length-1:0);if(m.al==='center')m.dW=Math.min(_cW,W*.20);m.cY=m.dY-cfs*.50;var _hr=_ph(land).r,_hg=_ph(land).g,_hb=_ph(land).b;ctx.shadowColor='rgba('+_hr+','+_hg+','+_hb+',.90)';ctx.shadowBlur=Math.max(4,Math.round(7*ds));drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;if(m.al==='center'){var fc=fmtCoords(lat,lon);var cW=ctx.measureText(fc).width+_COS*coFS*(fc.length>1?fc.length-1:0);var gL=24*ds,gG=9*ds;ctx.strokeStyle=tc;ctx.globalAlpha=.55;ctx.lineWidth=Math.max(1,1.5*ds);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(m.crX-cW/2-gG-gL,m.crY);ctx.lineTo(m.crX-cW/2-gG,m.crY);ctx.moveTo(m.crX+cW/2+gG,m.crY);ctx.lineTo(m.crX+cW/2+gG+gL,m.crY);ctx.stroke();ctx.globalAlpha=1;}}ctx.shadowBlur=0;ctx.shadowColor='transparent';ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
+function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Playfair Display",serif':'"Playfair Display",serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds,m=textMetrics(W,H,layout||'centered',cfs,ctFS,coFS);ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;/* Divider between city name and country/coords is CONSTANT width — independent of the city-name text width, so long names cannot stretch it (previously min(cityWidth, 20%): short names shrank it, long names pushed it to the cap). Centered: fixed 20% of canvas width, matching the Python renderer's fixed [0.4,0.6] rule. Editorial: 120px at design scale, resolution-scaled so it holds proportion on print canvases. */if(m.al==='center'){m.dW=W*.20;}else{m.dW=120*ds;}m.cY=m.dY-cfs*.50;var _hr=_ph(land).r,_hg=_ph(land).g,_hb=_ph(land).b;ctx.shadowColor='rgba('+_hr+','+_hg+','+_hb+',.90)';ctx.shadowBlur=Math.max(4,Math.round(7*ds));drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;if(m.al==='center'){var fc=fmtCoords(lat,lon);var cW=ctx.measureText(fc).width+_COS*coFS*(fc.length>1?fc.length-1:0);var gL=24*ds,gG=9*ds;ctx.strokeStyle=tc;ctx.globalAlpha=.55;ctx.lineWidth=Math.max(1,1.5*ds);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(m.crX-cW/2-gG-gL,m.crY);ctx.lineTo(m.crX-cW/2-gG,m.crY);ctx.moveTo(m.crX+cW/2+gG,m.crY);ctx.lineTo(m.crX+cW/2+gG+gL,m.crY);ctx.stroke();ctx.globalAlpha=1;}}ctx.shadowBlur=0;ctx.shadowColor='transparent';ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
 
 // ── OverlayParams type ───────────────────────────────────────────────────────
 interface OverlayParams {
@@ -1082,8 +1137,17 @@ async function renderConfigToBlobUrl(
     styleJson = cfg.styleJson as Record<string, unknown>;
   }
 
-  // ── Option C print render: enforce 3.5 px roads + parks visible ──────────
-  styleJson = patchStyleForOptionC(styleJson);
+  // ── Print styling ─────────────────────────────────────────────────────────
+  // Option C's constant 3.5px road clamp renders hairline-thin on print
+  // canvases (native ratio=1 + bounds-derived zoom): measured 0.052% road
+  // pixel coverage on order #1086 vs 0.364% in the customer-approved preview.
+  // Default: preserve the customer's own styleJson width curves and scale
+  // them for print parity. Set OPTION_C_STYLE=1 to restore the legacy clamp.
+  if (process.env.OPTION_C_STYLE === '1') {
+    styleJson = patchStyleForOptionC(styleJson);
+  } else {
+    styleJson = scaleStyleLineWidths(styleJson, PRINT_LINE_WIDTH_FACTOR);
+  }
   // ── Text-halo legibility: halos are applied at the canvas (poster-text) level
   // only, NOT to MapLibre tile symbol layers. Tile halos create road-corridor
   // glow that adds visual noise in dense cities. Canvas halos in drawPosterText()
@@ -1100,9 +1164,16 @@ async function renderConfigToBlobUrl(
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
   // 5. Render via OSM Python pipeline or native MapLibre pipeline
-  //    OSM path: activated by cfg.engine === 'osm' OR RENDER_ENGINE env var
-  //    Inherits the same 400 DPI / tiled / AR-preserving dimension logic above.
-  const useOsm = cfg.engine === 'osm' || RENDER_ENGINE === 'osm';
+  //    OSM path: activated by cfg.engine === 'osm', or by RENDER_ENGINE=osm
+  //    for legacy configs that carry no styleJson (flat-palette era).
+  //    FIX (order #1086, 2026-08-04): configs authored in the MapLibre editor
+  //    carry a full styleJson. Routing them through the OSM/Python engine
+  //    loses the design: theme_json is only built from flat palette fields
+  //    (absent in editor configs → load_theme fallback → wrong colors), the
+  //    crop comes from dist-around-center instead of the designed bounds,
+  //    and matplotlib axes chrome leaked onto the print file. styleJson
+  //    configs must render on the native MapLibre pipeline.
+  const useOsm = cfg.engine === 'osm' || (RENDER_ENGINE === 'osm' && !cfg.styleJson);
   let pngBuffer: Buffer;
 
   if (useOsm) {
