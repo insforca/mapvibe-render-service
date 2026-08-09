@@ -106,23 +106,23 @@ describe('resolveGelatoRouting — cache', () => {
   });
 });
 
-describe('isStrictRoutingLookup — env-gated', () => {
+describe('isStrictRoutingLookup — strict by default', () => {
   it('returns true when STRICT_ROUTING_LOOKUP=true', () => {
     vi.stubEnv('STRICT_ROUTING_LOOKUP', 'true');
     expect(isStrictRoutingLookup()).toBe(true);
   });
 
-  it('returns false when unset (default-safe)', () => {
+  it('returns true when unset (strict is the default — silent Printful fallback routes non-canvas items to the wrong vendor)', () => {
     vi.stubEnv('STRICT_ROUTING_LOOKUP', '');
-    expect(isStrictRoutingLookup()).toBe(false);
+    expect(isStrictRoutingLookup()).toBe(true);
   });
 
-  it('returns false for any value other than literal "true"', () => {
-    vi.stubEnv('STRICT_ROUTING_LOOKUP', 'TRUE');
+  it('returns false ONLY for the literal opt-out value "false"', () => {
+    vi.stubEnv('STRICT_ROUTING_LOOKUP', 'false');
     expect(isStrictRoutingLookup()).toBe(false);
-    vi.stubEnv('STRICT_ROUTING_LOOKUP', '1');
-    expect(isStrictRoutingLookup()).toBe(false);
-    vi.stubEnv('STRICT_ROUTING_LOOKUP', 'yes');
-    expect(isStrictRoutingLookup()).toBe(false);
+    vi.stubEnv('STRICT_ROUTING_LOOKUP', 'FALSE');
+    expect(isStrictRoutingLookup()).toBe(true);
+    vi.stubEnv('STRICT_ROUTING_LOOKUP', '0');
+    expect(isStrictRoutingLookup()).toBe(true);
   });
 });

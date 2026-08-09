@@ -10,9 +10,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ── Resend SDK mock ───────────────────────────────────────────────────────────
 const mockEmailsSend = vi.fn().mockResolvedValue({ data: { id: 're_mock' }, error: null });
 vi.mock('resend', () => ({
-  Resend: vi.fn().mockImplementation(() => ({
-    emails: { send: mockEmailsSend },
-  })),
+  // Must be constructable (`new Resend(key)`) — an arrow-function mock throws
+  // "is not a constructor". A plain function returning the stub works with `new`.
+  Resend: vi.fn().mockImplementation(function (this: unknown) {
+    return { emails: { send: mockEmailsSend } };
+  }),
 }));
 
 import { notifyFulfillFail } from '../alerting.js';
@@ -111,4 +113,4 @@ describe('notifyFulfillFail', () => {
     expect(parsed.detail.length).toBe(400);
     spy.mockRestore();
   });
-})';
+});
