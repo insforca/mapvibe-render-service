@@ -29,7 +29,9 @@ export type FulfillFailReason =
   | 'gelato-api'
   | 'gelato-uncaught'
   | 'printful-api'
-  | 'printful-uncaught';
+  | 'printful-uncaught'
+  | 'routing-lookup-error'   // Shopify metafield lookup failed and strict mode rejected the order
+  | 'routing-unresolved';    // variant has no pod_partner metafield and is not a white-canvas item
 
 // ── Resend client — module-level singleton ────────────────────────────────────
 const RESEND_API_KEY   = process.env.RESEND_API_KEY    ?? '';

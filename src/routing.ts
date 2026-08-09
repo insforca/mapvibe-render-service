@@ -32,9 +32,16 @@ export function _clearRoutingCacheForTests(): void {
   routingCache.clear();
 }
 
-/** Read at call time (not import time) so tests can stub via vi.stubEnv. */
+/** Read at call time (not import time) so tests can stub via vi.stubEnv.
+ *
+ * STRICT by default: a failed routing lookup rejects the /fulfill call (422)
+ * instead of silently defaulting to Printful. Vendor rule (2026-05-29):
+ * Gelato is the default POD partner; Printful serves ONLY white canvas frames.
+ * A silent Printful fallback therefore routes most products to the WRONG
+ * vendor. Set STRICT_ROUTING_LOOKUP=false to restore the legacy fallback.
+ */
 export function isStrictRoutingLookup(): boolean {
-  return process.env.STRICT_ROUTING_LOOKUP === 'true';
+  return process.env.STRICT_ROUTING_LOOKUP !== 'false';
 }
 
 export async function resolveGelatoRouting(shopifyVariantId: number): Promise<RoutingResult> {
@@ -44,7 +51,13 @@ export async function resolveGelatoRouting(shopifyVariantId: number): Promise<Ro
   }
 
   const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN ?? '';
-  const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'mapvibe-studio.myshopify.com';
+  // Real shop domain is h311iq-ax.myshopify.com — a wrong default here makes
+  // EVERY metafield lookup fail, which under the legacy silent fallback routed
+  // every order to Printful regardless of tagging.
+  if (!process.env.SHOPIFY_SHOP) {
+    console.warn('[fulfill/routing] SHOPIFY_SHOP not set — using default h311iq-ax.myshopify.com');
+  }
+  const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'h311iq-ax.myshopify.com';
 
   if (!SHOPIFY_ADMIN_TOKEN) {
     console.error('[fulfill/routing] SHOPIFY_ADMIN_TOKEN not set — cannot auto-route');
