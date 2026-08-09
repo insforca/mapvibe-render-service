@@ -149,7 +149,7 @@ const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
 // SHOPIFY_ADMIN_TOKEN: Admin API token (Settings → Apps → develop apps → access token).
 // SHOPIFY_SHOP: myshopify domain, e.g. mapvibe-studio.myshopify.com
 const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN ?? '';
-const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'mapvibe-studio.myshopify.com';
+const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'h311iq-ax.myshopify.com';
 
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
@@ -1774,33 +1774,51 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   // call costs ~50ms on cache miss, ~0ms on hit.
   //
   // 'lookup-error' handling depends on STRICT_ROUTING_LOOKUP:
-  //   - default (off)  : log at ERROR level, fall through to legacy silent
-  //                      Printful default. Caller behaviour unchanged.
-  //   - "true" (on)    : return 422 so the caller can retry or specify
-  //                      provider explicitly. ONLY flip on once n8n + the
-  //                      editor's shopify-order-webhook handle 422.
+  //   - default (STRICT): return 422 + [FULFILL-FAIL] alert so the caller
+  //                       retries or passes provider explicitly. The
+  //                       shopify-order-webhook treats a non-202 as a failed
+  //                       line item and returns 503 so Shopify redelivers.
+  //   - "false" (opt-out): log at ERROR level, fall through to the legacy
+  //                       silent Printful default.
   //
-  // 'no-metafield' is always treated as a legitimate Printful default (the
-  // metafield genuinely isn't set for legacy variants); 'ok' uses the
-  // resolved provider directly.
+  // 'no-metafield' is a legitimate Printful default ONLY for white-canvas
+  // items (vendor rule 2026-05-29: Printful = white canvas only, Gelato =
+  // everything else). Untagged non-canvas variants are rejected loudly with
+  // a [FULFILL-FAIL] alert; 'ok' uses the resolved provider directly.
   const callerProvidedProvider = !!(req.body as FulfillBody).provider;
   const preflightVariantId = (req.body as FulfillBody).shopifyVariantId;
   let preflightRouting: RoutingResult | null = null;
   if (!callerProvidedProvider && preflightVariantId) {
     preflightRouting = await resolveGelatoRouting(preflightVariantId);
     if (preflightRouting.status === 'lookup-error' && isStrictRoutingLookup()) {
-      console.error(`[fulfill] STRICT_ROUTING_LOOKUP=true and lookup failed for variant ${preflightVariantId} — rejecting`);
+      console.error(`[fulfill] strict routing on and lookup failed for variant ${preflightVariantId} — rejecting`);
+      notifyFulfillFail(externalId, 'routing-lookup-error',
+        `Shopify metafield lookup failed for variant ${preflightVariantId}; order rejected (422), caller will retry`);
       res.status(422).json({
         error: 'POD vendor routing unavailable for this variant',
         hint:  'retry once Shopify is reachable, or pass provider explicitly (printful|gelato)',
       });
       return;
     }
-    // STRICT_ROUTING_LOOKUP off + lookup-error → fall through; the loud
-    // ERROR log inside resolveGelatoRouting is the only signal you get
-    // until strict mode is enabled. preflightRouting remains a lookup-error
-    // result, which the async block below treats as "no routing info" and
-    // proceeds with the legacy Printful default.
+    // STRICT_ROUTING_LOOKUP=false + lookup-error → fall through to the legacy
+    // silent Printful default (opt-in escape hatch only).
+
+    // Vendor rule (2026-05-29): Gelato is the default POD partner; Printful
+    // serves ONLY white canvas frames. A variant with NO pod_partner metafield
+    // is only legitimately Printful when it is a white-canvas item — for
+    // anything else the tagging is broken AND we have no gelato_uid to fulfill
+    // with, so silently defaulting to Printful ships from the wrong vendor.
+    // Reject loudly instead.
+    if (preflightRouting.status === 'no-metafield' && !/canvas/i.test(label)) {
+      console.error(`[fulfill] variant ${preflightVariantId} ("${label}") has no pod_partner metafield and is not white canvas — rejecting`);
+      notifyFulfillFail(externalId, 'routing-unresolved',
+        `Variant ${preflightVariantId} ("${label}") has no custom.pod_partner metafield; non-canvas items must be tagged gelato with a gelato_uid`);
+      res.status(422).json({
+        error: 'POD vendor routing unresolved: variant is missing the custom.pod_partner metafield',
+        hint:  'tag the Shopify variant (pod_partner + gelato_uid), or pass provider explicitly (printful|gelato)',
+      });
+      return;
+    }
   }
 
   res.status(202).json({ success: true, accepted: true, externalId });
