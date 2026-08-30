@@ -21,7 +21,14 @@ Params (JSON via stdin):
   display_country str    country label on poster
   theme_name      str    maptoposter theme name (default: midnight_blue)
   theme_json      dict   inline theme override (takes priority over theme_name)
-  dist            int    map radius in metres (default: 15000)
+  dist            int    map radius in metres (default: 15000) — FETCH radius
+                         only; it does not decide framing when bounds is sent
+  bounds          dict   {west, south, east, north} WGS-84 degrees. The
+                         rectangle the studio composed the poster against.
+                         When present it is the sole source of the plot extent
+                         (expanded on one axis to the poster aspect, never
+                         cropped). When absent, the legacy centre±comp_dist
+                         framing runs unchanged.
   width_in        float  poster width in inches  (default: 12.0)
   height_in       float  poster height in inches (default: 16.0)
   dpi             int    output DPI (default: 400)
@@ -1003,6 +1010,256 @@ def _log(msg: str):
 
 # ââ Main render function ââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Geographic bounds → framing extent
+# ─────────────────────────────────────────────────────────────────────────────
+# The studio composes every poster against an explicit WGS-84 bounds rectangle
+# (useStoreConfig.ts:44 — its header notes "v2 added geographic bounds"). Until
+# this block landed the renderer ignored that rectangle and rebuilt the extent
+# from centre ± comp_dist, where
+#       comp_dist = dist * (max(W_in, H_in) / min(W_in, H_in)) / 4
+# The ÷4 dominates the aspect inflation, so the printed extent came out
+# 26-72 % *narrower* than what the customer framed: they composed a city and
+# received roughly its middle quarter. Worse, comp_dist is square while posters
+# are not, so `set_aspect('equal', adjustable='box')` shrank the axes box to a
+# square inside the figure — measurably 20 % dead paper on a 16×20 and 33 % on
+# a 20×30, invisible only because set_axis_off() lets those bands render in
+# theme['bg'], the same colour as the map ground.
+#
+# Driving the extent from `bounds` fixes framing and dead paper together, and
+# returns `dist` to what its name promises: a data-fetch radius, nothing more.
+
+_BOUNDS_KEYS = ('west', 'south', 'east', 'north')
+
+# The CRS the PMTiles branch draws in. g_proj is None on that branch, so §5
+# resolves target_crs to Web Mercator. It is named here because the *fetch* block
+# must know the draw CRS to guarantee coverage of the drawn extent, and that
+# block runs several hundred lines before target_crs is assigned. A duplicated
+# literal in the two places would be exactly the kind of invisible coupling that
+# drifts apart later.
+_PMTILES_DRAW_CRS = 'EPSG:3857'
+
+
+def _normalize_bounds(raw):
+    """
+    Normalise an incoming bounds payload to a (west, south, east, north) tuple
+    of WGS-84 degrees, or None when no usable rectangle is present.
+
+    The studio sends the flat-dict form, and is the only producer today:
+        {"west": -77.06, "south": 38.87, "east": -76.96, "north": 38.95}
+
+    Two further shapes are accepted purely as drift insurance — they cost a few
+    lines and remove a whole class of future silent-misframe bug:
+        (west, south, east, north)              # matches the bbox tuple
+                                                # ordering already used at the
+                                                # PMTiles fetch and extent call
+        {"sw": {"lat":…, "lng":…},
+         "ne": {"lat":…, "lng":…}}              # MapLibre getBounds() shape
+
+    Returning None is a *supported* outcome, not an error: v1 order snapshots
+    predate the bounds field entirely, so any /fulfill replay of an old order
+    legitimately arrives without it and must keep rendering exactly as it did
+    before. Callers fall back to the comp_dist path in that case.
+
+    Deliberately NOT done here: synthesising bounds from centre + dist/zoom.
+    That would rebuild the very dist→framing coupling this function exists to
+    remove, and it would do so invisibly. No bounds means no bounds.
+    """
+    if raw is None:
+        return None
+
+    vals = None
+    if isinstance(raw, dict):
+        if all(k in raw for k in _BOUNDS_KEYS):
+            vals = [raw[k] for k in _BOUNDS_KEYS]
+        else:
+            sw = raw.get('sw') or raw.get('_sw')
+            ne = raw.get('ne') or raw.get('_ne')
+            if isinstance(sw, dict) and isinstance(ne, dict):
+                try:
+                    vals = [sw['lng'], sw['lat'], ne['lng'], ne['lat']]
+                except KeyError:
+                    _log('bounds: sw/ne form missing lat/lng — ignoring')
+                    return None
+    elif isinstance(raw, (list, tuple)) and len(raw) == 4:
+        vals = list(raw)
+
+    if vals is None:
+        _log(f'bounds: unrecognised shape {type(raw).__name__} — ignoring, '
+             f'falling back to comp_dist framing')
+        return None
+
+    try:
+        west, south, east, north = (float(v) for v in vals)
+    except (TypeError, ValueError):
+        _log('bounds: non-numeric values — ignoring')
+        return None
+
+    if not all(math.isfinite(v) for v in (west, south, east, north)):
+        _log('bounds: non-finite values — ignoring')
+        return None
+
+    # Wrap longitudes into [-180, 180) BEFORE any range validation.
+    #
+    # MapLibre's getBounds() returns *unwrapped* longitudes once the user has
+    # panned across the dateline — lng=-190 and lng=+170 denote the same
+    # meridian — and the studio permits world-scale views (MIN_MAP_ZOOM=0.5),
+    # so out-of-range values arrive in normal use, not only from a malformed
+    # caller. They must never reach pyproj: it wraps them silently, so -190 and
+    # +170 both project to the same easting (≈ -5,152,741 in UTM 18N, far
+    # outside the valid 166k-834k range) and the result is *finite* — the
+    # isfinite guard above cannot catch it. The extent that came out of that was
+    # plausible-looking and completely wrong, with no log line to show for it.
+    #
+    # Wrapping first turns that silent misframe into one of two honest
+    # outcomes: a correct rectangle, or the documented comp_dist fallback via
+    # the antimeridian check below. Note the deliberate conservative edge: a
+    # rectangle whose eastern edge sits exactly on +180 wraps to -180 and is
+    # then read as a dateline crossing, so it falls back rather than framing.
+    # A fallback is a safe outcome; a silent misframe is not.
+    def _wrap_lng(v: float) -> float:
+        return ((v + 180.0) % 360.0) - 180.0
+
+    _pre_wrap = (west, east)
+    west, east = _wrap_lng(west), _wrap_lng(east)
+    if (west, east) != _pre_wrap:
+        _log(f'bounds: longitudes wrapped into [-180,180) — '
+             f'{_pre_wrap} → ({west}, {east})')
+
+    # Tolerate a S/N or W/E pair handed over inverted rather than misframing on
+    # it. An antimeridian-crossing rectangle (west > east genuinely) is NOT
+    # supported and is rejected instead of being silently widened to ~360°.
+    if south > north:
+        south, north = north, south
+    if west > east:
+        if (east - west) % 360 < 180:
+            _log('bounds: appears to cross the antimeridian — unsupported, '
+                 'ignoring')
+            return None
+        west, east = east, west
+
+    if not (-90.0 <= south < north <= 90.0):
+        _log(f'bounds: latitudes out of range ({south}, {north}) — ignoring')
+        return None
+    if (east - west) <= 0 or (east - west) > 360.0:
+        _log(f'bounds: degenerate longitude span ({west}, {east}) — ignoring')
+        return None
+
+    return (west, south, east, north)
+
+
+def _bounds_extent(bounds: tuple, target_crs, width_in: float, height_in: float):
+    """
+    Project the WGS-84 `bounds` rectangle into `target_crs` and return
+    (x0, x1, y0, y1) axis limits whose aspect equals the poster aspect exactly.
+
+    Two properties this function guarantees, both load-bearing:
+
+    1. EXPAND ONLY, NEVER CROP. When the projected rectangle's aspect differs
+       from the poster's, the *deficient* axis is grown symmetrically about the
+       rectangle's centre until the aspects match. The opposite fix — trimming
+       the surplus axis — would re-introduce the content loss this patch exists
+       to remove, just in smaller measure. Everything the customer framed stays
+       on the paper; they may receive a sliver more, never less.
+
+    2. `set_aspect('equal', adjustable='box')` STAYS. It is not the bug — it is
+       the detector. Once the extent aspect matches the figure aspect the axes
+       box already fills the figure and the letterbox bands vanish on their own.
+       Any residual band is then a true signal that extent and poster disagree,
+       which is exactly the assertion the framing harness wants.
+
+    A reprojected lat/lng rectangle is a curved quadrilateral, not a rectangle,
+    so taking min/max over the four corners alone understates the extent by the
+    mid-edge bulge. Each edge is densified before the bounding box is taken.
+    """
+    from pyproj import Transformer
+    west, south, east, north = bounds
+    tr = Transformer.from_crs('EPSG:4326', target_crs, always_xy=True)
+
+    _EDGE_SAMPLES = 32
+    xs: list = []
+    ys: list = []
+    for i in range(_EDGE_SAMPLES + 1):
+        t = i / _EDGE_SAMPLES
+        lng = west + (east - west) * t
+        lat = south + (north - south) * t
+        for _lng, _lat in ((lng, south), (lng, north), (west, lat), (east, lat)):
+            _x, _y = tr.transform(_lng, _lat)
+            if math.isfinite(_x) and math.isfinite(_y):
+                xs.append(_x)
+                ys.append(_y)
+
+    if not xs or not ys:
+        raise ValueError(f'bounds {bounds} did not project into {target_crs}')
+
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    span_x = x1 - x0
+    span_y = y1 - y0
+    if span_x <= 0 or span_y <= 0:
+        raise ValueError(f'bounds {bounds} projected to a degenerate extent')
+
+    # Poster aspect in the same x/y sense as the data extent.
+    target_ratio = float(width_in) / float(height_in)
+    if span_x / span_y < target_ratio:
+        # Extent is too tall for the paper → widen x.
+        want_x = span_y * target_ratio
+        pad = (want_x - span_x) / 2.0
+        x0 -= pad
+        x1 += pad
+    else:
+        # Extent is too wide for the paper → heighten y.
+        want_y = span_x / target_ratio
+        pad = (want_y - span_y) / 2.0
+        y0 -= pad
+        y1 += pad
+
+    return x0, x1, y0, y1
+
+
+def _extent_to_lnglat_bbox(x0: float, x1: float, y0: float, y1: float,
+                           source_crs) -> tuple:
+    """
+    Inverse of _bounds_extent's projection step: take a projected extent and
+    return the (west, south, east, north) WGS-84 rectangle enclosing it.
+
+    This exists to make data-fetch coverage correct BY CONSTRUCTION. The extent
+    that actually gets drawn is the aspect-EXPANDED rectangle, which is strictly
+    larger than the input bounds on one axis — by exactly the aspect mismatch
+    between the framed rectangle and the poster. A fetch window derived from the
+    raw input bounds therefore leaves that expanded margin with no data, and the
+    failure mode is silent: missing features at the poster edge, not an error.
+
+    Deriving the fetch window from the expanded extent instead removes the
+    dependency on any caller-side invariant about how small the mismatch is.
+
+    Edges are densified for the same reason _bounds_extent densifies them: the
+    inverse image of a projected rectangle is a curved quadrilateral, so the four
+    corners alone understate it by the mid-edge bulge.
+    """
+    from pyproj import Transformer
+    inv = Transformer.from_crs(source_crs, 'EPSG:4326', always_xy=True)
+
+    _EDGE_SAMPLES = 32
+    lngs: list = []
+    lats: list = []
+    for i in range(_EDGE_SAMPLES + 1):
+        t = i / _EDGE_SAMPLES
+        x = x0 + (x1 - x0) * t
+        y = y0 + (y1 - y0) * t
+        for _x, _y in ((x, y0), (x, y1), (x0, y), (x1, y)):
+            _lng, _lat = inv.transform(_x, _y)
+            if math.isfinite(_lng) and math.isfinite(_lat):
+                lngs.append(_lng)
+                lats.append(_lat)
+
+    if not lngs or not lats:
+        raise ValueError(f'extent ({x0}, {x1}, {y0}, {y1}) did not '
+                         f'inverse-project from {source_crs}')
+
+    return (min(lngs), min(lats), max(lngs), max(lats))
+
+
 def render(params: dict) -> bytes:
     city            = params.get('city', '')
     country         = params.get('country', '')
@@ -1038,6 +1295,13 @@ def render(params: dict) -> bytes:
     # appears as a tiny cluster in a sea of background colour because
     # comp_dist = dist*(max/min)/4 is always 3-4Ã smaller than dist.
     crop_dist_param = params.get('crop_dist')
+    # bounds — the WGS-84 rectangle the studio composed the poster against,
+    # {west, south, east, north} in degrees. When present it is the SOLE source
+    # of the plot extent and both crop_dist and comp_dist stop affecting
+    # framing. When absent (v1 order snapshots, or any caller that has not been
+    # updated yet) the legacy comp_dist path below runs unchanged — this patch
+    # is deliberately inert until a caller actually sends the field.
+    bounds = _normalize_bounds(params.get('bounds'))
 
     # ââ 1. Resolve coordinates âââââââââââââââââââââââââââââââââââââââââââââââ
     point = None
@@ -1112,6 +1376,40 @@ def render(params: dict) -> bytes:
         bbox = (point[1] - dlng, point[0] - dlat,
                 point[1] + dlng, point[0] + dlat)
 
+        # When bounds drives the framing, the fetch window must cover at least
+        # the framed rectangle or the poster would render with data missing at
+        # its edges. Union (never replace) the dist-derived box with the framed
+        # box plus a small margin: a union can only ever grow coverage, so this
+        # cannot regress an existing render. This is also the point where the
+        # 15 km clamp stops touching framing and becomes fetch-only — it now
+        # bounds how much data we pull, not how much paper the map fills.
+        if bounds is not None:
+            # Cover the extent that will actually be DRAWN, not the raw input
+            # rectangle. _bounds_extent expands the deficient axis to the poster
+            # aspect, so the drawn extent exceeds `bounds` on one axis by exactly
+            # the aspect mismatch. Unioning with raw bounds + a fixed 5% margin
+            # only looked sufficient because the studio currently pins that
+            # mismatch near 0.1%: at a 1.0 framing aspect on a 20×30 the
+            # expansion is ~+54%, which a 5% margin misses by an order of
+            # magnitude — and it misses silently, as missing data at the poster
+            # edge rather than an error. Worse, the invariant protecting it lives
+            # in a different repository. Deriving the window from the expanded
+            # extent makes coverage correct by construction for any aspect the
+            # caller sends.
+            _ex0, _ex1, _ey0, _ey1 = _bounds_extent(bounds, _PMTILES_DRAW_CRS,
+                                                    width_in, height_in)
+            _dw, _ds, _de, _dn = _extent_to_lnglat_bbox(
+                _ex0, _ex1, _ey0, _ey1, _PMTILES_DRAW_CRS)
+            # Margin on top of the drawn rectangle: absorbs tile-edge rounding
+            # and any small difference between the draw CRS assumed here and the
+            # one §5 settles on.
+            _mlat = (_dn - _ds) * 0.05
+            _mlng = (_de - _dw) * 0.05
+            bbox = (min(bbox[0], _dw - _mlng), min(bbox[1], _ds - _mlat),
+                    max(bbox[2], _de + _mlng), max(bbox[3], _dn + _mlat))
+            _log(f'bounds framing active — fetch bbox unioned with drawn extent '
+                 f'({_dw:.5f}, {_ds:.5f}, {_de:.5f}, {_dn:.5f}) → {bbox}')
+
         reader = get_reader()
         t_fetch = time.time()
         # planet.pmtiles uses the Protomaps basemaps schema: streets live in the
@@ -1149,7 +1447,35 @@ def render(params: dict) -> bytes:
         # Skip the rest of the OSMnx-path fetch logic + jump to figure setup.
         # (See `if use_pmtiles` block before the ox.plot_graph call.)
 
-    qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], comp_dist)
+    # Fetch radius for the legacy OSMnx path. comp_dist alone carries the same
+    # coverage gap the PMTiles fetch block just closed: when bounds drives the
+    # framing, the drawn extent can exceed the comp_dist circle and OSMnx returns
+    # a graph that stops short of the poster edge — silently, as missing roads
+    # rather than an error. Take the larger of comp_dist and the half-diagonal of
+    # the drawn extent so the fetch always covers what gets drawn.
+    #
+    # The extent is measured in Web Mercator, whose metres are inflated by
+    # 1/cos(latitude), so it is scaled back by cos(lat) to approximate ground
+    # distance before comparison — otherwise a high-latitude city would over-fetch
+    # by >2x (Reykjavík: 2.28x) for no benefit. The 1.05 factor keeps a margin.
+    # This can only ever grow the radius, so no existing render can regress, and
+    # `dist` / the 15 km clamp stay fetch-only as intended.
+    _fetch_dist = comp_dist
+    if bounds is not None:
+        try:
+            _fx0, _fx1, _fy0, _fy1 = _bounds_extent(bounds, _PMTILES_DRAW_CRS,
+                                                    width_in, height_in)
+            _need = (math.hypot(_fx1 - _fx0, _fy1 - _fy0) / 2.0) \
+                * math.cos(math.radians(point[0])) * 1.05
+            if _need > _fetch_dist:
+                _log(f'bounds framing active — OSMnx fetch radius raised '
+                     f'{comp_dist:.0f} m → {_need:.0f} m to cover the drawn '
+                     f'extent')
+                _fetch_dist = _need
+        except Exception as _e:
+            _log(f'bounds fetch-radius derivation failed ({_e}) — falling back '
+                 f'to comp_dist {comp_dist:.0f} m')
+    qlat, qlng, qdist  = _graph_cache_quantize(point[0], point[1], _fetch_dist)
     qpoint             = (qlat, qlng)
     cache_hits         = {"streets": False, "water": False, "parks": False, "rail": False}
 
@@ -1427,7 +1753,7 @@ def render(params: dict) -> bytes:
     # (EPSG:3857) directly. Same visual result; both are metric CRSes that
     # matplotlib treats as equal-scale axes.
     g_proj = ox.project_graph(g) if g is not None else None
-    target_crs = g_proj.graph['crs'] if g_proj is not None else 'EPSG:3857'
+    target_crs = g_proj.graph['crs'] if g_proj is not None else _PMTILES_DRAW_CRS
     if g_proj is not None:
         _log(f'project_graph: {time.time()-_proj_t0:.1f}s '
              f'({len(g_proj.nodes)} nodes, {g_proj.number_of_edges()} edges)')
@@ -1518,13 +1844,30 @@ def render(params: dict) -> bytes:
             )
             ax.add_collection(lc)
 
-        # Set explicit axis limits from the projected fetch bbox.
-        # LineCollection has no auto-scale so matplotlib leaves the axes at
-        # (0,1) without this. Transform the WGS-84 bbox corners to target_crs.
-        from pyproj import Transformer
-        _tr = Transformer.from_crs('EPSG:4326', target_crs, always_xy=True)
-        _x0, _y0 = _tr.transform(bbox[0], bbox[1])  # SW corner (min_lng, min_lat)
-        _x1, _y1 = _tr.transform(bbox[2], bbox[3])  # NE corner (max_lng, max_lat)
+        # Set explicit axis limits. LineCollection has no auto-scale so
+        # matplotlib leaves the axes at (0,1) without this.
+        #
+        # bounds (when sent) is authoritative: the extent becomes exactly the
+        # rectangle the studio composed against, expanded on one axis only to
+        # meet the poster aspect. comp_dist no longer participates in framing.
+        # Without bounds this falls back to the projected fetch bbox, byte-for-
+        # byte the previous behaviour.
+        if bounds is not None:
+            _x0, _x1, _y0, _y1 = _bounds_extent(bounds, target_crs,
+                                                width_in, height_in)
+            _log(f'extent from bounds W/S/E/N={bounds} → '
+                 f'x[{_x0:.1f},{_x1:.1f}] y[{_y0:.1f},{_y1:.1f}] '
+                 f'({(_x1-_x0)/1000:.2f}×{(_y1-_y0)/1000:.2f} km, '
+                 f'aspect {(_x1-_x0)/(_y1-_y0):.4f} vs poster '
+                 f'{width_in/height_in:.4f})')
+        else:
+            from pyproj import Transformer
+            _tr = Transformer.from_crs('EPSG:4326', target_crs, always_xy=True)
+            _x0, _y0 = _tr.transform(bbox[0], bbox[1])  # SW (min_lng, min_lat)
+            _x1, _y1 = _tr.transform(bbox[2], bbox[3])  # NE (max_lng, max_lat)
+        # Kept deliberately: with a matching extent aspect this is a no-op that
+        # fills the figure, and any surviving letterbox band is a true signal
+        # that extent and poster disagree. See _bounds_extent().
         ax.set_aspect('equal', adjustable='box')
         ax.set_xlim(_x0, _x1)
         ax.set_ylim(_y0, _y1)
@@ -1574,6 +1917,18 @@ def render(params: dict) -> bytes:
         )
         _log(f'plot_graph: {time.time()-_plot_t0:.1f}s '
              f'({g_proj.number_of_nodes()} nodes, {g_proj.number_of_edges()} edges)')
+        # bounds (when sent) overrides the centre±crop_dist window here too, so
+        # the legacy graph-cache path frames identically to the PMTiles path.
+        # The graph is already projected, so reproject bounds into ITS crs.
+        if bounds is not None:
+            _gcrs = g_proj.graph.get('crs', target_crs)
+            _bx0, _bx1, _by0, _by1 = _bounds_extent(bounds, _gcrs,
+                                                    width_in, height_in)
+            crop_xlim = (_bx0, _bx1)
+            crop_ylim = (_by0, _by1)
+            _log(f'extent from bounds W/S/E/N={bounds} → '
+                 f'{(_bx1-_bx0)/1000:.2f}×{(_by1-_by0)/1000:.2f} km '
+                 f'(OSMnx path, crs={_gcrs})')
         ax.set_aspect('equal', adjustable='box')
         ax.set_xlim(crop_xlim)
         ax.set_ylim(crop_ylim)
