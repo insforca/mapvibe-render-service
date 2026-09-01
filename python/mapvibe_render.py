@@ -1260,6 +1260,29 @@ def _extent_to_lnglat_bbox(x0: float, x1: float, y0: float, y1: float,
     return (min(lngs), min(lats), max(lngs), max(lats))
 
 
+def _dissolve_fill(polys: 'gpd.GeoDataFrame', label: str) -> 'gpd.GeoDataFrame':
+    """
+    Merge a fill layer's polygons into a single (Multi)Polygon.
+
+    PMTiles vector tiles clip polygons at tile boundaries, so one lake or
+    park arrives as several abutting per-tile pieces. Drawing the pieces
+    separately antialiases each shared edge and leaves a hairline seam on
+    the tile grid. Dissolving removes every internal edge before drawing.
+
+    Never fatal: on any geometry error the original frame is returned and
+    the self-stroke edge in the caller still masks the hairlines.
+    """
+    try:
+        from shapely.ops import unary_union
+        merged = unary_union(list(polys.geometry))
+        if merged.is_empty:
+            return polys
+        return gpd.GeoDataFrame(geometry=[merged], crs=polys.crs)
+    except Exception as exc:  # noqa: BLE001 — draw must survive a bad geometry
+        _log(f'{label} dissolve skipped ({exc}) — self-stroke still covers seams')
+        return polys
+
+
 def render(params: dict) -> bytes:
     city            = params.get('city', '')
     country         = params.get('country', '')
@@ -1427,6 +1450,27 @@ def render(params: dict) -> bytes:
         water       = reader.fetch_layer('water', bbox, zoom=14)
         parks       = reader.fetch_layer('landuse', bbox, zoom=14,
                                          kind_filter=_PARK_KINDS)
+        # Tile-row seam fix (2026-09-01 root cause): the planet archive drops
+        # individual landuse features from some z14 tiles even though the
+        # feature continues into them (verified: golf_course/wood polygons
+        # clipped at ty=6269's top buffer edge with NO counterpart anywhere
+        # in ty=6268, while z13 covers the same spot). A park fill that dies
+        # in a dead-straight full-poster-width line at a tile-row boundary is
+        # the "faint horizontal tile-row seam" on PMTiles posters. No draw
+        # trick can heal missing data, so patch the DATA: union the z13
+        # landuse layer underneath. Fills are opaque and same-colored, so
+        # overdraw is invisible; z13 only contributes where z14 dropped
+        # coverage. Soft-fail: parks are cosmetic, never kill a render.
+        try:
+            parks_z13 = reader.fetch_layer('landuse', bbox, zoom=13,
+                                           kind_filter=_PARK_KINDS)
+            if not parks_z13.empty:
+                import pandas as _pd
+                parks = gpd.GeoDataFrame(
+                    _pd.concat([parks, parks_z13], ignore_index=True),
+                    crs=parks.crs if not parks.empty else parks_z13.crs)
+        except Exception as _exc:  # noqa: BLE001
+            _log(f'z13 landuse union skipped ({_exc}) — z14-only parks')
         rail        = reader.fetch_layer('roads', bbox, zoom=14,
                                          kind_filter={'rail'})
         g = None  # downstream branches on `streets_gdf is not None`
@@ -1766,7 +1810,23 @@ def render(params: dict) -> bytes:
             # on OSMnx path) so water aligns with streets+axes. project_gdf's
             # auto-UTM fell outside the 3857 axis limits → drawn off-screen.
             water_polys = water_polys.to_crs(target_crs)
-            water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
+            # Tile-seam fix: on the PMTiles path polygons arrive pre-clipped
+            # into per-tile pieces, so one water body is many abutting
+            # polygons whose shared edges lie exactly on tile boundaries.
+            # With edgecolor='none', matplotlib antialiases each piece's edge
+            # independently and the background bleeds through the shared
+            # edge — the faint horizontal tile-row seams visible on every
+            # PMTiles poster (pr79-gate-results, 2026-08-31). Two-part fix:
+            #   1. unary_union dissolves the pieces into one geometry, which
+            #      removes the internal shared edges entirely (also collapses
+            #      the duplicate buffer-overlap geometry tiles carry);
+            #   2. stroking the fill with its own colour covers any residual
+            #      antialiased hairline (e.g. between distinct OSM polygons
+            #      that abut without being tile clips — OSMnx path included).
+            water_polys = _dissolve_fill(water_polys, 'water')
+            water_polys.plot(ax=ax, facecolor=theme['water'],
+                             edgecolor=theme['water'], linewidth=0.4,
+                             antialiased=True, zorder=0.5)
 
     # ââ 7. Parks layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if parks is not None and not parks.empty:
@@ -1774,7 +1834,12 @@ def render(params: dict) -> bytes:
         if not parks_polys.empty:
             # BUG 1 fix: project to target_crs, not project_gdf's auto-UTM.
             parks_polys = parks_polys.to_crs(target_crs)
-            parks_polys.plot(ax=ax, facecolor=theme['parks'], edgecolor='none', zorder=0.8)
+            # Tile-seam fix — same dissolve + self-stroke as the water layer
+            # above (see that comment for the full rationale).
+            parks_polys = _dissolve_fill(parks_polys, 'parks')
+            parks_polys.plot(ax=ax, facecolor=theme['parks'],
+                             edgecolor=theme['parks'], linewidth=0.4,
+                             antialiased=True, zorder=0.8)
 
     # ââ 7b. Rail layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # Drawn ABOVE parks (zorder 0.9) but BELOW roads (zorder 1+) so road
