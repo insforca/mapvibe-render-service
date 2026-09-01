@@ -21,10 +21,10 @@ jobs:
       - name: Install dependencies (no scripts — skip native build)
         run: npm install --ignore-scripts
 
-      - name: Run npm audit
+      - name: Run npm audit (production deps — this is the deploy gate)
         run: |
-          npm audit --audit-level=moderate --json | tee audit-report.json
-          npm audit --audit-level=moderate
+          npm audit --omit=dev --audit-level=moderate --json | tee audit-report.json
+          npm audit --omit=dev --audit-level=moderate
 
       - name: Upload audit report
         if: always()

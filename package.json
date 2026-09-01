@@ -16,7 +16,7 @@
     "canvas": "3.2.3",
     "express": "^4.22.1",
     "p-queue": "^7.4.1",
-    "sharp": "^0.33.5",
+    "sharp": "^0.35.4",
     "resend": "4.5.1"
   },
   "devDependencies": {
@@ -30,6 +30,6 @@
     "node-fetch": "^2.7.0",
     "whatwg-url": "^7.1.0",
     "path-to-regexp": "^0.1.13",
-    "undici": ">=6.24.0"
+    "undici": "^7.29.0"
   }
 }
