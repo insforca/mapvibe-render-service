@@ -891,6 +891,15 @@ interface OsmRenderParams {
    * data for, eliminating the empty background area on bounds-tight previews.
    */
   crop_dist?:      number;
+  /**
+   * The WGS-84 rectangle the studio composed the poster against,
+   * {west, south, east, north} in degrees. When present Python uses it as the
+   * sole source of the plot extent and both `dist` and `crop_dist` stop
+   * affecting framing (`dist` reverts to a pure fetch radius). When omitted —
+   * v1 order snapshots, or any caller not yet updated — Python falls back to
+   * the legacy centre ± comp_dist framing, unchanged.
+   */
+  bounds?:         MapBounds;
   width_in:        number;
   height_in:       number;
   dpi:             number;
@@ -1209,6 +1218,10 @@ async function renderConfigToBlobUrl(
       // Python uses theme_json over load_theme() when present.
       ...(fulfillThemeJson ? { theme_json: fulfillThemeJson } : {}),
       dist:            cfg.osmDist         ?? 15000,
+      // The snapshot's framing rectangle. Present on v2+ snapshots; undefined
+      // on v1 orders, where Python falls back to comp_dist framing so old
+      // orders replay exactly as they did before.
+      ...(cfg.bounds ? { bounds: cfg.bounds } : {}),
       width_in:        widthIn,
       height_in:       heightIn,
       dpi:             actualDpi,
@@ -1511,6 +1524,12 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           theme_json:      themeJson,
           dist:            previewDist,     // capped to PREVIEW_DIST_CAP
           crop_dist:       previewCropDist, // scaled proportionally to previewDist
+          // Framing rectangle. NOTE: as of this commit neither /render caller
+          // (ShopifyExportOverlay.tsx:493, editorBridge.ts:103) sends bounds,
+          // so this is undefined in production and Python takes the comp_dist
+          // fallback. Forwarding it here means the studio senders are a
+          // one-line change each, independently revertible.
+          ...(bounds ? { bounds } : {}),
           width_in:        widthIn,
           height_in:       heightIn,
           dpi,
@@ -1591,6 +1610,8 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
     displayCity, displayCountry,
     showPosterText,
     osmTheme, osmDist, themeJson,
+    // Framing rectangle, forwarded to Python when the caller supplies it.
+    bounds,
     minorRoads,
     // Caller may override the long-edge cap; default 480 px.
     preview_max_px: pmxParam = 480,
@@ -1652,6 +1673,7 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
         theme_json:      themeJson,
         dist:            previewDist,     // capped to PREVIEW_DIST_CAP
         crop_dist:       previewCropDist, // scaled proportionally to previewDist
+        ...(bounds ? { bounds } : {}),
         width_in:        widthIn,
         height_in:       heightIn,
         dpi,
