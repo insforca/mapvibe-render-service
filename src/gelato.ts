@@ -56,7 +56,10 @@ export async function fulfillGelato(
   quantity:     number,
   label:        string,
   finalPngUrl:  string,
-  dryRun:       boolean = false,
+  // Default reads FULFILL_DRY_RUN lazily at call time (same env-read-at-call
+  // pattern as GELATO_API_KEY above), so the flag can be toggled per-deploy
+  // without any caller change. Callers may also pass it explicitly.
+  dryRun:       boolean = (process.env.FULFILL_DRY_RUN ?? '').toLowerCase() === 'true',
 ): Promise<void> {
   const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
   const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
