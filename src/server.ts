@@ -67,6 +67,10 @@ import {
   recipientToGelatoAddress,
   fulfillGelato,
 } from './gelato.js';
+import {
+  resolveFulfillRoute,
+  themeJsonFromEditorTheme,
+} from './detail-routing.js';
 
 // ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
 let sRGBIccPath: string | null = null;
@@ -1069,6 +1073,7 @@ interface MapvibeConfigSnapshot {
 async function renderConfigToBlobUrl(
   configUrl: string,
   dimsOverride?: { widthCm: number; heightCm: number },
+  detailedRoads?: boolean,
 ): Promise<string | null> {
   // 1. Download config snapshot
   let cfg: MapvibeConfigSnapshot;
@@ -1172,17 +1177,27 @@ async function renderConfigToBlobUrl(
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
-  // 5. Render via OSM Python pipeline or native MapLibre pipeline
-  //    OSM path: activated by cfg.engine === 'osm', or by RENDER_ENGINE=osm
-  //    for legacy configs that carry no styleJson (flat-palette era).
-  //    FIX (order #1086, 2026-08-04): configs authored in the MapLibre editor
-  //    carry a full styleJson. Routing them through the OSM/Python engine
-  //    loses the design: theme_json is only built from flat palette fields
-  //    (absent in editor configs → load_theme fallback → wrong colors), the
-  //    crop comes from dist-around-center instead of the designed bounds,
-  //    and matplotlib axes chrome leaked onto the print file. styleJson
-  //    configs must render on the native MapLibre pipeline.
-  const useOsm = cfg.engine === 'osm' || (RENDER_ENGINE === 'osm' && !cfg.styleJson);
+  // 5. Render via OSM Python pipeline or native MapLibre pipeline.
+  //    Routing lives in resolveFulfillRoute() (see detail-routing.ts):
+  //    - cfg.engine === 'osm', and RENDER_ENGINE=osm for legacy configs
+  //      without styleJson — unchanged pre-existing rules.
+  //    - NEW (Detailed fulfillment): snapshots with minorRoads === true and a
+  //      bounds rectangle — or a per-request FulfillBody.detailedRoads
+  //      override — render on the OSM engine, because poster-zoom vector
+  //      tiles carry almost no residential-road data in low-density areas
+  //      (order #1086's Fair Haven tile holds 3 minor-road features), so the
+  //      tile path cannot reproduce the editor's Detailed mode at all.
+  //    HISTORY (order #1086, 2026-08-04): styleJson configs used to lose the
+  //    design on the OSM path — wrong colors via load_theme fallback, crop
+  //    from dist-around-center, matplotlib axes chrome. Each is now covered
+  //    on this path: theme_json is derived from the snapshot (flat palette
+  //    fields, else the nested editor theme), the crop frames from the
+  //    snapshot bounds (#79) and Detailed never routes here without bounds,
+  //    and fulfillment renders full_bleed + no_fade (no axes chrome).
+  const route = resolveFulfillRoute(cfg, RENDER_ENGINE, detailedRoads);
+  if (route.warning) console.warn(`[fulfill] ${route.warning}`);
+  console.log(`[fulfill] engine route: ${route.engine} (${route.reason})`);
+  const useOsm = route.engine === 'osm';
   let pngBuffer: Buffer;
 
   if (useOsm) {
@@ -1206,7 +1221,10 @@ async function renderConfigToBlobUrl(
       road_residential: cfg.roadLocalColor      ?? cfg.roadTertiaryColor ?? cfg.textColor,
       road_default:     cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
       rail:             cfg.railColor           ?? cfg.roadSecondaryColor ?? cfg.textColor,
-    } : undefined;
+    // Editor snapshots that predate the v3.1 flat-palette fields carry their
+    // palette only as the nested editor theme — derive theme_json from it so
+    // the OSM path never falls back to load_theme() filename matching.
+    } : themeJsonFromEditorTheme(cfg.theme);
     const osmParams: OsmRenderParams = {
       city:            cfg.city            ?? '',
       country:         cfg.country         ?? '',
@@ -1228,12 +1246,15 @@ async function renderConfigToBlobUrl(
       show_text:       cfg.showPosterText  !== false,
       full_bleed:      true,
       no_fade:         true,
-      // Snapshot's road-detail toggle. Falls back to false when the order
-      // was placed by the studio version that didn't persist the field,
-      // matching the historical hardcoded behaviour byte-for-byte.
-      minor_roads:     cfg.minorRoads === true,
+      // Road-detail mode resolved by resolveFulfillRoute(): the snapshot's
+      // persisted toggle, unless a FulfillBody.detailedRoads override is
+      // present. Orders without the field keep the historical behaviour.
+      minor_roads:     route.minorRoads,
     };
-    console.log(`[fulfill] OSM render: ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in) minor_roads=${osmParams.minor_roads}`);
+    const themeSrc = cfg.textColor
+      ? 'flat-palette'
+      : (fulfillThemeJson ? 'editor-theme' : `load_theme:${cfg.osmTheme ?? 'midnight_blue'}`);
+    console.log(`[fulfill] OSM render (${route.reason}, theme=${themeSrc}): ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in) minor_roads=${osmParams.minor_roads}`);
     try {
       pngBuffer = await renderOsmPython(osmParams);
     } catch (err) {
@@ -1733,6 +1754,11 @@ interface FulfillBody {
   // metafields (custom.pod_partner, custom.gelato_uid) — caller need not pass provider explicitly.
   // Requires SHOPIFY_ADMIN_TOKEN env var to be set on Railway.
   shopifyVariantId?:   number;               // Shopify numeric variant ID from order webhook
+  // Staff-reprint override for the editor's road-detail mode. When present it
+  // outranks the snapshot's persisted minorRoads: true forces the Detailed
+  // (OSM-engine) print path, false forces the legacy tile path. Absent ⇒ the
+  // snapshot decides. Additive — existing callers are unaffected.
+  detailedRoads?:      boolean;
 }
 
 
@@ -1762,7 +1788,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     externalId, recipient, variantId, catalogVariantId, label, quantity,
     pngUrl, configUrl, confirm: confirmOverride,
     widthCm: widthCmOverride, heightCm: heightCmOverride,
-    gift,
+    gift, detailedRoads,
   } = req.body as FulfillBody;
 
   if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
@@ -1855,7 +1881,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
         const dimsOverride = (widthCmOverride && heightCmOverride)
           ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
           : undefined;
-        finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride);
+        finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
       });
       if (!finalPngUrl) {
         console.error(`[fulfill] Config render FAILED for ${externalId}`);
