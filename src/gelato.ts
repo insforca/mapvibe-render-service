@@ -56,6 +56,10 @@ export async function fulfillGelato(
   quantity:     number,
   label:        string,
   finalPngUrl:  string,
+  // Default reads FULFILL_DRY_RUN lazily at call time (same env-read-at-call
+  // pattern as GELATO_API_KEY above), so the flag can be toggled per-deploy
+  // without any caller change. Callers may also pass it explicitly.
+  dryRun:       boolean = (process.env.FULFILL_DRY_RUN ?? '').toLowerCase() === 'true',
 ): Promise<void> {
   const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
   const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
@@ -69,8 +73,11 @@ export async function fulfillGelato(
     'X-API-KEY':    GELATO_KEY,
     'Content-Type': 'application/json',
   };
+  // dryRun ⇒ Gelato native draft: the order is created and fully renderable in
+  // the Gelato dashboard but is NEVER charged, produced, or shipped unless a
+  // human manually confirms it there. Default ('order') is unchanged.
   const payload = {
-    orderType:           'order',
+    orderType:           dryRun ? 'draft' : 'order',
     orderReferenceId:    externalId,
     customerReferenceId: externalId,
     currency:            'USD',
@@ -83,7 +90,7 @@ export async function fulfillGelato(
     const res  = await fetch(`${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
     const data: any = await res.json().catch(() => ({}));
     if (res.ok) {
-      console.log(`[fulfill/gelato] Order created: ${data.id ?? '?'} (${label}) for ${externalId}`);
+      console.log(`[fulfill/gelato] ${dryRun ? 'DRAFT (dry-run) order' : 'Order'} created: ${data.id ?? '?'} (${label}) for ${externalId}`);
     } else {
       console.error(`[fulfill/gelato] FAILED for ${externalId} HTTP ${res.status} — ${JSON.stringify(data).slice(0, 400)}`);
       notifyFulfillFail(externalId, 'gelato-api', { http: res.status, body: data });
