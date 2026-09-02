@@ -167,6 +167,15 @@ const MAX_RENDER_PX_WH  = 14400;  // raised: gives full 400 DPI up to Grand; Stu
 const MAX_PX            = 150_000_000; // max single render/tile pixels; fits 400 DPI Grand (138 MP) and AR-scaled Studio/Archival
 const MAX_ZOOM_RENDER   = 17;
 
+// DPI policy (v3.6.0). These were inline literals at the computeRenderDims()
+// call site; they are named here so /health can publish the SAME values the
+// renderer actually uses. The studio-side preflight mirror
+// (api/_render-limits.ts) re-derives these to decide, before dispatch, whether
+// a paid order is renderable — a number moving on one side only is the exact
+// drift that produced a stale gate on a live on-sale size.
+const TARGET_DPI          = 400;  // ceiling we never exceed
+const MIN_SINGLE_PASS_DPI = 300;  // advertised customer standard; below this, tile
+
 // ── OSM renderer config ───────────────────────────────────────────────────────
 // RENDER_ENGINE=osm  → use Python/OSMnx pipeline for fulfillment renders
 // RENDER_ENGINE=maplibre (default) → keep native GL pipeline during transition
@@ -391,10 +400,20 @@ function constantTimeEqual(a: string, b: string): boolean {
   const hb = createHmac('sha256', COMPARE_KEY).update(Buffer.from(b)).digest();
   return timingSafeEqual(ha, hb);
 }
-function checkAuth(req: Request, res: Response): boolean {
+/**
+ * Auth predicate with NO response side effect — for routes that must answer
+ * unauthenticated callers (e.g. /health, which Railway probes without a key)
+ * while still varying what they disclose. checkAuth() is the gate; this is the
+ * question. Same constant-time comparison either way.
+ */
+function isAuthed(req: Request): boolean {
   const raw   = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
   const token = typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
-  const ok    = constantTimeEqual(token, API_SECRET);
+  return constantTimeEqual(token, API_SECRET);
+}
+
+function checkAuth(req: Request, res: Response): boolean {
+  const ok = isAuthed(req);
   if (!ok) res.status(401).json({ error: 'Unauthorized' });
   return ok;
 }
@@ -1104,8 +1123,8 @@ async function renderConfigToBlobUrl(
   const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
 
   const dims = computeRenderDims(widthCm, heightCm, !!cfg.bounds, {
-    targetDpi: 400,
-    minSinglePassDpi: 300,
+    targetDpi: TARGET_DPI,
+    minSinglePassDpi: MIN_SINGLE_PASS_DPI,
     maxEdgePx: MAX_RENDER_PX_WH,
     maxPx: MAX_PX,
   });
@@ -1316,7 +1335,7 @@ async function renderConfigToBlobUrl(
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
-app.get('/health', (_req: Request, res: Response) => res.json({
+app.get('/health', (req: Request, res: Response) => res.json({
   status: 'ok',
   version: '3.6.0',
   engine:  RENDER_ENGINE,
@@ -1332,6 +1351,29 @@ app.get('/health', (_req: Request, res: Response) => res.json({
     concurrency:    2,
   },
   uptime: process.uptime(),
+  // Value-level drift surface (2026-09-02). `version` alone only catches a
+  // release; a cap or DPI-floor edit that ships without a version bump is the
+  // drift nobody sees. These are the SAME constants passed to
+  // computeRenderDims() on the fulfillment path, so this block cannot disagree
+  // with what a real render does — which is the whole point of publishing it.
+  // Consumed by the studio-side preflight mirror check (api/_render-limits.ts,
+  // MIRRORED_FROM_VERSION + checkRenderServiceDrift).
+  //
+  // AUTHENTICATED ONLY: these are operational parameters — they name the exact
+  // payload dimensions that exhaust this renderer. /health itself stays public
+  // because Railway probes it without a key, so the route answers 200 either
+  // way and only the disclosure varies. An unauthenticated caller sees no
+  // `renderLimits` key at all; the drift monitor MUST present x-api-key and
+  // MUST treat an absent key as "unverified", never as "no drift".
+  ...(isAuthed(req) ? {
+    renderLimits: {
+      maxEdgePx:        MAX_RENDER_PX_WH,
+      maxPx:            MAX_PX,
+      targetDpi:        TARGET_DPI,
+      minSinglePassDpi: MIN_SINGLE_PASS_DPI,
+      mirror:           'api/_render-limits.ts',
+    },
+  } : {}),
   // Observability only (2026-09-02): in-process RSS high-water mark plus the
   // current reading. `peak` answers "how close to the ceiling did we come?";
   // `current` and `lastRender.heldAfterMb` answer "did the memory come back?".
