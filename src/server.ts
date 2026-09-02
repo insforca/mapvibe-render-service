@@ -38,6 +38,7 @@ import {
   validateStyleJsonUrls,
 } from './url-allowlist.js';
 import { computeRenderDims } from './render-dims.js';
+import { memoryWatch } from './memory-watch.js';
 import {
   type RoutingResult,
   ROUTING_CACHE_TTL_MS,
@@ -1331,6 +1332,11 @@ app.get('/health', (_req: Request, res: Response) => res.json({
     concurrency:    2,
   },
   uptime: process.uptime(),
+  // Observability only (2026-09-02): in-process RSS high-water mark plus the
+  // current reading. `peak` answers "how close to the ceiling did we come?";
+  // `current` and `lastRender.heldAfterMb` answer "did the memory come back?".
+  // See src/memory-watch.ts for the sampling-resolution caveat.
+  memory: memoryWatch.report(),
 }));
 
 // POST /render — synchronous render, returns PNG
@@ -1438,7 +1444,9 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   res.on('close', onClientClose);
 
   console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=${useOsm ? 'osm' : 'maplibre'}${previewMode ? ' previewMode' : ''}`);
-  await renderQueue.add(async () => {
+  await renderQueue.add(async () => memoryWatch.track(
+    `render ${width}×${height}px${useOsm ? ' osm' : ' maplibre'}${previewMode ? ' previewMode' : ''}`,
+    async () => {
     const renderStart = Date.now();
     try {
       // If the client gave up while we were waiting in the queue, skip the
@@ -1589,7 +1597,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     } finally {
       res.off('close', onClientClose);
     }
-  });
+  }));
 });
 
 
@@ -1871,12 +1879,15 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     if (!finalPngUrl && configUrl) {
       console.log(`[fulfill] Config path — rendering for ${externalId}`);
       // Use render queue — config renders in fulfill compete with /render for concurrency slots
-      await renderQueue.add(async () => {
-        const dimsOverride = (widthCmOverride && heightCmOverride)
-          ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
-          : undefined;
-        finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
-      });
+      await renderQueue.add(async () => memoryWatch.track(
+        `fulfill ${externalId} ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'}cm`,
+        async () => {
+          const dimsOverride = (widthCmOverride && heightCmOverride)
+            ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
+            : undefined;
+          finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
+        },
+      ));
       if (!finalPngUrl) {
         console.error(`[fulfill] Config render FAILED for ${externalId}`);
         notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
