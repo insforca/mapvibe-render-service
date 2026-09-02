@@ -37,6 +37,7 @@ import {
   extractUrls,
   validateStyleJsonUrls,
 } from './url-allowlist.js';
+import { computeRenderDims } from './render-dims.js';
 import {
   type RoutingResult,
   ROUTING_CACHE_TTL_MS,
@@ -1087,43 +1088,36 @@ async function renderConfigToBlobUrl(
     return null;
   }
 
-  // 2. Compute pixel dims at 400 DPI — HARD RULE: never under 300 DPI effective.
+  // 2. Compute pixel dims — HARD RULE: never under 300 DPI effective.
   //    dimsOverride (from SKU) takes priority over config snapshot.
   //
-  //    v3.5.0 Tiled path: if nominalH > MAX_RENDER_PX_WH and bounds are present,
-  //    we tile vertically (renderTiledPng). This gives Archival ~366 DPI vs 244 before.
-  //    Single-pass path: AR-preserving scale (unchanged for all smaller sizes).
-  const DPI      = 400;
+  //    v3.6.0 DPI selection (extracted to ./render-dims.ts, unit-tested):
+  //    prefer the highest DPI ≤ 400 whose FULL frame fits a single pass
+  //    (edge + area caps), floored at 300 — the advertised customer standard.
+  //    Sizes that fit 400 render at 400 exactly as before; sizes whose
+  //    single-pass ceiling is ≥ 300 (e.g. 70×100 cm → 365 DPI) render
+  //    single-pass instead of tiling; only ceilings < 300 (e.g. 100×150 cm)
+  //    take the tiled path (bounds required) or the capped fallback.
   const widthCm  = dimsOverride?.widthCm  ?? (Number(cfg.widthCm)  || 40.64);
   const heightCm = dimsOverride?.heightCm ?? (Number(cfg.heightCm) || 50.80);
-  const nominalW = Math.round((widthCm  / CM_PER_INCH) * DPI);
-  const nominalH = Math.round((heightCm / CM_PER_INCH) * DPI);
   const dimSource = dimsOverride ? 'SKU override' : 'config snapshot';
 
-  // Tiled if height exceeds single-pass limit and we have geographic bounds for subdivision
-  const needsTiling = nominalH > MAX_RENDER_PX_WH && !!cfg.bounds;
+  const dims = computeRenderDims(widthCm, heightCm, !!cfg.bounds, {
+    targetDpi: 400,
+    minSinglePassDpi: 300,
+    maxEdgePx: MAX_RENDER_PX_WH,
+    maxPx: MAX_PX,
+  });
+  const { width, height, actualDpi, numTiles } = dims;
 
-  let width: number;
-  let height: number;
-  let actualDpi: number;
-  let numTiles = 1;
-
-  if (needsTiling) {
-    // Width: cap to MAX_RENDER_PX_WH. Height: maintain AR (same scale as width).
-    const wScale = Math.min(1, MAX_RENDER_PX_WH / nominalW);
-    width        = Math.round(nominalW * wScale);
-    height       = Math.round(nominalH * wScale);
-    actualDpi    = Math.round(width / (widthCm / CM_PER_INCH));
-    const maxTileH = Math.floor(MAX_PX / width);
-    numTiles       = Math.ceil(height / maxTileH);
+  if (dims.mode === 'tiled') {
     console.log(`[fulfill] Config render [TILED×${numTiles}] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
   } else {
-    // AR-preserving single-pass
-    const dimScale = Math.min(1, MAX_RENDER_PX_WH / Math.max(nominalW, nominalH));
-    width          = Math.round(nominalW * dimScale);
-    height         = Math.round(nominalH * dimScale);
-    actualDpi      = Math.round(width / (widthCm / CM_PER_INCH));
-    console.log(`[fulfill] Config render [single-pass] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
+    const fallbackNote = dims.mode === 'single-pass-fallback' ? ' (FALLBACK — no bounds for tiling)' : '';
+    console.log(`[fulfill] Config render [single-pass] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI${fallbackNote}`);
+    if (actualDpi < 300) {
+      console.error(`[fulfill] WARNING: effective DPI ${actualDpi} is below the 300 DPI floor for ${widthCm}×${heightCm}cm${fallbackNote}`);
+    }
   }
 
   // 3. Patch style: inject tile/glyph sources, absolutize relative URLs
@@ -1285,7 +1279,7 @@ async function renderConfigToBlobUrl(
   };
 
   try {
-    if (needsTiling) {
+    if (numTiles > 1) {
       pngBuffer = await renderTiledPng(sharedParams, width, height, numTiles);
     } else {
       pngBuffer = await renderPngInternal({ ...sharedParams, width, height });
@@ -1323,7 +1317,7 @@ async function renderConfigToBlobUrl(
 
 app.get('/health', (_req: Request, res: Response) => res.json({
   status: 'ok',
-  version: '3.5.1',
+  version: '3.6.0',
   engine:  RENDER_ENGINE,
   queue: {
     size:           renderQueue.size,
