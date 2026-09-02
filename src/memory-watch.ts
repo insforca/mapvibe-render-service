@@ -34,6 +34,16 @@
  * output. It samples and reports.
  * ──────────────────────────────────────────────────────────────────────────── */
 
+import {
+  readCeiling,
+  readUsage,
+  readKernelPeak,
+  probeAvailability,
+  type MemoryCeiling,
+  type ContainerUsage,
+  type CgroupAvailability,
+} from './cgroup.js';
+
 const BYTES_PER_MB = 1024 * 1024;
 
 /** Sampling interval while at least one render is in flight. */
@@ -74,6 +84,23 @@ function toMb(bytes: number): number {
   return Math.round((bytes / BYTES_PER_MB) * 10) / 10;
 }
 
+/** MB conversion that tolerates an unreadable (null) cgroup field. */
+function toMbOrNull(bytes: number | null): number | null {
+  return bytes === null ? null : toMb(bytes);
+}
+
+/** Highest of two possibly-null byte counts. */
+function maxOrNull(a: number | null, b: number | null): number | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return a > b ? a : b;
+}
+
+interface ContainerSnapshot {
+  currentBytes: number | null;
+  anonBytes: number | null;
+}
+
 /**
  * Tracks a process-lifetime RSS high-water mark, sampling fast while renders
  * are active and lazily (on read) while idle.
@@ -86,6 +113,22 @@ export class MemoryWatch {
   private active = 0;
   private activeLabel: string | null = null;
   private samples = 0;
+  /**
+   * cgroup availability — probed ONCE (a property of kernel + mount), while the
+   * VALUES are always read fresh on every sample. Never cache a usage number.
+   */
+  private readonly cgroup: CgroupAvailability;
+  /** Container ceiling — read once; a cgroup limit does not move at runtime. */
+  private readonly ceiling: MemoryCeiling;
+  /** Sampled container high-water — the fallback when no kernel peak exists. */
+  private containerPeak: {
+    currentBytes: number | null;
+    anonBytes: number | null;
+    at: number;
+    label: string | null;
+  };
+  /** Most recent container reading, so track() can take baseline/end cheaply. */
+  private lastContainer: ContainerSnapshot = { currentBytes: null, anonBytes: null };
   /** Per-render baseline/peak, so a single render's cost is attributable. */
   private lastRender: {
     label: string;
@@ -94,6 +137,13 @@ export class MemoryWatch {
     endRssBytes: number | null;
     startedAt: number;
     durationMs: number | null;
+    /** Container-level baseline/peak/end — covers the Python child too. */
+    baselineContainerBytes: number | null;
+    peakContainerBytes: number | null;
+    endContainerBytes: number | null;
+    baselineAnonBytes: number | null;
+    peakAnonBytes: number | null;
+    endAnonBytes: number | null;
   } | null = null;
 
   constructor(private readonly intervalMs: number = SAMPLE_INTERVAL_MS) {
@@ -102,6 +152,19 @@ export class MemoryWatch {
     this.peak = {
       rssBytes: now.rssBytes,
       heapUsedBytes: now.heapUsedBytes,
+      at: now.at,
+      label: null,
+    };
+    // Availability is a kernel+mount property → probe once. The ceiling is a
+    // cgroup limit, which does not move at runtime → read once. VALUES are
+    // always read fresh in sampleContainer(), never cached.
+    this.cgroup = probeAvailability();
+    this.ceiling = readCeiling();
+    const usage = readUsage();
+    this.lastContainer = { currentBytes: usage.currentBytes, anonBytes: usage.anonBytes };
+    this.containerPeak = {
+      currentBytes: usage.currentBytes,
+      anonBytes: usage.anonBytes,
       at: now.at,
       label: null,
     };
@@ -123,7 +186,44 @@ export class MemoryWatch {
     if (this.lastRender && now.rssBytes > this.lastRender.peakRssBytes) {
       this.lastRender.peakRssBytes = now.rssBytes;
     }
+    this.sampleContainer(now.at);
     return now;
+  }
+
+  /**
+   * Read container usage FRESH and fold it into the sampled high-water mark.
+   * This is the number that covers the Python render child, which
+   * process.memoryUsage() cannot see. Silent on failure and skipped entirely
+   * when no cgroup usage file is readable — instrumentation must never break a
+   * render, and must never invent a number it could not read.
+   */
+  private sampleContainer(at: number): void {
+    if (!this.cgroup.usageAvailable) return;
+    try {
+      const usage = readUsage();
+      this.lastContainer = {
+        currentBytes: usage.currentBytes,
+        anonBytes: usage.anonBytes,
+      };
+      const higherCurrent = maxOrNull(this.containerPeak.currentBytes, usage.currentBytes);
+      const higherAnon = maxOrNull(this.containerPeak.anonBytes, usage.anonBytes);
+      const beat =
+        higherCurrent !== this.containerPeak.currentBytes ||
+        higherAnon !== this.containerPeak.anonBytes;
+      this.containerPeak = {
+        currentBytes: higherCurrent,
+        anonBytes: higherAnon,
+        at: beat ? at : this.containerPeak.at,
+        label: beat ? this.activeLabel : this.containerPeak.label,
+      };
+      const r = this.lastRender;
+      if (r) {
+        r.peakContainerBytes = maxOrNull(r.peakContainerBytes, usage.currentBytes);
+        r.peakAnonBytes = maxOrNull(r.peakAnonBytes, usage.anonBytes);
+      }
+    } catch {
+      /* observability must never break a render */
+    }
   }
 
   /**
@@ -142,6 +242,12 @@ export class MemoryWatch {
       endRssBytes: null,
       startedAt: baseline.at,
       durationMs: null,
+      baselineContainerBytes: this.lastContainer.currentBytes,
+      peakContainerBytes: this.lastContainer.currentBytes,
+      endContainerBytes: null,
+      baselineAnonBytes: this.lastContainer.anonBytes,
+      peakAnonBytes: this.lastContainer.anonBytes,
+      endAnonBytes: null,
     };
     this.startTimer();
     try {
@@ -157,6 +263,8 @@ export class MemoryWatch {
       if (this.lastRender && this.lastRender.label === label) {
         this.lastRender.endRssBytes = end.rssBytes;
         this.lastRender.durationMs = end.at - this.lastRender.startedAt;
+        this.lastRender.endContainerBytes = this.lastContainer.currentBytes;
+        this.lastRender.endAnonBytes = this.lastContainer.anonBytes;
         const r = this.lastRender;
         console.log(
           `[memory] ${label}: baseline ${toMb(r.baselineRssBytes)} MB → peak ` +
@@ -164,6 +272,23 @@ export class MemoryWatch {
             `(delta held ${toMb(end.rssBytes - r.baselineRssBytes)} MB, ` +
             `${r.durationMs} ms, ${this.intervalMs} ms sampling)`,
         );
+        // Container line is the load-bearing one for the OSM path: the render
+        // allocates in a Python child that the in-process numbers above cannot
+        // see. Printed separately so the two are never confused.
+        if (this.cgroup.usageAvailable) {
+          const kernelPeak = this.cgroup.kernelPeakAvailable ? readKernelPeak().bytes : null;
+          const peakContainer = maxOrNull(r.peakContainerBytes, kernelPeak);
+          console.log(
+            `[memory] ${label} container: baseline ` +
+              `${toMbOrNull(r.baselineContainerBytes)} MB → peak ` +
+              `${toMbOrNull(peakContainer)} MB → end ` +
+              `${toMbOrNull(r.endContainerBytes)} MB · anon peak ` +
+              `${toMbOrNull(r.peakAnonBytes)} MB · ceiling ` +
+              `${toMbOrNull(this.ceiling.bytes)} MB (${this.ceiling.source}` +
+              `${this.ceiling.trusted ? '' : ', UNTRUSTED'})` +
+              `${kernelPeak === null ? ' · sampled peak' : ' · kernel peak'}`,
+          );
+        }
       }
     }
   }
@@ -198,6 +323,20 @@ export class MemoryWatch {
   report() {
     const now = this.sample();
     const r = this.lastRender;
+    // Read fresh at report time: `current` must be live, and the kernel peak is
+    // exact when the kernel offers it. Availability was probed once at startup;
+    // the values never are.
+    const liveContainer = this.cgroup.usageAvailable
+      ? readUsage()
+      : {
+          currentBytes: null,
+          currentSource: 'unavailable' as const,
+          anonBytes: null,
+          anonSource: 'unavailable' as const,
+        };
+    const kernelPeak = this.cgroup.kernelPeakAvailable
+      ? readKernelPeak()
+      : { bytes: null, source: 'unavailable' as const };
     return {
       current: {
         rssMb: toMb(now.rssBytes),
@@ -226,8 +365,54 @@ export class MemoryWatch {
               r.endRssBytes === null ? null : toMb(r.endRssBytes - r.baselineRssBytes),
             durationMs: r.durationMs,
             startedAtIso: new Date(r.startedAt).toISOString(),
+            /** Container-level view of the same render — includes the child. */
+            containerBaselineMb: toMbOrNull(r.baselineContainerBytes),
+            containerPeakMb: toMbOrNull(maxOrNull(r.peakContainerBytes, kernelPeak.bytes)),
+            containerEndMb: toMbOrNull(r.endContainerBytes),
+            containerHeldAfterMb:
+              r.endContainerBytes === null || r.baselineContainerBytes === null
+                ? null
+                : toMb(r.endContainerBytes - r.baselineContainerBytes),
+            anonBaselineMb: toMbOrNull(r.baselineAnonBytes),
+            anonPeakMb: toMbOrNull(r.peakAnonBytes),
+            anonEndMb: toMbOrNull(r.endAnonBytes),
           }
         : null,
+      /**
+       * Container accounting — the only view that covers the Python render
+       * child. Every number carries its source so a reader never has to guess
+       * which file it came from, and `null` means "could not read", never 0.
+       */
+      container: {
+        ceilingMb: toMbOrNull(this.ceiling.bytes),
+        ceilingSource: this.ceiling.source,
+        /** False ⇒ the ceiling is the HOST's RAM, not this container's limit. */
+        ceilingTrusted: this.ceiling.trusted,
+        ceilingUnlimited: this.ceiling.unlimited,
+        current: {
+          /** What the OOM killer compares against the limit (incl. page cache). */
+          currentMb: toMbOrNull(liveContainer.currentBytes),
+          currentSource: liveContainer.currentSource,
+          /** Non-reclaimable anonymous memory — what the render actually took. */
+          anonMb: toMbOrNull(liveContainer.anonBytes),
+          anonSource: liveContainer.anonSource,
+        },
+        peak: {
+          /** Kernel high-water when available (exact), else sampled maximum. */
+          currentMb: toMbOrNull(maxOrNull(this.containerPeak.currentBytes, kernelPeak.bytes)),
+          anonMb: toMbOrNull(this.containerPeak.anonBytes),
+          source: kernelPeak.bytes !== null ? kernelPeak.source : 'sampled:memory.current',
+          /** True ⇒ exact, no sampling-resolution caveat. */
+          exact: kernelPeak.bytes !== null,
+          atIso: new Date(this.containerPeak.at).toISOString(),
+          duringRender: this.containerPeak.label,
+        },
+        available: {
+          usage: this.cgroup.usageAvailable,
+          kernelPeak: this.cgroup.kernelPeakAvailable,
+          kernelPeakResettable: this.cgroup.kernelPeakResettable,
+        },
+      },
     };
   }
 }
