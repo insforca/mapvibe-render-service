@@ -39,7 +39,7 @@ import {
 } from './url-allowlist.js';
 import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
-import { evaluateFulfillGate } from './fulfill-gate.js';
+import { planFulfillment } from './fulfill-plan.js';
 import { innerViewportPx } from './print-window.js';
 import {
   notifyFulfillFail,
@@ -1081,6 +1081,9 @@ interface MapvibeConfigSnapshot {
   // Customers who never touched the toggle have this undefined, which matches
   // the historical hardcoded behaviour at fulfillment.
   minorRoads?: boolean;
+  // Editor flag (useStoreConfig). True means bounds are already the print
+  // sheet, so fulfillment must not expand them by the canvas wrap again.
+  dimensionsArePrintArea?: boolean;
   // Live palette forwarded by ShopifyExportOverlay (>= v3.1). When present,
   // renderConfigToBlobUrl builds theme_json from these and bypasses load_theme(),
   // making fulfillment immune to theme-filename drift (e.g. vintage_noir → no
@@ -1821,17 +1824,23 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
   });
 });
 
-// POST /fulfill — catalogue-routed Gelato / Printful fulfillment.
-// Vendor, product UID / variant id, and print size come from
-// data/catalogue-skus.csv. Shopify metafields and the old "Printful only if
-// the label says canvas" rule are not consulted. Unknown SKUs fail here,
-// before 202, so the studio webhook can return non-2xx and Shopify retries.
+// POST /fulfill — catalogue SKUs from data/catalogue-skus.csv, with the
+// pre-catalogue metafield path kept for orders that still omit sku.
+// LEGACY_SKU_PASSTHROUGH defaults on. dryRun / an mv-canary tag resolves
+// routing and returns before any Gelato or Printful call.
 interface FulfillBody {
   externalId:       string;
   recipient:        PrintfulRecipient;
-  /** Catalogue SKU (MVS-P-1824, MVS-F-1824-BK, MVS-C-1824-W, …). Also read from externalId. */
+  /** Explicit catalogue or legacy SKU. Never inferred from externalId. */
   sku?:             string;
-  /** Ignored for the vendor order. The catalogue variant id is used instead. */
+  lineItems?:       { sku?: string }[];
+  /** When true, validate and return routing. Do not render or place an order. */
+  dryRun?:          boolean;
+  /** A string or array containing "mv-canary" is also a dry run. */
+  tags?:            string | string[];
+  /** Editor flag. Also read from the config snapshot when that is fetched. */
+  dimensionsArePrintArea?: boolean;
+  /** Catalogue path ignores this. Legacy path orders this Printful variant id. */
   variantId?:       number;
   catalogVariantId?: number;
   label:            string;
@@ -1839,12 +1848,12 @@ interface FulfillBody {
   pngUrl?:          string;
   configUrl?:       string;
   confirm?:         boolean;   // per-request override; falls back to PRINTFUL_AUTO_CONFIRM env var
-  // Ignored. Print size comes from the catalogue (canvas print area, 28×40 → 70×100 cm).
+  // Catalogue path ignores these. Legacy path uses them as the render size.
   widthCm?:         number;
   heightCm?:        number;
   // Dedícalo — gift/dedication card message to print on Printful packing slip
   gift?:            { message: string; para?: string };
-  /** Ignored when it disagrees with the catalogue. Logged, not applied. */
+  /** Catalogue path ignores a disagreement. Legacy path honours an explicit value. */
   provider?:          'printful' | 'gelato';
   gelatoProductUid?:   string;
   shopifyVariantId?:   number;
@@ -1874,114 +1883,174 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const gateInput = {
+  const planInput = (extra: { configDownloaded?: boolean; dimensionsArePrintArea?: boolean }) => ({
     sku: body.sku,
-    externalId,
+    lineItems: body.lineItems,
     label,
+    dryRun: body.dryRun,
+    tags: body.tags,
     hasPngUrl: !!pngUrl,
     hasConfigUrl: !!configUrl,
+    configDownloaded: extra.configDownloaded,
+    dimensionsArePrintArea: extra.dimensionsArePrintArea === true,
     callerProvider: body.provider ?? null,
-    callerVariantId: variantId ?? null,
-  };
-  let gate = evaluateFulfillGate(gateInput);
-  if (!gate.ok) {
-    console.error(`[fulfill] [SKU-MISMATCH-ALERT] ${gate.reason} sku=${gate.sku ?? 'none'} ${gate.message}`);
-    notifyFulfillFail(externalId, gate.reason, gate.message);
-    res.status(gate.httpStatus).json({ error: gate.message, sku: gate.sku });
-    return;
-  }
-
-  if (gate.vendor === 'printful' && !PRINTFUL_KEY) {
-    console.error('[fulfill] PRINTFUL_API_KEY not configured');
-    res.status(500).json({ error: 'PRINTFUL_API_KEY not configured on Railway' });
-    return;
-  }
-  if (gate.vendor === 'gelato' && !GELATO_KEY) {
-    console.error('[fulfill] GELATO_API_KEY not configured');
-    res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
-    return;
-  }
-  if (gate.callerProviderIgnored) {
-    console.error(`[fulfill] caller provider '${body.provider}' ignored for ${gate.sku}; catalogue vendor is ${gate.vendor}`);
-  }
-  if (gate.callerVariantIgnored) {
-    console.error(`[fulfill] caller variantId ${variantId ?? 'none'} ignored for ${gate.sku}; catalogue product is ${gate.productRef}`);
-  }
-  if ((widthCmOverride && Math.abs(widthCmOverride - gate.widthCm) > 0.2)
-      || (heightCmOverride && Math.abs(heightCmOverride - gate.heightCm) > 0.2)) {
-    console.error(`[fulfill] caller dimensions ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'} cm ignored for ${gate.sku}; catalogue is ${gate.widthCm}×${gate.heightCm} cm`);
-  }
-
-  // Config download runs BEFORE the 202. A failure here is 502 so the studio
-  // webhook can refuse Shopify's delivery and Shopify retries. The pixel
-  // render still happens after 202: it can take minutes, and holding the
-  // ack open would let a client timeout race a vendor order.
-  let preloadedCfg: MapvibeConfigSnapshot | null = null;
-  if (gate.needsRender) {
-    preloadedCfg = await downloadConfigSnapshot(configUrl!);
-    if (!preloadedCfg) {
-      const rejected = evaluateFulfillGate({ ...gateInput, configDownloaded: false });
-      if (!rejected.ok) {
-        console.error(`[fulfill] config download failed for ${gate.sku} — not acknowledging`);
-        notifyFulfillFail(externalId, rejected.reason, rejected.message);
-        res.status(rejected.httpStatus).json({ error: rejected.message, sku: rejected.sku });
-        return;
-      }
-    }
-  }
-
-  const accepted = gate;
-  res.status(202).json({
-    success: true,
-    accepted: true,
-    externalId,
-    sku: accepted.sku,
-    vendor: accepted.vendor,
+    variantId: variantId ?? null,
+    catalogVariantId: body.catalogVariantId ?? null,
+    shopifyVariantId: body.shopifyVariantId ?? null,
+    gelatoProductUid: body.gelatoProductUid ?? null,
+    widthCm: widthCmOverride ?? null,
+    heightCm: heightCmOverride ?? null,
+    quantity,
   });
 
-  void (async () => {
-    let finalPngUrl: string | null = accepted.needsRender ? null : (pngUrl ?? null);
-    const printWindow: PrintWindow = {
-      visibleFractionW: accepted.visibleFractionW,
-      visibleFractionH: accepted.visibleFractionH,
-      visibleWIn: accepted.visibleWIn,
-      visibleHIn: accepted.visibleHIn,
-      hasWrap: accepted.hasWrap,
-    };
+  let dimensionsArePrintArea = body.dimensionsArePrintArea === true;
+  let plan = await planFulfillment(planInput({ dimensionsArePrintArea }));
 
-    if (accepted.needsRender) {
-      console.log(`[fulfill] Config path — ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm} cm → ${accepted.dims.width}×${accepted.dims.height}px @ ${accepted.dims.actualDpi} DPI wrap=${accepted.hasWrap}`);
-      await renderQueue.add(async () => memoryWatch.track(
-        `fulfill ${externalId} ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm}cm`,
-        async () => {
-          finalPngUrl = await renderConfigToBlobUrl(
-            configUrl!,
-            { widthCm: accepted.widthCm, heightCm: accepted.heightCm },
-            detailedRoads,
-            preloadedCfg,
-            printWindow,
-          );
-        },
-      ));
-      if (!finalPngUrl) {
-        console.error(`[fulfill] Config render FAILED for ${externalId} (${accepted.sku})`);
-        notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
-        return;
-      }
+  // Catalogue canvas still needs the snapshot before we ack. Legacy orders
+  // download it after 202, which is what they do today. A dry run downloads
+  // only to read dimensionsArePrintArea and to fail a bad configUrl; it does
+  // not render pixels and does not call a vendor.
+  let preloadedCfg: MapvibeConfigSnapshot | null = null;
+  if ((plan.kind === 'accept' || plan.kind === 'dry-run') && plan.mode === 'catalogue' && plan.needsRender && configUrl) {
+    preloadedCfg = await downloadConfigSnapshot(configUrl);
+    if (!preloadedCfg) {
+      plan = await planFulfillment(planInput({ dimensionsArePrintArea, configDownloaded: false }));
+    } else if (preloadedCfg.dimensionsArePrintArea === true && !dimensionsArePrintArea) {
+      dimensionsArePrintArea = true;
+      plan = await planFulfillment(planInput({ dimensionsArePrintArea: true, configDownloaded: true }));
     }
+  }
 
-    if (accepted.vendor === 'gelato') {
-      if (!accepted.gelatoProductUid) {
-        console.error(`[fulfill/gelato] Catalogue row ${accepted.sku} has no Gelato UID`);
-        notifyFulfillFail(externalId, 'missing-gelato-uid', `Catalogue SKU ${accepted.sku} has no Gelato product UID`);
-        return;
-      }
-      await fulfillGelato(externalId, recipient, accepted.gelatoProductUid, quantity, label, finalPngUrl!);
+  if (plan.kind === 'invalid') {
+    res.status(plan.httpStatus).json({ error: plan.message, ...(plan.dryRun ? { dryRun: true } : {}) });
+    return;
+  }
+  if (plan.kind === 'reject') {
+    console.error(`[fulfill] [SKU-MISMATCH-ALERT] ${plan.reason} sku=${plan.sku ?? 'none'} ${plan.message}`);
+    notifyFulfillFail(externalId, plan.reason, plan.message);
+    res.status(plan.httpStatus).json({ error: plan.message, sku: plan.sku, ...(plan.dryRun ? { dryRun: true } : {}) });
+    return;
+  }
+  if (plan.kind === 'dry-run') {
+    console.log(`[fulfill] dry-run ${plan.body.vendor} sku=${plan.body.sku ?? 'absent'} — no vendor call`);
+    res.status(200).json(plan.body);
+    return;
+  }
+
+  const decision = plan;
+  if (decision.mode === 'catalogue') {
+    const gate = decision.gate;
+    if (gate.vendor === 'printful' && !PRINTFUL_KEY) {
+      console.error('[fulfill] PRINTFUL_API_KEY not configured');
+      res.status(500).json({ error: 'PRINTFUL_API_KEY not configured on Railway' });
       return;
     }
-    const orderedVariantId = accepted.printfulVariantId;
+    if (gate.vendor === 'gelato' && !GELATO_KEY) {
+      console.error('[fulfill] GELATO_API_KEY not configured');
+      res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
+      return;
+    }
+    if (gate.callerProviderIgnored) {
+      console.error(`[fulfill] caller provider '${body.provider}' ignored for ${gate.sku}; catalogue vendor is ${gate.vendor}`);
+    }
+    if (gate.callerVariantIgnored) {
+      console.error(`[fulfill] caller variantId ${variantId ?? 'none'} ignored for ${gate.sku}; catalogue product is ${gate.productRef}`);
+    }
+    if ((widthCmOverride && Math.abs(widthCmOverride - gate.widthCm) > 0.2)
+        || (heightCmOverride && Math.abs(heightCmOverride - gate.heightCm) > 0.2)) {
+      console.error(`[fulfill] caller dimensions ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'} cm ignored for ${gate.sku}; catalogue is ${gate.widthCm}×${gate.heightCm} cm`);
+    }
+    res.status(202).json({
+      success: true,
+      accepted: true,
+      externalId,
+      sku: gate.sku,
+      vendor: gate.vendor,
+    });
+  } else {
+    if (decision.callerProvider === 'printful' && !PRINTFUL_KEY) {
+      console.error('[fulfill] PRINTFUL_API_KEY not configured');
+      res.status(500).json({ error: 'PRINTFUL_API_KEY not configured on Railway' });
+      return;
+    }
+    if (decision.callerProvider === 'gelato' && !GELATO_KEY) {
+      console.error('[fulfill] GELATO_API_KEY not configured');
+      res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
+      return;
+    }
+    console.log(`[fulfill] legacy passthrough sku=${decision.sku ?? 'absent'} → ${decision.resolvedProvider}`);
+    res.status(202).json({ success: true, accepted: true, externalId });
+  }
+
+  void (async () => {
+    let finalPngUrl: string | null = null;
+    let vendor: 'gelato' | 'printful';
+    let gelatoUid: string | null = null;
+    let orderedVariantId: number | null = null;
+    let failSku = decision.mode === 'catalogue' ? decision.gate.sku : (decision.sku ?? 'legacy');
+
+    if (decision.mode === 'legacy') {
+      finalPngUrl = pngUrl ?? null;
+      if (!finalPngUrl && configUrl) {
+        console.log(`[fulfill] Config path — rendering for ${externalId}`);
+        await renderQueue.add(async () => memoryWatch.track(
+          `fulfill ${externalId} ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'}cm`,
+          async () => {
+            const dimsOverride = (widthCmOverride && heightCmOverride)
+              ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
+              : undefined;
+            finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
+          },
+        ));
+        if (!finalPngUrl) {
+          console.error(`[fulfill] Config render FAILED for ${externalId}`);
+          notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
+          return;
+        }
+      }
+      vendor = decision.resolvedProvider;
+      gelatoUid = decision.gelatoProductUid;
+      orderedVariantId = decision.printfulVariantId;
+    } else {
+      const accepted = decision.gate;
+      const printWindow = decision.printWindow;
+      finalPngUrl = accepted.needsRender ? null : (pngUrl ?? null);
+      if (accepted.needsRender) {
+        console.log(`[fulfill] Config path — ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm} cm → ${accepted.dims.width}×${accepted.dims.height}px @ ${accepted.dims.actualDpi} DPI wrap=${printWindow.wrapApplied}`);
+        await renderQueue.add(async () => memoryWatch.track(
+          `fulfill ${externalId} ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm}cm`,
+          async () => {
+            finalPngUrl = await renderConfigToBlobUrl(
+              configUrl!,
+              { widthCm: accepted.widthCm, heightCm: accepted.heightCm },
+              detailedRoads,
+              preloadedCfg,
+              printWindow,
+            );
+          },
+        ));
+        if (!finalPngUrl) {
+          console.error(`[fulfill] Config render FAILED for ${externalId} (${accepted.sku})`);
+          notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
+          return;
+        }
+      }
+      vendor = accepted.vendor;
+      gelatoUid = accepted.gelatoProductUid;
+      orderedVariantId = accepted.printfulVariantId;
+    }
+
+    if (vendor === 'gelato') {
+      if (!gelatoUid) {
+        console.error(`[fulfill/gelato] Missing gelato product UID for ${externalId} (${failSku})`);
+        notifyFulfillFail(externalId, 'missing-gelato-uid', `No Gelato product UID for ${failSku}`);
+        return;
+      }
+      await fulfillGelato(externalId, recipient, gelatoUid, quantity, label, finalPngUrl!);
+      return;
+    }
     if (orderedVariantId == null) {
-      notifyFulfillFail(externalId, 'sku-unrenderable', `SKU ${accepted.sku} resolved to Printful without a variant id`);
+      notifyFulfillFail(externalId, 'sku-unrenderable', `SKU ${failSku} resolved to Printful without a variant id`);
       return;
     }
     // ── Printful branch (default) ───────────────────────────────────────────

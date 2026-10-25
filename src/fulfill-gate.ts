@@ -1,8 +1,18 @@
 /**
  * Decide whether /fulfill may accept a line, and which vendor product to
- * render. The catalogue table is the only source of vendor, product UID /
- * variant id, and print size. Unknown SKUs and disabled rows fail before
- * any vendor call. This module does not call Gelato, Printful, or Shopify.
+ * render.
+ *
+ * An explicit catalogue SKU (body `sku` or a single `lineItems[].sku`) is
+ * routed from the table. A legacy SKU, or no SKU at all, keeps the pre-catalogue
+ * path while LEGACY_SKU_PASSTHROUGH is on (the default). The flag is off only
+ * when the env value is the literal string "false".
+ *
+ * externalId and label are never a SKU source. The studio webhook builds
+ * externalId as `shopify-<id>-<sku>` and slices it to 32 characters, which
+ * drops the colour suffix and can alias a white-canvas SKU onto the disabled
+ * gallery row.
+ *
+ * This module does not call Gelato, Printful, or Shopify.
  */
 import { computeRenderDims, PRODUCTION_RENDER_CAPS, type RenderDims } from './render-dims.js';
 import {
@@ -22,10 +32,25 @@ export type GateReason =
   | 'config-render'
   | 'catalogue-unavailable';
 
-const SKU_IN_TEXT = /MVS-[PFC]-\d{4}(?:-(?:BK|NT|W))?/;
+/**
+ * Old studio forms. Hyphen: optional 2–12 letter city, then a size token
+ * (inch or metric) and a finish. Underscore: MVS_CITY_* and
+ * MVS_<CITY>_50x70cm_*. Design B ids (MVS-P-1824, MVS-C-1824-W) do not match.
+ */
+const LEGACY_HYPHEN = /^MVS-(?:[A-Z]{2,12}-)?(?:16X20|18X24|20X28|24X36|50X70|70X100|100X150)(?:CM)?-(?:SOLO|BLACK|REDOAK|CANVAS-W)$/;
+const LEGACY_UNDERSCORE = /^MVS_[A-Z0-9]+(?:_[A-Z0-9]+)*$/;
+
+export interface LineSku {
+  sku?: string | null;
+}
 
 export interface GateInput {
   sku?: string | null;
+  lineItems?: LineSku[] | null;
+  /**
+   * Accepted so existing callers can still pass it. Never read. A truncated
+   * externalId must not select a catalogue row.
+   */
   externalId?: string | null;
   label?: string | null;
   hasPngUrl: boolean;
@@ -48,8 +73,16 @@ export interface GateFailure {
   message: string;
 }
 
+export interface GateLegacy {
+  ok: true;
+  mode: 'legacy';
+  /** Null when the request did not carry an explicit SKU. */
+  sku: string | null;
+}
+
 export interface GateSuccess {
   ok: true;
+  mode: 'catalogue';
   sku: string;
   vendor: 'gelato' | 'printful';
   productRef: string;
@@ -73,13 +106,39 @@ export interface GateSuccess {
   target: RenderTarget;
 }
 
-export type GateResult = GateSuccess | GateFailure;
+export type GateResult = GateSuccess | GateLegacy | GateFailure;
 
-export function extractSku(input: Pick<GateInput, 'sku' | 'externalId' | 'label'>): string | null {
+/** Default ON. Off only for the literal env value "false" (same shape as STRICT_ROUTING_LOOKUP). */
+export function isLegacyPassthroughEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.LEGACY_SKU_PASSTHROUGH !== 'false';
+}
+
+export function isLegacySku(sku: string): boolean {
+  const normalized = sku.trim().toUpperCase();
+  return LEGACY_HYPHEN.test(normalized) || LEGACY_UNDERSCORE.test(normalized);
+}
+
+export interface ExplicitSku {
+  sku: string | null;
+  /** Set when the request names more than one product. */
+  conflict: 'multiple' | 'mismatch' | null;
+}
+
+/**
+ * Authoritative SKU source: `sku`, else exactly one distinct `lineItems[].sku`.
+ * Blank is absent. externalId and label are not consulted.
+ */
+export function extractExplicitSku(input: { sku?: string | null; lineItems?: LineSku[] | null }): ExplicitSku {
   const explicit = (input.sku ?? '').trim().toUpperCase();
-  if (explicit) return explicit;
-  const blob = `${input.externalId ?? ''} ${input.label ?? ''}`.toUpperCase();
-  return blob.match(SKU_IN_TEXT)?.[0] ?? null;
+  const fromLines = (Array.isArray(input.lineItems) ? input.lineItems : [])
+    .map(line => (line?.sku ?? '').trim().toUpperCase())
+    .filter(sku => sku.length > 0);
+  const distinct = [...new Set(fromLines)];
+  if (distinct.length > 1) return { sku: null, conflict: 'multiple' };
+  if (explicit && distinct.length === 1 && distinct[0] !== explicit) return { sku: null, conflict: 'mismatch' };
+  if (explicit) return { sku: explicit, conflict: null };
+  if (distinct.length === 1) return { sku: distinct[0], conflict: null };
+  return { sku: null, conflict: null };
 }
 
 function fail(httpStatus: number, reason: GateReason, sku: string | null, message: string): GateFailure {
@@ -87,32 +146,59 @@ function fail(httpStatus: number, reason: GateReason, sku: string | null, messag
 }
 
 export function evaluateFulfillGate(input: GateInput): GateResult {
-  let rows;
+  const extracted = extractExplicitSku(input);
+  if (extracted.conflict === 'multiple') {
+    return fail(422, 'sku-unmapped', null, 'This /fulfill call names more than one line SKU. Send one product per call. Nothing was sent to a vendor.');
+  }
+  if (extracted.conflict === 'mismatch') {
+    return fail(422, 'sku-unmapped', null, 'sku and lineItems[].sku disagree. Pass one SKU. Nothing was sent to a vendor.');
+  }
+  const sku = extracted.sku;
+
+  let rows: ReturnType<typeof loadCatalogue> | null = null;
+  let loadError: string | null = null;
   try {
     rows = loadCatalogue();
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return fail(500, 'catalogue-unavailable', null, `Catalogue table could not be loaded: ${detail}`);
+    loadError = err instanceof Error ? err.message : String(err);
   }
 
-  const sku = extractSku(input);
-  if (!sku) {
-    return fail(
-      422,
-      'sku-unmapped',
-      null,
-      'No catalogue SKU on this line. Pass sku (MVS-P-1824, MVS-F-1824-BK, MVS-C-1824-W, …). Unmapped lines are not sent to a vendor.',
-    );
+  // A real catalogue row never falls through to the legacy path, including
+  // disabled optional rows (those stay 422 sku-disabled).
+  if (rows && sku) {
+    const row = rows.find(r => r.sku === sku);
+    if (row) return evaluateCatalogueRow(row, sku, input);
   }
-  const row = rows.find(r => r.sku === sku);
-  if (!row) {
+
+  if (!sku || isLegacySku(sku)) {
+    if (isLegacyPassthroughEnabled()) {
+      return { ok: true, mode: 'legacy', sku };
+    }
+    if (!rows) {
+      return fail(500, 'catalogue-unavailable', sku, `Catalogue table could not be loaded: ${loadError ?? 'unknown error'}`);
+    }
     return fail(
       422,
       'sku-unmapped',
       sku,
-      `SKU ${sku} is not in the catalogue. It was not forwarded to Gelato or Printful. Shopify should retry only after the SKU is a catalogue row.`,
+      sku
+        ? `SKU ${sku} is a legacy form and LEGACY_SKU_PASSTHROUGH is false. It was not forwarded to Gelato or Printful.`
+        : 'No catalogue SKU on this line and LEGACY_SKU_PASSTHROUGH is false. Pass sku (MVS-P-1824, MVS-F-1824-BK, MVS-C-1824-W, …). Nothing was sent to a vendor.',
     );
   }
+
+  if (!rows) {
+    return fail(500, 'catalogue-unavailable', sku, `Catalogue table could not be loaded: ${loadError ?? 'unknown error'}`);
+  }
+  return fail(
+    422,
+    'sku-unmapped',
+    sku,
+    `SKU ${sku} is not in the catalogue. It was not forwarded to Gelato or Printful.`,
+  );
+}
+
+function evaluateCatalogueRow(row: ReturnType<typeof loadCatalogue>[number], sku: string, input: GateInput): GateResult {
   if (!isRowEnabled(row)) {
     return fail(
       422,
@@ -167,6 +253,7 @@ export function evaluateFulfillGate(input: GateInput): GateResult {
 
   return {
     ok: true,
+    mode: 'catalogue',
     sku,
     vendor: row.vendor,
     productRef: row.productRef,

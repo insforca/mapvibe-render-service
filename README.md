@@ -22,9 +22,17 @@ Response: `image/png`. Max single-axis 14,400 px; tiled internally above.
 
 ### `POST /fulfill`
 
-Auth: same as `/render`. A catalogue miss, a disabled SKU, or a config snapshot that cannot be downloaded returns a non-2xx status and does not call a vendor. Otherwise the route returns `202` and the pixel render plus the vendor call run after that ack.
+Auth: same as `/render`.
 
-Body (minimum):
+An explicit Design B SKU is routed from the catalogue. With `LEGACY_SKU_PASSTHROUGH` left at its default (on), a request with no `sku` — which is what the live studio webhook sends — or an old SKU form keeps the previous metafield path and the canvas-label rule. Set the flag to the literal `false` and those legacy requests return 422. A SKU that is neither a catalogue row nor a legacy form is 422 in both flag states. A disabled optional row is 422 `sku-disabled` even when the legacy flag is on.
+
+`sku` is read only from the `sku` field or, if that is empty, from a single `lineItems[].sku`. `externalId` is `shopify-<id>-<sku>` truncated to 32 characters by the webhook, so it is never parsed. A label is not a SKU either.
+
+`dryRun: true`, or a `tags` string/array containing `mv-canary`, runs that same validation and returns **200** with `dryRun: true` plus the resolved vendor, product UID or variant id, print area, centimetres, and DPI. It does not render a PNG and it does not call Gelato or Printful. A routing rejection on a dry run is still the same 422, with `dryRun: true` on the body.
+
+Otherwise a catalogue hit returns `202` and the pixel render plus the vendor call run after that ack. A config snapshot that cannot be downloaded returns **502** before the 202.
+
+Body (catalogue):
 ```json
 {
   "externalId": "shopify-1234-MVS-P-1824",
@@ -36,11 +44,14 @@ Body (minimum):
 }
 ```
 
-`sku` may be omitted when `externalId` or `label` already contains a catalogue SKU (`MVS-P-1824`, `MVS-F-1824-BK`, `MVS-C-1824-W`, …). Vendor, Gelato UID / Printful variant id, and print size come from `data/catalogue-skus.csv`. A caller-supplied `provider`, `variantId`, or `gelatoProductUid` does not override the table.
+On a catalogue SKU, `provider`, `variantId`, and `gelatoProductUid` do not override the table. On the legacy path they do, which is the previous contract: `variantId` and `catalogVariantId` are required, and a missing metafield is Printful only when the label matches `/canvas/i`.
 
 Optional:
-- `pngUrl` — already-rendered PNG. Posters and frames may use it. Canvas SKUs require `configUrl` so the service renders the print area (21×27 or 27×39), not an 18×24 file.
-- `configUrl` — config snapshot. Rendered at the catalogue size before the vendor call.
+- `pngUrl` — already-rendered PNG. Catalogue posters and frames may use it. Catalogue canvas SKUs require `configUrl` so the service renders the print area (21×27 or 27×39). Legacy orders still accept `pngUrl` or `configUrl` and do not expand a print area.
+- `configUrl` — config snapshot.
+- `dimensionsArePrintArea` — also read from the snapshot. When true, canvas bounds are already the print sheet and the wrap is not applied again. The file is still rendered at the catalogue print-area centimetres. When the flag is absent, bounds are the visible face and the wrap is applied once. The service previously ignored this flag and always expanded.
+- `lineItems` — `{ "sku": "MVS-P-1824" }`. One distinct SKU. Two distinct SKUs is 422.
+- `dryRun` / `tags` — see above.
 - `detailedRoads` — staff reprint override for the editor road-detail mode.
 
 ### `GET /health`
@@ -60,9 +71,21 @@ Public. Returns `{ "status": "ok", "version": "...", "queue": {...}, "uptime": .
 
 Optional rows (16×20 poster, natural-oak frames, gallery canvas including 30×40) are in the file and stay disabled until `CATALOGUE_ENABLE_OPTIONAL=true`.
 
-An unknown SKU, a disabled SKU, or a size that would not render single-pass at ≥ 300 DPI returns **422** (catalogue load failure returns 500) plus `[FULFILL-FAIL]` / `ALERT_WEBHOOK_URL`. Nothing is sent to a vendor. A config snapshot that cannot be downloaded returns **502** before the 202, so the caller can make Shopify retry. Legacy metric SKUs, `MVS_CITY_*`, 16×20 Printful ids, and 100×150 cm are not in the table.
+An explicit SKU that is not a row, a disabled row, or a size that would not render single-pass at ≥ 300 DPI returns **422** plus `[FULFILL-FAIL]`. A catalogue file that cannot be loaded returns 500 for those explicit SKUs. Nothing is sent to a vendor. A config snapshot that cannot be downloaded returns **502** before the 202.
 
-`FULFILL_DRY_RUN` still only changes Gelato `orderType` to `draft`. `PRINTFUL_AUTO_CONFIRM` is unchanged.
+Legacy forms are not in the table. While `LEGACY_SKU_PASSTHROUGH` is on they use Shopify metafields (`custom.pod_partner`, `custom.gelato_uid`) and the old rule that a missing metafield is Printful only when the label contains "canvas". 100×150 cm is not added back to the catalogue. The legacy path does not grow a new size rejection the previous handler lacked. Orders that reach `/fulfill` today have no `sku` field; that absence is the legacy path, so a deploy with the flag left on does not change them.
+
+`dimensionsArePrintArea` was ignored before this change, and canvas rows always expanded the editor bounds from the visible size (18×24 / 24×36) to the print area (21×27 / 27×39). The editor sets the flag when the snapshot bounds are already that print sheet. The service now skips the second expansion when the flag is on the body or the snapshot. A full poster PNG was not rendered; the geometry test checks one expansion versus two.
+
+`FULFILL_DRY_RUN` still only changes Gelato `orderType` to `draft` on a real vendor call. A request `dryRun` never gets that far. `PRINTFUL_AUTO_CONFIRM` is unchanged.
+
+### Already not fulfilled, before this change
+
+- Metric SKUs, `MVS_CITY_*`, and the 50×70 / 70×100 / 100×150 masters are not in the studio `SKU_MAP`, so the webhook already answers "Unknown SKU" and does not call this service. Passthrough only matters for a direct `/fulfill` that still uses the old body.
+- The 100×150 Gelato product is deactivated and the master file is not available. The new table omits it. The legacy handler never had a special 100×150 rejection, and this change does not add one.
+- Truncating `externalId` to 32 characters can still make two lines of one order share an id (Printful `external_id`, Gelato duplicate check). That is in the webhook. This service no longer reads a SKU out of that truncated string, which had been able to alias `MVS-C-1824-W` onto the disabled gallery row `MVS-C-1824`.
+- The studio config-path webhook can return 200 when every line is unknown, so Shopify does not retry. That is the other repository.
+- A catalogue canvas line that arrives with only `pngUrl` is still 422. Legacy canvas orders that fulfil today send `pngUrl` or `configUrl` and caller centimetres, and they stay on that path.
 
 ## Env Vars
 
@@ -78,6 +101,7 @@ An unknown SKU, a disabled SKU, or a size that would not render single-pass at �
 | `FULFILL_DRY_RUN`       | No      | `"true"` sends Gelato `orderType: "draft"` (never charged). Default is a real Gelato order. Printful is unaffected. |
 | `CATALOGUE_DESIGN`      | No      | Design letter matched against `in_designs` (default `B`) |
 | `CATALOGUE_ENABLE_OPTIONAL` | No | `"true"` also routes the disabled premium rows |
+| `LEGACY_SKU_PASSTHROUGH` | No | Default on. The literal `false` makes a missing SKU or a legacy form return 422 instead of the metafield path. |
 | `ALERT_WEBHOOK_URL`     | No      | Optional Slack/Discord/Sentry-Webhook URL. When set, `/fulfill` terminal failures POST a `{ text, event }` JSON payload there in addition to the `[FULFILL-FAIL]` log line. Best-effort; webhook errors are swallowed. |
 | `BLOB_READ_WRITE_TOKEN` | If using `configUrl` path | Vercel Blob token for uploads |
 | `MAPTILER_API_KEY`      | No      | Tile fallback when style references MapTiler |
@@ -94,12 +118,14 @@ Unknown SKUs, disabled SKUs, and a config snapshot that fails to download are re
 
 Reasons:
 
-- `sku-unmapped` — SKU is not in the catalogue (422, no vendor call)
-- `sku-disabled` — SKU is an optional row and `CATALOGUE_ENABLE_OPTIONAL` is not `true` (422)
-- `sku-unrenderable` — size is not single-pass ≥ 300 DPI, or a canvas SKU arrived without `configUrl` (422)
-- `catalogue-unavailable` — the CSV could not be loaded (500)
+- `sku-unmapped` — explicit SKU is not a catalogue row, or (only when `LEGACY_SKU_PASSTHROUGH=false`) the SKU is absent or a legacy form (422, no vendor call)
+- `sku-disabled` — SKU is an optional row and `CATALOGUE_ENABLE_OPTIONAL` is not `true` (422). The legacy flag does not route these.
+- `sku-unrenderable` — size is not single-pass ≥ 300 DPI, or a catalogue canvas SKU arrived without `configUrl` (422)
+- `catalogue-unavailable` — the CSV could not be loaded and the SKU is not a legacy passthrough (500)
+- `routing-lookup-error` — legacy path, Shopify metafield lookup failed, strict mode (422)
+- `routing-unresolved` — legacy path, no `pod_partner` metafield and the label is not canvas (422)
 - `config-render` — config snapshot failed to download (502, before 202) or the render returned null after 202
-- `missing-gelato-uid` — catalogue row was Gelato but had no product UID
+- `missing-gelato-uid` — Gelato was selected but no product UID was available
 - `gelato-api` — Gelato v4 returned non-2xx
 - `gelato-uncaught` — exception thrown inside the Gelato fetch
 - `printful-api` — Printful v2/v1 returned a non-success body

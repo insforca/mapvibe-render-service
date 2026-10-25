@@ -48,6 +48,54 @@ export function expandProjectedWindow(
   return { x0: nx0, x1: nx1, y0: ny0, y1: ny1 };
 }
 
+export interface WrapTarget {
+  printWIn: number;
+  printHIn: number;
+  visibleWIn: number;
+  visibleHIn: number;
+  visibleFractionW: number;
+  visibleFractionH: number;
+  hasWrap: boolean;
+}
+
+export interface ResolvedPrintWindow {
+  visibleFractionW: number;
+  visibleFractionH: number;
+  visibleWIn: number;
+  visibleHIn: number;
+  hasWrap: boolean;
+  /** False when the editor already expanded bounds to the print area. */
+  wrapApplied: boolean;
+}
+
+/**
+ * The editor snapshot can set dimensionsArePrintArea. That flag means the
+ * bounds are already the print sheet, so fulfillment must not expand them
+ * again. The file is still rendered at the catalogue print-area centimetres.
+ * When the flag is absent, bounds are the visible face and the wrap is applied
+ * once.
+ */
+export function resolvePrintWindow(target: WrapTarget, dimensionsArePrintArea: boolean): ResolvedPrintWindow {
+  if (dimensionsArePrintArea) {
+    return {
+      visibleFractionW: 1,
+      visibleFractionH: 1,
+      visibleWIn: target.printWIn,
+      visibleHIn: target.printHIn,
+      hasWrap: false,
+      wrapApplied: false,
+    };
+  }
+  return {
+    visibleFractionW: target.visibleFractionW,
+    visibleFractionH: target.visibleFractionH,
+    visibleWIn: target.visibleWIn,
+    visibleHIn: target.visibleHIn,
+    hasWrap: target.hasWrap,
+    wrapApplied: target.hasWrap,
+  };
+}
+
 /** Viewport passed to zoomForBounds so the visible bounds fill the centre window, not the whole sheet. */
 export function innerViewportPx(
   canvasW: number,

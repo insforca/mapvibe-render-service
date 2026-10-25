@@ -44,14 +44,40 @@ describe('fulfill gate — catalogue routing', () => {
     expect(result.httpStatus).toBeUndefined();
   });
 
-  it('reads the SKU out of externalId when the body omits sku', () => {
-    const result = gate({
+  it('does not recover a SKU from externalId or label, even when the full SKU fits', () => {
+    const fromId = gate({
       externalId: 'shopify-7724620874069-MVS-P-2436',
+      label: 'Poster MVS-P-2436',
+      hasPngUrl: true,
+      hasConfigUrl: false,
+    });
+    expect(fromId.ok).toBe(true);
+    if (!fromId.ok) return;
+    expect(fromId.mode).toBe('legacy');
+
+    // 32-char truncation of shopify-<13 digit id>-MVS-C-1824-W ends on MVS-C-1824,
+    // which is the disabled gallery row. That fragment must not be parsed.
+    const truncated = gate({
+      externalId: 'shopify-6123456789012-MVS-C-1824',
+      label: '18×24 Canvas',
+      hasPngUrl: true,
+      hasConfigUrl: true,
+    });
+    expect(truncated.ok).toBe(true);
+    if (!truncated.ok) return;
+    expect(truncated.mode).toBe('legacy');
+    expect(truncated).not.toMatchObject({ reason: 'sku-disabled' });
+  });
+
+  it('reads a single lineItems[].sku and ignores a different SKU buried in externalId', () => {
+    const result = gate({
+      lineItems: [{ sku: 'mvs-p-2436' }],
+      externalId: 'shopify-6123456789012-MVS-C-1824',
       hasPngUrl: true,
       hasConfigUrl: false,
     });
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok || result.mode !== 'catalogue') return;
     expect(result.sku).toBe('MVS-P-2436');
     expect(result.vendor).toBe('gelato');
     expect(result.dims).toMatchObject({ width: 9600, height: 14400, mode: 'single-pass' });
@@ -123,16 +149,85 @@ describe('fulfill gate — catalogue routing', () => {
   });
 });
 
-describe('fulfill gate — loud failure', () => {
-  it.each([
+describe('fulfill gate — legacy passthrough', () => {
+  const legacyForms = [
+    '',
     'MVS-100x150-SOLO',
     'MVS-50x70-SOLO',
+    'MVS-70x100-BLACK',
     'MVS_CITY_18x24_SOLO',
+    'MVS_PAR_50x70cm_SOLO',
     'MVS-NYC-18x24-BLACK',
-    'MVS-NYC-18x24-CANVAS-W',
+    'MVS-ABJ-18x24-SOLO',
+    'MVS-20x28-CANVAS-W',
     'MVS-16x20-SOLO',
-    '',
-  ])('rejects unmapped SKU %j with a non-2xx status', (sku) => {
+  ];
+
+  it.each(legacyForms)('flag on (default): %j stays on the legacy path', (sku) => {
+    const result = gate({ sku, hasPngUrl: true, hasConfigUrl: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.mode).toBe('legacy');
+  });
+
+  it.each(legacyForms)('flag off: %j is 422 sku-unmapped', (sku) => {
+    vi.stubEnv('LEGACY_SKU_PASSTHROUGH', 'false');
+    const result = gate({ sku, hasPngUrl: true, hasConfigUrl: false });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.httpStatus).toBe(422);
+    expect(result.reason).toBe('sku-unmapped');
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('routes a Design B SKU through the table with the flag on or off', () => {
+    const on = gate({ sku: 'MVS-P-1824', hasPngUrl: true, hasConfigUrl: false });
+    vi.stubEnv('LEGACY_SKU_PASSTHROUGH', 'false');
+    const off = gate({ sku: 'MVS-P-1824', hasPngUrl: true, hasConfigUrl: false });
+    expect(on.ok && off.ok).toBe(true);
+    if (!on.ok || !off.ok) return;
+    expect(on.mode).toBe('catalogue');
+    expect(off.mode).toBe('catalogue');
+    expect(off.gelatoProductUid).toBe(GELATO_1824);
+  });
+
+  it('keeps a disabled catalogue row on 422 when the legacy flag is on', () => {
+    const result = gate({ sku: 'MVS-C-1824', hasPngUrl: true, hasConfigUrl: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('sku-disabled');
+    expect(result.httpStatus).toBe(422);
+  });
+
+  it('rejects a truncated explicit SKU and a typo in both flag states', () => {
+    for (const flag of [undefined, 'false'] as const) {
+      if (flag) vi.stubEnv('LEGACY_SKU_PASSTHROUGH', flag);
+      else vi.stubEnv('LEGACY_SKU_PASSTHROUGH', '');
+      for (const sku of ['MVS-F-1824', 'MVS-NOPE', 'MVS-ABJ-18']) {
+        const result = gate({ sku, hasPngUrl: true, hasConfigUrl: false });
+        expect(result.ok, `${flag ?? 'on'} ${sku}`).toBe(false);
+        if (result.ok) continue;
+        expect(result.reason).toBe('sku-unmapped');
+        expect(result.httpStatus).toBe(422);
+      }
+    }
+  });
+
+  it('rejects two distinct line SKUs', () => {
+    const result = gate({
+      lineItems: [{ sku: 'MVS-P-1824' }, { sku: 'MVS-P-2436' }],
+      hasPngUrl: true,
+      hasConfigUrl: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.httpStatus).toBe(422);
+    expect(result.reason).toBe('sku-unmapped');
+  });
+});
+
+describe('fulfill gate — loud failure', () => {
+  it.each(['MVS-NOPE', 'MVS-F-1824', 'NOT-A-SKU'])('rejects unmapped SKU %j with a non-2xx status', (sku) => {
     const result = gate({ sku, externalId: 'shopify-9-no-catalogue-sku', hasPngUrl: true, hasConfigUrl: false });
     expect(result.ok).toBe(false);
     if (result.ok) return;

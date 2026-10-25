@@ -8,9 +8,11 @@
  *
  * See README "Vendor routing" for the operator-facing contract.
  *
- * /fulfill does not call this module. Vendor, product id, and print size come
- * from the catalogue table (src/fulfill-gate.ts). The label-contains-"canvas"
- * rule that used to sit on top of a missing metafield has been removed.
+ * Catalogue SKUs do not use this module. Legacy orders (no explicit catalogue
+ * SKU, or an old metric / MVS_CITY_* / MVS-18x24-BLACK form) call it again
+ * while LEGACY_SKU_PASSTHROUGH is on. The label-contains-"canvas" rule still
+ * applies on that path only: a missing metafield is Printful for a canvas
+ * label, and a 422 otherwise.
  */
 
 export type RoutingResult = {

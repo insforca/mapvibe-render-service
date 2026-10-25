@@ -12,7 +12,7 @@ import {
   renderTargetForRow,
 } from '../catalogue.js';
 import { checkCatalogueAgainstFixture, type VendorFixture } from '../catalogue-check.js';
-import { expandProjectedWindow } from '../print-window.js';
+import { expandProjectedWindow, resolvePrintWindow } from '../print-window.js';
 
 const ROOT = join(__dirname, '..', '..');
 const CSV_PATH = join(ROOT, 'data', 'catalogue-skus.csv');
@@ -181,6 +181,40 @@ describe('print window', () => {
     expect(out.y0).toBeCloseTo(-1.5, 6);
     expect(out.y1).toBeCloseTo(25.5, 6);
     expect((out.x1 - out.x0) / (out.y1 - out.y0)).toBeCloseTo(21 / 27, 6);
+  });
+
+  it('does not apply the canvas wrap a second time when dimensionsArePrintArea is set', () => {
+    // #87 always expanded and never read dimensionsArePrintArea. The editor
+    // writes that flag on the snapshot to say the bounds are already the
+    // print sheet. Expanding those bounds again (print/visible a second time)
+    // is the double wrap. Honouring the flag keeps the 21×27 sheet.
+    const row = loadCatalogue().find(r => r.sku === 'MVS-C-1824-W');
+    expect(row).toBeTruthy();
+    if (!row) return;
+    const target = renderTargetForRow(row);
+    const once = expandProjectedWindow(0, target.visibleWIn, 0, target.visibleHIn, target.printWIn, target.printHIn, target.visibleWIn, target.visibleHIn);
+    expect(once.x1 - once.x0).toBeCloseTo(21, 5);
+    expect(once.y1 - once.y0).toBeCloseTo(27, 5);
+
+    const twice = expandProjectedWindow(once.x0, once.x1, once.y0, once.y1, target.printWIn, target.printHIn, target.visibleWIn, target.visibleHIn);
+    expect(twice.x1 - twice.x0).toBeGreaterThan(21 + 1);
+    expect(twice.y1 - twice.y0).toBeGreaterThan(27 + 1);
+
+    const skipped = resolvePrintWindow(target, true);
+    expect(skipped.wrapApplied).toBe(false);
+    expect(skipped.hasWrap).toBe(false);
+    expect(skipped.visibleFractionW).toBe(1);
+    expect(skipped.visibleFractionH).toBe(1);
+    const held = skipped.hasWrap
+      ? expandProjectedWindow(0, target.printWIn, 0, target.printHIn, target.printWIn, target.printHIn, target.visibleWIn, target.visibleHIn)
+      : { x0: 0, x1: target.printWIn, y0: 0, y1: target.printHIn };
+    expect(held.x1 - held.x0).toBeCloseTo(21, 5);
+    expect(held.y1 - held.y0).toBeCloseTo(27, 5);
+
+    const applied = resolvePrintWindow(target, false);
+    expect(applied.wrapApplied).toBe(true);
+    expect(applied.visibleFractionW).toBeCloseTo(18 / 21, 6);
+    expect(applied.visibleFractionH).toBeCloseTo(24 / 27, 6);
   });
 
   it('leaves the box alone when there is no wrap', () => {
