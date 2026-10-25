@@ -7,6 +7,12 @@
  * so vi.stubEnv works in tests without dynamic re-imports.
  *
  * See README "Vendor routing" for the operator-facing contract.
+ *
+ * Catalogue SKUs do not use this module. Legacy orders (no explicit catalogue
+ * SKU, or an old metric / MVS_CITY_* / MVS-18x24-BLACK form) call it again
+ * while LEGACY_SKU_PASSTHROUGH is on. The label-contains-"canvas" rule still
+ * applies on that path only: a missing metafield is Printful for a canvas
+ * label, and a 422 otherwise.
  */
 
 export type RoutingResult = {

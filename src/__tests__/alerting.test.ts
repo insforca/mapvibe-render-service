@@ -38,6 +38,18 @@ describe('notifyFulfillFail', () => {
     delete process.env.ALERT_FROM_EMAIL;
   });
 
+  it('logs [FULFILL-FAIL] for an unmapped SKU and can POST the alert hook', async () => {
+    process.env.ALERT_WEBHOOK_URL = 'https://hooks.example.com/sku';
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    notifyFulfillFail('order-sku', 'sku-unmapped', 'SKU MVS-100x150-SOLO is not in the catalogue');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('sku-unmapped'));
+    await vi.runAllTimersAsync();
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.event.reason).toBe('sku-unmapped');
+    expect(body.event.externalId).toBe('order-sku');
+    spy.mockRestore();
+  });
+
   it('logs [FULFILL-FAIL] tag always', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     notifyFulfillFail('order-001', 'gelato-api', 'timeout');

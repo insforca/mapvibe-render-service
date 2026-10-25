@@ -31,6 +31,10 @@ Params (JSON via stdin):
                          framing runs unchanged.
   width_in        float  poster width in inches  (default: 12.0)
   height_in       float  poster height in inches (default: 16.0)
+  visible_width_in  float  optional. Visible product width when width_in is a
+                         larger canvas print area. Bounds are expanded so this
+                         window stays centred; the margin is wrap.
+  visible_height_in float  optional. Pair of visible_width_in.
   dpi             int    output DPI (default: 400)
   show_text       bool   render city/country/coords text (default: True)
   full_bleed      bool   fill canvas edge-to-edge (default: True)
@@ -51,6 +55,10 @@ import math
 import threading
 import tempfile
 import struct
+
+# Canvas print sheets are larger than the visible poster. Pure arithmetic;
+# imported here so every _bounds_extent call site shares one implementation.
+from print_window import expand_projected_window
 
 # ââ Headless matplotlib â MUST be set before any pyplot import âââââââââââââ
 import matplotlib
@@ -1148,7 +1156,8 @@ def _normalize_bounds(raw):
     return (west, south, east, north)
 
 
-def _bounds_extent(bounds: tuple, target_crs, width_in: float, height_in: float):
+def _bounds_extent(bounds: tuple, target_crs, width_in: float, height_in: float,
+                   visible_width_in=None, visible_height_in=None):
     """
     Project the WGS-84 `bounds` rectangle into `target_crs` and return
     (x0, x1, y0, y1) axis limits whose aspect equals the poster aspect exactly.
@@ -1194,6 +1203,12 @@ def _bounds_extent(bounds: tuple, target_crs, width_in: float, height_in: float)
 
     x0, x1 = min(xs), max(xs)
     y0, y1 = min(ys), max(ys)
+    # Canvas: the bounds are the visible product. Grow both axes so that
+    # window sits in the centre of the larger print sheet. No-op when the
+    # visible size is omitted or already equals the print size (posters).
+    # Still expand-only: a visible size larger than the print is ignored.
+    x0, x1, y0, y1 = expand_projected_window(
+        x0, x1, y0, y1, width_in, height_in, visible_width_in, visible_height_in)
     span_x = x1 - x0
     span_y = y1 - y0
     if span_x <= 0 or span_y <= 0:
@@ -1272,6 +1287,12 @@ def render(params: dict) -> bytes:
     dist            = int(params.get('dist', 15000))
     width_in        = float(params.get('width_in', 12.0))
     height_in       = float(params.get('height_in', 16.0))
+    visible_width_in = params.get('visible_width_in')
+    visible_height_in = params.get('visible_height_in')
+    if visible_width_in is not None:
+        visible_width_in = float(visible_width_in)
+    if visible_height_in is not None:
+        visible_height_in = float(visible_height_in)
     dpi             = int(params.get('dpi', 400))
     # preview_max_px â optional pixel cap for the long edge of the figure.
     # When set, width_in/height_in are rescaled so max(W,H)*dpi == preview_max_px.
@@ -1322,6 +1343,11 @@ def render(params: dict) -> bytes:
             _scale = _pmx / _long_px
             width_in  = width_in  * _scale
             height_in = height_in * _scale
+            # Keep the visible/print ratio. Fulfillment does not set preview_max_px.
+            if visible_width_in is not None:
+                visible_width_in = visible_width_in * _scale
+            if visible_height_in is not None:
+                visible_height_in = visible_height_in * _scale
     _log(f'{display_city}, {display_country} @ {point[0]:.4f},{point[1]:.4f}  '
          f'dist={dist}m  {width_in}Ã{height_in}in  {dpi}DPI  '
          f'{"pmx="+str(_pmx)+"  " if preview_max_px else ""}'
@@ -1397,7 +1423,8 @@ def render(params: dict) -> bytes:
             # extent makes coverage correct by construction for any aspect the
             # caller sends.
             _ex0, _ex1, _ey0, _ey1 = _bounds_extent(bounds, _PMTILES_DRAW_CRS,
-                                                    width_in, height_in)
+                                                    width_in, height_in,
+                                                    visible_width_in, visible_height_in)
             _dw, _ds, _de, _dn = _extent_to_lnglat_bbox(
                 _ex0, _ex1, _ey0, _ey1, _PMTILES_DRAW_CRS)
             # Margin on top of the drawn rectangle: absorbs tile-edge rounding
@@ -1464,7 +1491,8 @@ def render(params: dict) -> bytes:
     if bounds is not None:
         try:
             _fx0, _fx1, _fy0, _fy1 = _bounds_extent(bounds, _PMTILES_DRAW_CRS,
-                                                    width_in, height_in)
+                                                    width_in, height_in,
+                                                    visible_width_in, visible_height_in)
             _need = (math.hypot(_fx1 - _fx0, _fy1 - _fy0) / 2.0) \
                 * math.cos(math.radians(point[0])) * 1.05
             if _need > _fetch_dist:
@@ -1854,7 +1882,8 @@ def render(params: dict) -> bytes:
         # byte the previous behaviour.
         if bounds is not None:
             _x0, _x1, _y0, _y1 = _bounds_extent(bounds, target_crs,
-                                                width_in, height_in)
+                                                width_in, height_in,
+                                                visible_width_in, visible_height_in)
             _log(f'extent from bounds W/S/E/N={bounds} → '
                  f'x[{_x0:.1f},{_x1:.1f}] y[{_y0:.1f},{_y1:.1f}] '
                  f'({(_x1-_x0)/1000:.2f}×{(_y1-_y0)/1000:.2f} km, '
@@ -1923,7 +1952,8 @@ def render(params: dict) -> bytes:
         if bounds is not None:
             _gcrs = g_proj.graph.get('crs', target_crs)
             _bx0, _bx1, _by0, _by1 = _bounds_extent(bounds, _gcrs,
-                                                    width_in, height_in)
+                                                    width_in, height_in,
+                                                    visible_width_in, visible_height_in)
             crop_xlim = (_bx0, _bx1)
             crop_ylim = (_by0, _by1)
             _log(f'extent from bounds W/S/E/N={bounds} → '

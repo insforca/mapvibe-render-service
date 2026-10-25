@@ -82,6 +82,7 @@ RUN ${MAPVIBE_PYTHON} -c "\
 import osmnx, matplotlib, geopandas, shapely, PIL, pyrosm, boto3; \
 print('Python OSM renderer: all imports OK')\
 "
+COPY data/ ./data/
 COPY src/ ./src/
 RUN npx tsc
 
