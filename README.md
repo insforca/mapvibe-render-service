@@ -56,7 +56,7 @@ Optional:
 
 ### `GET /health`
 
-Public. Returns `{ "status": "ok", "version": "...", "queue": {...}, "uptime": ... }`.
+Public. Returns `{ "status": "ok", "version": "3.6.0", "commit": "<git sha or null>", "build": "3.6.0" or "3.6.0@<sha>", "capabilities": ["dryRun", "catalogueSku"], "queue": {...}, "uptime": ... }`. No API key. The studio webhook treats this build as dry-run capable when `capabilities` contains both `dryRun` and `catalogueSku`. `commit` is only a hex git SHA (`RAILWAY_GIT_COMMIT_SHA`, else `GIT_COMMIT` or `SOURCE_VERSION`); anything else is omitted.
 
 ## Vendor routing (catalogue table)
 

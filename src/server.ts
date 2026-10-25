@@ -40,6 +40,7 @@ import {
 import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
 import { planFulfillment } from './fulfill-plan.js';
+import { healthIdentity } from './health-info.js';
 import { innerViewportPx } from './print-window.js';
 import {
   notifyFulfillFail,
@@ -1384,9 +1385,18 @@ async function renderConfigToBlobUrl(
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
-app.get('/health', (req: Request, res: Response) => res.json({
+app.get('/health', (req: Request, res: Response) => {
+  // Public on purpose. Railway probes /health with no key, and the studio
+  // webhook reads `capabilities` to see that this build accepts dryRun and
+  // an explicit catalogue SKU. commit/build are a git SHA or the version
+  // alone — never an API key.
+  const identity = healthIdentity();
+  res.json({
   status: 'ok',
-  version: '3.6.0',
+  version: identity.version,
+  commit: identity.commit,
+  build: identity.build,
+  capabilities: identity.capabilities,
   engine:  RENDER_ENGINE,
   queue: {
     size:           renderQueue.size,
@@ -1428,7 +1438,8 @@ app.get('/health', (req: Request, res: Response) => res.json({
   // `current` and `lastRender.heldAfterMb` answer "did the memory come back?".
   // See src/memory-watch.ts for the sampling-resolution caveat.
   memory: memoryWatch.report(),
-}));
+  });
+});
 
 // POST /render — synchronous render, returns PNG
 app.post('/render', async (req: Request, res: Response): Promise<void> => {
