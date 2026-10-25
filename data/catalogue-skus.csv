@@ -1,0 +1,13 @@
+sku,vendor,product_ref,orientation,trim_w_in,trim_h_in,px_w,px_h,price_usd,min_dpi,bleed_mm,ship_override,in_designs,tier,size,finish,paper_or_product,note
+MVS-P-1620,gelato,fine_arts_poster_geo_simplified_product_12-0_ver_400x500-mm-16x20-inch_200-gsm-80lb-enhanced-uncoated,ver,16,20,6400,8000,39.99,300,0,,C,Poster,16x20,Poster,Giclee 12-colour 200gsm enhanced matte,needs new editor size (4:5)
+MVS-P-1824,gelato,fine_arts_poster_geo_simplified_product_12-0_ver_450x600-mm-18x24-inch_200-gsm-80lb-enhanced-uncoated,ver,18,24,7200,9600,49.99,300,0,,A|B|C,Poster,18x24,Poster,Giclee 12-colour 200gsm enhanced matte,metric-cut 450x600mm
+MVS-P-2436,gelato,fine_arts_poster_geo_simplified_product_12-0_ver_600x900-mm-24x36-inch_200-gsm-80lb-enhanced-uncoated,ver,24,36,9600,14400,69.99,300,0,,A|B|C,Poster,24x36,Poster,Giclee 12-colour 200gsm enhanced matte,metric-cut 600x900mm
+MVS-P-2840,gelato,fine_arts_poster_geo_simplified_product_12-0_ver_700x1000-mm-28x40-inch_200-gsm-80lb-enhanced-uncoated,ver,28,40,10059,14370,79.99,300,0,,A|B|C,Poster (oversize),28x40,Poster,Giclee 12-colour 200gsm enhanced matte,"= editor 70x100cm, 365dpi single pass"
+MVS-F-1824-BK,printful,3,ver,18,24,7200,9600,129.99,,,13.99,A|B|C,Premium,18x24,Framed - Black,"Enhanced matte poster, black wood frame",
+MVS-F-2436-BK,printful,4,ver,24,36,9600,14400,219.99,,,29.99,B|C,Premium,24x36,Framed - Black,"Enhanced matte poster, black wood frame",needs 219.99 to clear floor
+MVS-F-1824-NT,printful,15031,ver,18,24,7200,9600,129.99,,,13.99,C,Premium,18x24,Framed - Natural,"Enhanced matte poster, red-oak frame",
+MVS-F-2436-NT,printful,15032,ver,24,36,9600,14400,199.99,,,29.99,C,Premium,24x36,Framed - Natural,"Enhanced matte poster, red-oak frame",ship assumed = black
+MVS-C-1824-W,printful,15699,ver,21,27,8400,10800,179.99,,,10.49,A|B|C,Premium,18x24,Canvas - White frame,"Framed canvas 614, white frame, 21x27 print area",render must target 21x27; ship E
+MVS-C-2436-W,printful,15700,ver,27,39,9963,14391,249.99,,,14.49,B|C,Premium,24x36,Canvas - White frame,"Framed canvas 614, white frame, 27x39 print area",render must target 27x39; ship V (May order)
+MVS-C-1824,printful,7,ver,24,30,9600,12000,99.99,,,10.39,C,Premium,18x24,Canvas - Gallery wrap,"Canvas product 3 unframed, 24x30 print area",optional margin-friendly canvas; ship E
+MVS-C-3040,printful,19323,ver,33,43,10725,13975,169.99,,,19.00,C,Premium (oversize),30x40,Canvas - Gallery wrap,"Canvas product 3 unframed, 33x43 print area",oversize canvas; ship U (assumed 19)

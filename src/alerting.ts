@@ -31,7 +31,11 @@ export type FulfillFailReason =
   | 'printful-api'
   | 'printful-uncaught'
   | 'routing-lookup-error'   // Shopify metafield lookup failed and strict mode rejected the order
-  | 'routing-unresolved';    // variant has no pod_partner metafield and is not a white-canvas item
+  | 'routing-unresolved'     // variant has no pod_partner metafield and is not a white-canvas item
+  | 'sku-unmapped'           // SKU is not in the catalogue; line was not forwarded
+  | 'sku-disabled'           // SKU is in the catalogue but switched off (optional premium)
+  | 'sku-unrenderable'       // catalogue size cannot be rendered single-pass, or canvas has no config
+  | 'catalogue-unavailable'; // catalogue file failed to load
 
 // ── Resend client — module-level singleton ────────────────────────────────────
 const RESEND_API_KEY   = process.env.RESEND_API_KEY    ?? '';

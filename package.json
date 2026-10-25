@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "dev": "ts-node src/server.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "catalogue:validate": "python3 scripts/sku-validate.py"
   },
   "dependencies": {
     "@maplibre/maplibre-gl-native": "6.4.1",

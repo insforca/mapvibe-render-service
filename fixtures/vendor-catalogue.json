@@ -1,0 +1,57 @@
+{
+  "source": "Offline snapshot for the catalogue validator. Assembled from the 2026-10-25 Design B research (Gelato product UIDs and Printful catalog variant ids, print areas, and stock). This file is not a live vendor response and must never be used to place an order.",
+  "gelato": [
+    {
+      "productUid": "fine_arts_poster_geo_simplified_product_12-0_ver_400x500-mm-16x20-inch_200-gsm-80lb-enhanced-uncoated",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 400,
+      "heightMm": 500
+    },
+    {
+      "productUid": "fine_arts_poster_geo_simplified_product_12-0_ver_450x600-mm-18x24-inch_200-gsm-80lb-enhanced-uncoated",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 450,
+      "heightMm": 600
+    },
+    {
+      "productUid": "fine_arts_poster_geo_simplified_product_12-0_ver_600x900-mm-24x36-inch_200-gsm-80lb-enhanced-uncoated",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 600,
+      "heightMm": 900
+    },
+    {
+      "productUid": "fine_arts_poster_geo_simplified_product_12-0_ver_700x1000-mm-28x40-inch_200-gsm-80lb-enhanced-uncoated",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 700,
+      "heightMm": 1000
+    }
+  ],
+  "printful": [
+    { "variantId": 3, "productId": 2, "inStockUs": true, "printWidthIn": 18, "printHeightIn": 24 },
+    { "variantId": 4, "productId": 2, "inStockUs": true, "printWidthIn": 24, "printHeightIn": 36 },
+    { "variantId": 15031, "productId": 2, "inStockUs": true, "printWidthIn": 18, "printHeightIn": 24 },
+    { "variantId": 15032, "productId": 2, "inStockUs": true, "printWidthIn": 24, "printHeightIn": 36 },
+    { "variantId": 15699, "productId": 614, "inStockUs": true, "printWidthIn": 21, "printHeightIn": 27 },
+    { "variantId": 15700, "productId": 614, "inStockUs": true, "printWidthIn": 27, "printHeightIn": 39 },
+    { "variantId": 7, "productId": 3, "inStockUs": true, "printWidthIn": 24, "printHeightIn": 30 },
+    { "variantId": 19323, "productId": 3, "inStockUs": true, "printWidthIn": 33, "printHeightIn": 43 }
+  ],
+  "rejected": [
+    {
+      "id": "1000x1500",
+      "reason": "100x150 cm Gelato product is deactivated and the pipeline cannot single-pass it at 300 DPI"
+    },
+    {
+      "id": "frame_premium_product",
+      "reason": "Gelato blank-frame UIDs are not printable posters"
+    },
+    {
+      "id": "17645",
+      "reason": "Printful 20x28 white canvas is not in the supported catalogue"
+    }
+  ]
+}

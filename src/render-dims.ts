@@ -19,6 +19,18 @@
 
 export const CM_PER_INCH = 2.54;
 
+/**
+ * Caps the fulfillment renderer actually uses. /health publishes these same
+ * numbers. The catalogue gate refuses any SKU whose single-pass result falls
+ * outside them, so a size that would tile (100×150 cm) cannot be listed.
+ */
+export const PRODUCTION_RENDER_CAPS = {
+  targetDpi: 400,
+  minSinglePassDpi: 300,
+  maxEdgePx: 14_400,
+  maxPx: 150_000_000,
+} as const;
+
 export interface RenderDims {
   width: number;      // final render width, px
   height: number;     // final render height, px

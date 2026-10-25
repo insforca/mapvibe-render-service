@@ -7,6 +7,10 @@
  * so vi.stubEnv works in tests without dynamic re-imports.
  *
  * See README "Vendor routing" for the operator-facing contract.
+ *
+ * /fulfill does not call this module. Vendor, product id, and print size come
+ * from the catalogue table (src/fulfill-gate.ts). The label-contains-"canvas"
+ * rule that used to sit on top of a missing metafield has been removed.
  */
 
 export type RoutingResult = {

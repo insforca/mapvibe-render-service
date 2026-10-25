@@ -37,16 +37,11 @@ import {
   extractUrls,
   validateStyleJsonUrls,
 } from './url-allowlist.js';
-import { computeRenderDims } from './render-dims.js';
+import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
+import { evaluateFulfillGate } from './fulfill-gate.js';
+import { innerViewportPx } from './print-window.js';
 import {
-  type RoutingResult,
-  ROUTING_CACHE_TTL_MS,
-  isStrictRoutingLookup,
-  resolveGelatoRouting,
-} from './routing.js';
-import {
-  type FulfillFailReason,
   notifyFulfillFail,
 } from './alerting.js';
 import {
@@ -150,21 +145,14 @@ const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 // Kept here as a local alias for the request-time API-key presence check.
 const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
 
-// ── Shopify Admin constants (for metafield-based provider auto-routing) ───────
-// Required for /fulfill to auto-detect pod_partner + gelato_uid without caller passing them.
-// SHOPIFY_ADMIN_TOKEN: Admin API token (Settings → Apps → develop apps → access token).
-// SHOPIFY_SHOP: myshopify domain, e.g. mapvibe-studio.myshopify.com
-const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN ?? '';
-const SHOPIFY_SHOP        = process.env.SHOPIFY_SHOP        ?? 'h311iq-ax.myshopify.com';
-
 // ── Config-render constants ──────────────────────────────────────────────────
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
 const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-studio-alpha.vercel.app';
 const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
 const CM_PER_INCH       = 2.54;
-const MAX_RENDER_PX_WH  = 14400;  // raised: gives full 400 DPI up to Grand; Studio/Archival aspect-ratio-scaled
-const MAX_PX            = 150_000_000; // max single render/tile pixels; fits 400 DPI Grand (138 MP) and AR-scaled Studio/Archival
+const MAX_RENDER_PX_WH  = PRODUCTION_RENDER_CAPS.maxEdgePx;  // full 400 DPI up to 24×36; larger sizes drop DPI
+const MAX_PX            = PRODUCTION_RENDER_CAPS.maxPx; // max single render/tile pixels; fits 400 DPI 24×36 (138 MP)
 const MAX_ZOOM_RENDER   = 17;
 
 // DPI policy (v3.6.0). These were inline literals at the computeRenderDims()
@@ -173,8 +161,8 @@ const MAX_ZOOM_RENDER   = 17;
 // (api/_render-limits.ts) re-derives these to decide, before dispatch, whether
 // a paid order is renderable — a number moving on one side only is the exact
 // drift that produced a stale gate on a live on-sale size.
-const TARGET_DPI          = 400;  // ceiling we never exceed
-const MIN_SINGLE_PASS_DPI = 300;  // advertised customer standard; below this, tile
+const TARGET_DPI          = PRODUCTION_RENDER_CAPS.targetDpi;          // ceiling we never exceed
+const MIN_SINGLE_PASS_DPI = PRODUCTION_RENDER_CAPS.minSinglePassDpi;  // advertised customer standard; below this, tile
 
 // ── OSM renderer config ───────────────────────────────────────────────────────
 // RENDER_ENGINE=osm  → use Python/OSMnx pipeline for fulfillment renders
@@ -626,6 +614,13 @@ interface RenderParams {
   bounds?:       MapBounds;
   /** Actual DPI to embed in PNG pHYs metadata. Defaults to 400. */
   dpi?:          number;
+  /**
+   * Fraction of the canvas that holds the editor's visible composition.
+   * 1 means the bounds fill the sheet (posters, frames). Canvas print areas
+   * are larger than the visible product; the fraction is visible/print so
+   * zoomForBounds fits the framed map in the centre and the margin is wrap.
+   */
+  visibleFraction?: { w: number; h: number };
 }
 
 
@@ -711,8 +706,17 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   try {
     map.load(styleJson);
 
-    // Use bounds-derived zoom if available — canvas-size-agnostic
-    const renderZoomForCanvas = bounds ? zoomForBounds(bounds, vpW, vpH) : zoom;
+    // Use bounds-derived zoom if available — canvas-size-agnostic.
+    // Canvas print files pass visibleFraction < 1 so the editor bounds fill
+    // the centre window (the product opening) rather than the whole sheet.
+    // Fraction 1 (or omitted) is the previous full-viewport zoom.
+    const viewport = innerViewportPx(
+      vpW,
+      vpH,
+      params.visibleFraction?.w ?? 1,
+      params.visibleFraction?.h ?? 1,
+    );
+    const renderZoomForCanvas = bounds ? zoomForBounds(bounds, viewport.w, viewport.h) : zoom;
 
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
@@ -927,6 +931,13 @@ interface OsmRenderParams {
   bounds?:         MapBounds;
   width_in:        number;
   height_in:       number;
+  /**
+   * Visible product size, inches. Set only for canvas, where width_in/height_in
+   * are the larger print area. Python expands the editor bounds so this window
+   * stays centred and the margin is wrap. Omitted for posters and frames.
+   */
+  visible_width_in?:  number;
+  visible_height_in?: number;
   dpi:             number;
   show_text?:      boolean;
   full_bleed?:     boolean;
@@ -1091,21 +1102,42 @@ interface MapvibeConfigSnapshot {
  * 400 DPI is the production standard. Dimensions are aspect-ratio-scaled when
  * either axis would exceed MAX_RENDER_PX_WH — preserves poster proportions.
  */
-async function renderConfigToBlobUrl(
-  configUrl: string,
-  dimsOverride?: { widthCm: number; heightCm: number },
-  detailedRoads?: boolean,
-): Promise<string | null> {
-  // 1. Download config snapshot
-  let cfg: MapvibeConfigSnapshot;
+async function downloadConfigSnapshot(configUrl: string): Promise<MapvibeConfigSnapshot | null> {
   try {
     const cfgRes = await fetch(configUrl, { signal: AbortSignal.timeout(10_000) });
     if (!cfgRes.ok) throw new Error(`Config fetch HTTP ${cfgRes.status}`);
     const rawCfg = await cfgRes.json() as Record<string, unknown>;
-    cfg = (rawCfg.snapshot ?? rawCfg) as MapvibeConfigSnapshot;
+    return (rawCfg.snapshot ?? rawCfg) as MapvibeConfigSnapshot;
   } catch (err) {
     console.error('[fulfill] Config download failed:', err);
     return null;
+  }
+}
+
+interface PrintWindow {
+  visibleFractionW: number;
+  visibleFractionH: number;
+  visibleWIn: number;
+  visibleHIn: number;
+  hasWrap: boolean;
+}
+
+async function renderConfigToBlobUrl(
+  configUrl: string,
+  dimsOverride?: { widthCm: number; heightCm: number },
+  detailedRoads?: boolean,
+  preloadedCfg?: MapvibeConfigSnapshot | null,
+  printWindow?: PrintWindow,
+): Promise<string | null> {
+  // 1. Download config snapshot (skipped when /fulfill already fetched it,
+  // so a download failure can be a non-2xx before the 202 ack).
+  let cfg: MapvibeConfigSnapshot;
+  if (preloadedCfg) {
+    cfg = preloadedCfg;
+  } else {
+    const downloaded = await downloadConfigSnapshot(configUrl);
+    if (!downloaded) return null;
+    cfg = downloaded;
   }
 
   // 2. Compute pixel dims — HARD RULE: never under 300 DPI effective.
@@ -1129,6 +1161,11 @@ async function renderConfigToBlobUrl(
     maxPx: MAX_PX,
   });
   const { width, height, actualDpi, numTiles } = dims;
+
+  if (printWindow?.hasWrap && numTiles > 1) {
+    console.error(`[fulfill] canvas print area ${widthCm}×${heightCm} cm would tile ×${numTiles}; refusing (wrap must be single-pass)`);
+    return null;
+  }
 
   if (dims.mode === 'tiled') {
     console.log(`[fulfill] Config render [TILED×${numTiles}] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
@@ -1256,6 +1293,12 @@ async function renderConfigToBlobUrl(
       ...(cfg.bounds ? { bounds: cfg.bounds } : {}),
       width_in:        widthIn,
       height_in:       heightIn,
+      // Canvas only. Posters and frames omit this so the Python extent is
+      // unchanged from the previous single-axis aspect expansion.
+      ...(printWindow?.hasWrap ? {
+        visible_width_in:  printWindow.visibleWIn,
+        visible_height_in: printWindow.visibleHIn,
+      } : {}),
       dpi:             actualDpi,
       show_text:       cfg.showPosterText  !== false,
       full_bleed:      true,
@@ -1286,6 +1329,9 @@ async function renderConfigToBlobUrl(
     bounds:    cfg.bounds,
     printMode: true,
     dpi:       actualDpi,
+    ...(printWindow?.hasWrap ? {
+      visibleFraction: { w: printWindow.visibleFractionW, h: printWindow.visibleFractionH },
+    } : {}),
     overlay: {
       displayCity:    cfg.displayCity    ?? '',
       displayCountry: cfg.displayCountry ?? '',
@@ -1775,29 +1821,33 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
   });
 });
 
-// POST /fulfill — async Printful fulfillment
+// POST /fulfill — catalogue-routed Gelato / Printful fulfillment.
+// Vendor, product UID / variant id, and print size come from
+// data/catalogue-skus.csv. Shopify metafields and the old "Printful only if
+// the label says canvas" rule are not consulted. Unknown SKUs fail here,
+// before 202, so the studio webhook can return non-2xx and Shopify retries.
 interface FulfillBody {
   externalId:       string;
   recipient:        PrintfulRecipient;
-  variantId:        number;
-  catalogVariantId: number;
+  /** Catalogue SKU (MVS-P-1824, MVS-F-1824-BK, MVS-C-1824-W, …). Also read from externalId. */
+  sku?:             string;
+  /** Ignored for the vendor order. The catalogue variant id is used instead. */
+  variantId?:       number;
+  catalogVariantId?: number;
   label:            string;
   quantity:         number;
   pngUrl?:          string;
   configUrl?:       string;
   confirm?:         boolean;   // per-request override; falls back to PRINTFUL_AUTO_CONFIRM env var
-  // Optional dimension override from SKU — ensures correct 300 DPI pixel count
-  // regardless of what was saved in the config snapshot. Hard rule: 300 DPI minimum.
+  // Ignored. Print size comes from the catalogue (canvas print area, 28×40 → 70×100 cm).
   widthCm?:         number;
   heightCm?:        number;
   // Dedícalo — gift/dedication card message to print on Printful packing slip
   gift?:            { message: string; para?: string };
+  /** Ignored when it disagrees with the catalogue. Logged, not applied. */
   provider?:          'printful' | 'gelato';
-  gelatoProductUid?:   string;               // Gelato product UID from custom.gelato_uid
-  // When present, /fulfill auto-detects provider + gelatoProductUid from Shopify variant
-  // metafields (custom.pod_partner, custom.gelato_uid) — caller need not pass provider explicitly.
-  // Requires SHOPIFY_ADMIN_TOKEN env var to be set on Railway.
-  shopifyVariantId?:   number;               // Shopify numeric variant ID from order webhook
+  gelatoProductUid?:   string;
+  shopifyVariantId?:   number;
   // Staff-reprint override for the editor's road-detail mode. When present it
   // outranks the snapshot's persisted minorRoads: true forces the Detailed
   // (OSM-engine) print path, false forces the legacy tile path. Absent ⇒ the
@@ -1805,159 +1855,133 @@ interface FulfillBody {
   detailedRoads?:      boolean;
 }
 
-
-// ── Gelato fulfillment ───────────────────────────────────────────────────────
-
-/**
- * Auto-routing: read custom.pod_partner and custom.gelato_uid metafields from
- * a Shopify variant via the Admin REST API.
- *
- * Returns resolved provider ('gelato' or 'printful') and the Gelato product UID
- * (null if not a Gelato variant or if lookup fails — caller should default to Printful).
- *
- * Requires SHOPIFY_ADMIN_TOKEN env var. If not set, always returns 'printful'.
- * On any network or API failure, logs a warning and falls back to 'printful'.
- */
-// Routing type, cache, and resolveGelatoRouting extracted to ./routing.ts
-// STRICT_ROUTING_LOOKUP env-gate is read via isStrictRoutingLookup() at the
-// call site below so vitest can stub it without dynamic re-import.
-
 // recipientToGelatoAddress + fulfillGelato extracted to ./gelato.ts
 // notifyFulfillFail + ALERT_WEBHOOK_URL extracted to ./alerting.ts
 
 app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   if (!checkAuth(req, res)) return;
 
+  const body = req.body as FulfillBody;
   const {
-    externalId, recipient, variantId, catalogVariantId, label, quantity,
+    externalId, recipient, variantId, label, quantity,
     pngUrl, configUrl, confirm: confirmOverride,
     widthCm: widthCmOverride, heightCm: heightCmOverride,
     gift, detailedRoads,
-  } = req.body as FulfillBody;
+  } = body;
 
-  if (!externalId || !recipient || !variantId || !catalogVariantId || !label || !quantity) {
-    res.status(400).json({ error: 'Missing required fields: externalId, recipient, variantId, catalogVariantId, label, quantity' });
+  if (!externalId || !recipient || !label || !quantity) {
+    res.status(400).json({ error: 'Missing required fields: externalId, recipient, label, quantity' });
     return;
   }
-  if (!pngUrl && !configUrl) {
-    res.status(400).json({ error: 'Either pngUrl or configUrl must be provided' });
+
+  const gateInput = {
+    sku: body.sku,
+    externalId,
+    label,
+    hasPngUrl: !!pngUrl,
+    hasConfigUrl: !!configUrl,
+    callerProvider: body.provider ?? null,
+    callerVariantId: variantId ?? null,
+  };
+  let gate = evaluateFulfillGate(gateInput);
+  if (!gate.ok) {
+    console.error(`[fulfill] [SKU-MISMATCH-ALERT] ${gate.reason} sku=${gate.sku ?? 'none'} ${gate.message}`);
+    notifyFulfillFail(externalId, gate.reason, gate.message);
+    res.status(gate.httpStatus).json({ error: gate.message, sku: gate.sku });
     return;
   }
-  const provider = ((req.body as FulfillBody).provider ?? 'printful').toLowerCase();
-  if (provider !== 'printful' && provider !== 'gelato') {
-    res.status(400).json({ error: `Unknown provider '${provider}'. Accepted: printful, gelato` });
-    return;
-  }
-  if (provider === 'printful' && !PRINTFUL_KEY) {
+
+  if (gate.vendor === 'printful' && !PRINTFUL_KEY) {
     console.error('[fulfill] PRINTFUL_API_KEY not configured');
     res.status(500).json({ error: 'PRINTFUL_API_KEY not configured on Railway' });
     return;
   }
-  if (provider === 'gelato' && !GELATO_KEY) {
+  if (gate.vendor === 'gelato' && !GELATO_KEY) {
     console.error('[fulfill] GELATO_API_KEY not configured');
     res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
     return;
   }
+  if (gate.callerProviderIgnored) {
+    console.error(`[fulfill] caller provider '${body.provider}' ignored for ${gate.sku}; catalogue vendor is ${gate.vendor}`);
+  }
+  if (gate.callerVariantIgnored) {
+    console.error(`[fulfill] caller variantId ${variantId ?? 'none'} ignored for ${gate.sku}; catalogue product is ${gate.productRef}`);
+  }
+  if ((widthCmOverride && Math.abs(widthCmOverride - gate.widthCm) > 0.2)
+      || (heightCmOverride && Math.abs(heightCmOverride - gate.heightCm) > 0.2)) {
+    console.error(`[fulfill] caller dimensions ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'} cm ignored for ${gate.sku}; catalogue is ${gate.widthCm}×${gate.heightCm} cm`);
+  }
 
-  // ── Pre-flight routing resolution ─────────────────────────────────────────
-  // When the caller did NOT pass `provider` explicitly AND we have a Shopify
-  // variant ID, look up the routing metafields SYNCHRONOUSLY so the result
-  // is known before we ACK with 202. Cached per variant (10-min TTL); typical
-  // call costs ~50ms on cache miss, ~0ms on hit.
-  //
-  // 'lookup-error' handling depends on STRICT_ROUTING_LOOKUP:
-  //   - default (STRICT): return 422 + [FULFILL-FAIL] alert so the caller
-  //                       retries or passes provider explicitly. The
-  //                       shopify-order-webhook treats a non-202 as a failed
-  //                       line item and returns 503 so Shopify redelivers.
-  //   - "false" (opt-out): log at ERROR level, fall through to the legacy
-  //                       silent Printful default.
-  //
-  // 'no-metafield' is a legitimate Printful default ONLY for white-canvas
-  // items (vendor rule 2026-05-29: Printful = white canvas only, Gelato =
-  // everything else). Untagged non-canvas variants are rejected loudly with
-  // a [FULFILL-FAIL] alert; 'ok' uses the resolved provider directly.
-  const callerProvidedProvider = !!(req.body as FulfillBody).provider;
-  const preflightVariantId = (req.body as FulfillBody).shopifyVariantId;
-  let preflightRouting: RoutingResult | null = null;
-  if (!callerProvidedProvider && preflightVariantId) {
-    preflightRouting = await resolveGelatoRouting(preflightVariantId);
-    if (preflightRouting.status === 'lookup-error' && isStrictRoutingLookup()) {
-      console.error(`[fulfill] strict routing on and lookup failed for variant ${preflightVariantId} — rejecting`);
-      notifyFulfillFail(externalId, 'routing-lookup-error',
-        `Shopify metafield lookup failed for variant ${preflightVariantId}; order rejected (422), caller will retry`);
-      res.status(422).json({
-        error: 'POD vendor routing unavailable for this variant',
-        hint:  'retry once Shopify is reachable, or pass provider explicitly (printful|gelato)',
-      });
-      return;
-    }
-    // STRICT_ROUTING_LOOKUP=false + lookup-error → fall through to the legacy
-    // silent Printful default (opt-in escape hatch only).
-
-    // Vendor rule (2026-05-29): Gelato is the default POD partner; Printful
-    // serves ONLY white canvas frames. A variant with NO pod_partner metafield
-    // is only legitimately Printful when it is a white-canvas item — for
-    // anything else the tagging is broken AND we have no gelato_uid to fulfill
-    // with, so silently defaulting to Printful ships from the wrong vendor.
-    // Reject loudly instead.
-    if (preflightRouting.status === 'no-metafield' && !/canvas/i.test(label)) {
-      console.error(`[fulfill] variant ${preflightVariantId} ("${label}") has no pod_partner metafield and is not white canvas — rejecting`);
-      notifyFulfillFail(externalId, 'routing-unresolved',
-        `Variant ${preflightVariantId} ("${label}") has no custom.pod_partner metafield; non-canvas items must be tagged gelato with a gelato_uid`);
-      res.status(422).json({
-        error: 'POD vendor routing unresolved: variant is missing the custom.pod_partner metafield',
-        hint:  'tag the Shopify variant (pod_partner + gelato_uid), or pass provider explicitly (printful|gelato)',
-      });
-      return;
+  // Config download runs BEFORE the 202. A failure here is 502 so the studio
+  // webhook can refuse Shopify's delivery and Shopify retries. The pixel
+  // render still happens after 202: it can take minutes, and holding the
+  // ack open would let a client timeout race a vendor order.
+  let preloadedCfg: MapvibeConfigSnapshot | null = null;
+  if (gate.needsRender) {
+    preloadedCfg = await downloadConfigSnapshot(configUrl!);
+    if (!preloadedCfg) {
+      const rejected = evaluateFulfillGate({ ...gateInput, configDownloaded: false });
+      if (!rejected.ok) {
+        console.error(`[fulfill] config download failed for ${gate.sku} — not acknowledging`);
+        notifyFulfillFail(externalId, rejected.reason, rejected.message);
+        res.status(rejected.httpStatus).json({ error: rejected.message, sku: rejected.sku });
+        return;
+      }
     }
   }
 
-  res.status(202).json({ success: true, accepted: true, externalId });
+  const accepted = gate;
+  res.status(202).json({
+    success: true,
+    accepted: true,
+    externalId,
+    sku: accepted.sku,
+    vendor: accepted.vendor,
+  });
 
   void (async () => {
-    let finalPngUrl: string | null = pngUrl ?? null;
+    let finalPngUrl: string | null = accepted.needsRender ? null : (pngUrl ?? null);
+    const printWindow: PrintWindow = {
+      visibleFractionW: accepted.visibleFractionW,
+      visibleFractionH: accepted.visibleFractionH,
+      visibleWIn: accepted.visibleWIn,
+      visibleHIn: accepted.visibleHIn,
+      hasWrap: accepted.hasWrap,
+    };
 
-    if (!finalPngUrl && configUrl) {
-      console.log(`[fulfill] Config path — rendering for ${externalId}`);
-      // Use render queue — config renders in fulfill compete with /render for concurrency slots
+    if (accepted.needsRender) {
+      console.log(`[fulfill] Config path — ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm} cm → ${accepted.dims.width}×${accepted.dims.height}px @ ${accepted.dims.actualDpi} DPI wrap=${accepted.hasWrap}`);
       await renderQueue.add(async () => memoryWatch.track(
-        `fulfill ${externalId} ${widthCmOverride ?? '?'}×${heightCmOverride ?? '?'}cm`,
+        `fulfill ${externalId} ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm}cm`,
         async () => {
-          const dimsOverride = (widthCmOverride && heightCmOverride)
-            ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
-            : undefined;
-          finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
+          finalPngUrl = await renderConfigToBlobUrl(
+            configUrl!,
+            { widthCm: accepted.widthCm, heightCm: accepted.heightCm },
+            detailedRoads,
+            preloadedCfg,
+            printWindow,
+          );
         },
       ));
       if (!finalPngUrl) {
-        console.error(`[fulfill] Config render FAILED for ${externalId}`);
+        console.error(`[fulfill] Config render FAILED for ${externalId} (${accepted.sku})`);
         notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
         return;
       }
     }
 
-    // ── Provider routing (resolved pre-flight above) ──────────────────────
-    // Use preflightRouting from the synchronous block to avoid a duplicate
-    // Shopify call. preflightRouting is null when the caller passed provider
-    // explicitly OR no shopifyVariantId was supplied.
-    let resolvedProvider = provider;
-    let resolvedGelatoUid: string | null = (req.body as FulfillBody).gelatoProductUid ?? null;
-    if (preflightRouting && preflightRouting.status === 'ok' && preflightRouting.provider === 'gelato') {
-      resolvedProvider = 'gelato';
-      if (!resolvedGelatoUid && preflightRouting.gelatoProductUid) {
-        resolvedGelatoUid = preflightRouting.gelatoProductUid;
-      }
-    }
-
-    // ── Gelato branch ──────────────────────────────────────────────────────
-    if (resolvedProvider === 'gelato') {
-      if (!resolvedGelatoUid) {
-        console.error(`[fulfill/gelato] Missing gelatoProductUid for ${externalId} (not in request body and not found in Shopify metafields)`);
-        notifyFulfillFail(externalId, 'missing-gelato-uid', 'No gelatoProductUid in request body or Shopify metafield');
+    if (accepted.vendor === 'gelato') {
+      if (!accepted.gelatoProductUid) {
+        console.error(`[fulfill/gelato] Catalogue row ${accepted.sku} has no Gelato UID`);
+        notifyFulfillFail(externalId, 'missing-gelato-uid', `Catalogue SKU ${accepted.sku} has no Gelato product UID`);
         return;
       }
-      await fulfillGelato(externalId, recipient, resolvedGelatoUid, quantity, label, finalPngUrl!);
+      await fulfillGelato(externalId, recipient, accepted.gelatoProductUid, quantity, label, finalPngUrl!);
+      return;
+    }
+    const orderedVariantId = accepted.printfulVariantId;
+    if (orderedVariantId == null) {
+      notifyFulfillFail(externalId, 'sku-unrenderable', `SKU ${accepted.sku} resolved to Printful without a variant id`);
       return;
     }
     // ── Printful branch (default) ───────────────────────────────────────────
@@ -1969,7 +1993,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 
     // If a draft/pending Printful order already exists, update it with the new PNG
     // instead of silently skipping (handles re-trigger after partial failures).
-    const wasUpdated = await tryUpdateExistingOrder(externalId, finalPngUrl!, variantId, quantity, label, autoConfirm, pfHeaders, gift);
+    const wasUpdated = await tryUpdateExistingOrder(externalId, finalPngUrl!, orderedVariantId, quantity, label, autoConfirm, pfHeaders, gift);
     if (wasUpdated) return;
 
     const resolvedId = await resolveExternalId(externalId);
@@ -1983,11 +2007,11 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   // resolveCatalogPlacement() discovers placement/technique via catalog endpoints (cached),
   // falling back to { placement: 'default', technique: 'PRINTING' } if catalog auth fails.
   const { placement: v2Placement, technique: v2Technique } =
-    await resolveCatalogPlacement(variantId, pfHeaders);
+    await resolveCatalogPlacement(orderedVariantId, pfHeaders);
   const v2Payload = {
       external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
       ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
-      items: [{ source: 'catalog', catalog_variant_id: variantId, quantity,
+      items: [{ source: 'catalog', catalog_variant_id: orderedVariantId, quantity,
                 name: `MapVibe — ${label}`,
                 placements: [{ placement: v2Placement, technique: v2Technique,
                                layers: [{ type: 'file', url: finalPngUrl }] }] }],
@@ -2003,7 +2027,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
         const v1Payload = {
           external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
           ...(giftMessage ? { gift: { subject: 'A gift for you', message: giftMessage } } : {}),
-          items: [{ variant_id: variantId, quantity,
+          items: [{ variant_id: orderedVariantId, quantity,
                     name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
         };
         pfRes = await fetch(`${PRINTFUL_API_V1}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v1Payload) });
