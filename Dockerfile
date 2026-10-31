@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     libgeos-dev libproj-dev libgdal-dev \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json tsconfig.json ./
-RUN npm install
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
 
 # ── Python OSM renderer venv ──────────────────────────────────────────────────
 COPY python/requirements.txt ./python/requirements.txt
