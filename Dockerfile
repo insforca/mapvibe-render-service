@@ -108,6 +108,11 @@ RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
       }); \
     " || true
 
+# The smoke test leaves /tmp/.X99-lock (mode 0444) naming the build
+# container's Xvfb pid. That pid is reused at runtime — Xvfb itself — so a
+# stock start treats the display as already active and start.sh exits.
+RUN rm -f /tmp/.X99-lock && rm -rf /tmp/.X11-unix
+
 RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
 
