@@ -28,6 +28,27 @@
       "isPrintable": true,
       "widthMm": 700,
       "heightMm": 1000
+    },
+    {
+      "productUid": "fine_arts_poster_geo_simplified_product_12-0_ver_a0_200-gsm-80lb-enhanced-uncoated",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 841,
+      "heightMm": 1189
+    },
+    {
+      "productUid": "frame_and_poster_product_frs_18x24-inch_frc_dark-wood_frm_wood_frp_w12xt22-mm_gt_plexiglass__pf_18x24-inch_pt_80-lb-cover-uncoated_cl_4-0_ct_none_prt_none_ver",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 457.2,
+      "heightMm": 609.6
+    },
+    {
+      "productUid": "frame_and_poster_product_frs_24x36-inch_frc_dark-wood_frm_wood_frp_w12xt22-mm_gt_plexiglass__pf_24x36-inch_pt_80-lb-cover-uncoated_cl_4-0_ct_none_prt_none_ver",
+      "activated": true,
+      "isPrintable": true,
+      "widthMm": 609.6,
+      "heightMm": 914.4
     }
   ],
   "printful": [

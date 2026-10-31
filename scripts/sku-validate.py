@@ -22,8 +22,8 @@ COLUMNS = [
 ]
 
 DESIGN_B = {
-    'MVS-P-1824', 'MVS-P-2436', 'MVS-P-2840',
-    'MVS-F-1824-BK', 'MVS-F-2436-BK',
+    'MVS-P-1824', 'MVS-P-2436', 'MVS-P-2840', 'MVS-P-A0',
+    'MVS-F-1824-BK', 'MVS-F-2436-BK', 'MVS-F-1824-BR', 'MVS-F-2436-BR',
     'MVS-C-1824-W', 'MVS-C-2436-W',
 }
 

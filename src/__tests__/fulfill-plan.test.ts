@@ -4,6 +4,55 @@ import { _resetCatalogueCacheForTests } from '../fulfill-gate.js';
 import { _clearRoutingCacheForTests } from '../routing.js';
 
 const GELATO_1824 = 'fine_arts_poster_geo_simplified_product_12-0_ver_450x600-mm-18x24-inch_200-gsm-80lb-enhanced-uncoated';
+const GELATO_2436 = 'fine_arts_poster_geo_simplified_product_12-0_ver_600x900-mm-24x36-inch_200-gsm-80lb-enhanced-uncoated';
+const GELATO_2840 = 'fine_arts_poster_geo_simplified_product_12-0_ver_700x1000-mm-28x40-inch_200-gsm-80lb-enhanced-uncoated';
+const GELATO_A0 = 'fine_arts_poster_geo_simplified_product_12-0_ver_a0_200-gsm-80lb-enhanced-uncoated';
+const GELATO_F_1824_BR = 'frame_and_poster_product_frs_18x24-inch_frc_dark-wood_frm_wood_frp_w12xt22-mm_gt_plexiglass__pf_18x24-inch_pt_80-lb-cover-uncoated_cl_4-0_ct_none_prt_none_ver';
+const GELATO_F_2436_BR = 'frame_and_poster_product_frs_24x36-inch_frc_dark-wood_frm_wood_frp_w12xt22-mm_gt_plexiglass__pf_24x36-inch_pt_80-lb-cover-uncoated_cl_4-0_ct_none_prt_none_ver';
+
+/** Live Design B set. Canvas needs a config snapshot; posters and frames may use a PNG. */
+const DESIGN_B_DRY_RUN = [
+  {
+    sku: 'MVS-P-1824', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_1824, gelatoProductUid: GELATO_1824, printfulVariantId: null, widthCm: 45.72, heightCm: 60.96, dpi: 400, widthPx: 7200, heightPx: 9600, printArea: { widthIn: 18, heightIn: 24 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-P-2436', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_2436, gelatoProductUid: GELATO_2436, printfulVariantId: null, widthCm: 60.96, heightCm: 91.44, dpi: 400, widthPx: 9600, heightPx: 14400, printArea: { widthIn: 24, heightIn: 36 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-P-2840', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_2840, gelatoProductUid: GELATO_2840, printfulVariantId: null, widthCm: 70, heightCm: 100, dpi: 365, widthPx: 10059, heightPx: 14370, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-P-A0', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_A0, gelatoProductUid: GELATO_A0, printfulVariantId: null, widthCm: 84.1, heightCm: 118.9, dpi: 307, widthPx: 10165, heightPx: 14371, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-F-1824-BK', png: true,
+    body: { vendor: 'printful', gelatoProductUid: null, printfulVariantId: 3, productRef: '3', widthCm: 45.72, heightCm: 60.96, dpi: 400, widthPx: 7200, heightPx: 9600, printArea: { widthIn: 18, heightIn: 24 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-F-2436-BK', png: true,
+    body: { vendor: 'printful', gelatoProductUid: null, printfulVariantId: 4, productRef: '4', widthCm: 60.96, heightCm: 91.44, dpi: 400, widthPx: 9600, heightPx: 14400, printArea: { widthIn: 24, heightIn: 36 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-F-1824-BR', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_F_1824_BR, gelatoProductUid: GELATO_F_1824_BR, printfulVariantId: null, widthCm: 45.72, heightCm: 60.96, dpi: 400, widthPx: 7200, heightPx: 9600, printArea: { widthIn: 18, heightIn: 24 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-F-2436-BR', png: true,
+    body: { vendor: 'gelato', productRef: GELATO_F_2436_BR, gelatoProductUid: GELATO_F_2436_BR, printfulVariantId: null, widthCm: 60.96, heightCm: 91.44, dpi: 400, widthPx: 9600, heightPx: 14400, printArea: { widthIn: 24, heightIn: 36 }, wrapApplied: false },
+  },
+  {
+    sku: 'MVS-C-1824-W', png: false,
+    body: { vendor: 'printful', gelatoProductUid: null, printfulVariantId: 15699, productRef: '15699', printArea: { widthIn: 21, heightIn: 27 }, dpi: 400, widthPx: 8400, heightPx: 10800, wrapApplied: true },
+  },
+  {
+    sku: 'MVS-C-2436-W', png: false,
+    body: { vendor: 'printful', gelatoProductUid: null, printfulVariantId: 15700, productRef: '15700', printArea: { widthIn: 27, heightIn: 39 }, dpi: 369, widthPx: 9963, heightPx: 14391, wrapApplied: true },
+  },
+] as const;
 
 beforeEach(() => {
   _resetCatalogueCacheForTests();
@@ -93,6 +142,34 @@ describe('planFulfillment — no vendor order call', () => {
       wrapApplied: false,
     });
     expect(plan.body.printArea).toEqual({ widthIn: 18, heightIn: 24 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('dry-runs every Design B SKU to its catalogue vendor with no network calls', async () => {
+    const fetchSpy = vi.fn(() => {
+      throw new Error('network must not be used');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(DESIGN_B_DRY_RUN).toHaveLength(10);
+    for (const row of DESIGN_B_DRY_RUN) {
+      const plan = await planFulfillment({
+        sku: row.sku,
+        dryRun: true,
+        hasPngUrl: row.png,
+        hasConfigUrl: !row.png,
+        label: row.sku,
+        quantity: 1,
+      });
+      expect(plan.kind, row.sku).toBe('dry-run');
+      expect(planDispatchesVendor(plan), row.sku).toBe(false);
+      if (plan.kind !== 'dry-run') continue;
+      expect(plan.body, row.sku).toMatchObject({
+        dryRun: true,
+        mode: 'catalogue',
+        sku: row.sku,
+        ...row.body,
+      });
+    }
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

@@ -65,7 +65,7 @@ export interface RenderTarget {
   hasWrap: boolean;
   /** Inches of extra print beyond the visible product, per side. Null when there is no wrap. */
   wrapBleedIn: number | null;
-  source: 'gelato-700x1000mm' | 'trim-inches';
+  source: 'gelato-700x1000mm' | 'gelato-a0' | 'trim-inches';
 }
 
 let cached: CatalogueRow[] | null = null;
@@ -218,6 +218,10 @@ function parseSizeLabel(size: string): { w: number; h: number } | null {
  * would be a different pixel grid (10080×14400 at 360 DPI) for a sheet
  * the product is not cut to.
  *
+ * A0 is the ISO sheet, 841×1189 mm. The 33.1×46.8 in label is rounded and
+ * would render 10162×14368 instead of the single-pass ceiling for that
+ * sheet (307 DPI, 10165×14371).
+ *
  * Canvas trim columns are the Printful print area (21×27, 27×39, …), which
  * is larger than the visible size in the `size` column. The visible window
  * stays centred; the margin is wrap.
@@ -238,6 +242,25 @@ export function renderTargetForRow(row: CatalogueRow): RenderTarget {
       hasWrap: false,
       wrapBleedIn: null,
       source: 'gelato-700x1000mm',
+    };
+  }
+  if (row.productRef.includes('_ver_a0_')) {
+    const widthCm = 84.1;
+    const heightCm = 118.9;
+    const printWIn = widthCm / CM_PER_INCH;
+    const printHIn = heightCm / CM_PER_INCH;
+    return {
+      widthCm,
+      heightCm,
+      printWIn,
+      printHIn,
+      visibleWIn: printWIn,
+      visibleHIn: printHIn,
+      visibleFractionW: 1,
+      visibleFractionH: 1,
+      hasWrap: false,
+      wrapBleedIn: null,
+      source: 'gelato-a0',
     };
   }
   const nominal = parseSizeLabel(row.size);

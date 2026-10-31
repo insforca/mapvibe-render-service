@@ -82,6 +82,9 @@ export async function fulfillGelato(
     customerReferenceId: externalId,
     currency:            'USD',
     storeId:             GELATO_STORE_ID,
+    // Posters and framed posters are one print area. Gelato v4 fills that
+    // area from a single file of type "default" (the same item shape for a
+    // giclée UID and a frame_and_poster UID).
     items: [{ itemReferenceId: 'item-1', productUid, files: [{ type: 'default', url: finalPngUrl }], quantity }],
     shippingAddress: recipientToGelatoAddress(recipient),
     preventDuplicate: true,

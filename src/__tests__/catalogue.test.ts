@@ -22,8 +22,11 @@ const DESIGN_B = [
   'MVS-P-1824',
   'MVS-P-2436',
   'MVS-P-2840',
+  'MVS-P-A0',
   'MVS-F-1824-BK',
   'MVS-F-2436-BK',
+  'MVS-F-1824-BR',
+  'MVS-F-2436-BR',
   'MVS-C-1824-W',
   'MVS-C-2436-W',
 ];
@@ -53,12 +56,13 @@ describe('catalogue table', () => {
 
     const rows = loadCatalogue();
     expect(rows.map(r => r.sku)).toEqual([
-      'MVS-P-1620', 'MVS-P-1824', 'MVS-P-2436', 'MVS-P-2840',
-      'MVS-F-1824-BK', 'MVS-F-2436-BK', 'MVS-F-1824-NT', 'MVS-F-2436-NT',
+      'MVS-P-1620', 'MVS-P-1824', 'MVS-P-2436', 'MVS-P-2840', 'MVS-P-A0',
+      'MVS-F-1824-BK', 'MVS-F-2436-BK', 'MVS-F-1824-BR', 'MVS-F-2436-BR',
+      'MVS-F-1824-NT', 'MVS-F-2436-NT',
       'MVS-C-1824-W', 'MVS-C-2436-W', 'MVS-C-1824', 'MVS-C-3040',
     ]);
-    expect(rows).toHaveLength(12);
-    expect(new Set(rows.map(r => r.sku)).size).toBe(12);
+    expect(rows).toHaveLength(15);
+    expect(new Set(rows.map(r => r.sku)).size).toBe(15);
     expect(rows.map(r => r.sku).sort()).toEqual([...DESIGN_B, ...OPTIONAL].sort());
   });
 
@@ -88,7 +92,7 @@ describe('catalogue table', () => {
     }
 
     vi.stubEnv('CATALOGUE_ENABLE_OPTIONAL', 'true');
-    expect(rows.filter(r => isRowEnabled(r))).toHaveLength(12);
+    expect(rows.filter(r => isRowEnabled(r))).toHaveLength(15);
     vi.stubEnv('CATALOGUE_ENABLE_OPTIONAL', 'false');
     expect(rows.filter(r => isRowEnabled(r)).map(r => r.sku).sort()).toEqual([...DESIGN_B].sort());
   });
@@ -122,6 +126,19 @@ describe('catalogue table', () => {
     expect(framed.hasWrap).toBe(false);
     expect(framed.printWIn).toBe(24);
     expect(framed.printHIn).toBe(36);
+
+    // A0 is the ISO sheet (841×1189 mm), not the rounded 33.1×46.8 in label.
+    const a0 = renderTargetForRow(bySku['MVS-P-A0']);
+    expect(a0.widthCm).toBe(84.1);
+    expect(a0.heightCm).toBe(118.9);
+    expect(a0.hasWrap).toBe(false);
+    expect(a0.source).toBe('gelato-a0');
+
+    const darkWood = renderTargetForRow(bySku['MVS-F-1824-BR']);
+    expect(darkWood.hasWrap).toBe(false);
+    expect(darkWood.printWIn).toBe(18);
+    expect(darkWood.printHIn).toBe(24);
+    expect(darkWood.source).toBe('trim-inches');
   });
 
   it('every row renders single-pass at the table pixel size and at least 300 DPI', () => {
