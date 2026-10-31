@@ -15,9 +15,9 @@
     "@maplibre/maplibre-gl-native": "6.4.1",
     "@vercel/blob": "^2.0.0",
     "canvas": "3.2.3",
-    "express": "^4.22.1",
+    "express": "^4.22.3",
     "p-queue": "^7.4.1",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "resend": "4.5.1"
   },
   "devDependencies": {
@@ -31,6 +31,7 @@
     "node-fetch": "^2.7.0",
     "whatwg-url": "^7.1.0",
     "path-to-regexp": "^0.1.13",
-    "undici": "^7.29.0"
+    "undici": "^7.30.1",
+    "minimatch": "^11.0.3"
   }
 }
