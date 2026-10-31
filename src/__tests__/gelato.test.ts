@@ -92,7 +92,24 @@ describe('fulfillGelato — order POST', () => {
     expect(body.storeId).toBe('store-abc');
     expect(body.orderReferenceId).toBe('mvb-1');
     expect(body.items[0].productUid).toBe('gel-product-uid');
-    expect(body.items[0].files[0].url).toBe('https://blob.test/x.png');
+    expect(body.items[0].files).toEqual([{ type: 'default', url: 'https://blob.test/x.png' }]);
+  });
+
+  it('submits a dark-wood frame UID as one default print file', async () => {
+    const frameUid = 'frame_and_poster_product_frs_18x24-inch_frc_dark-wood_frm_wood_frp_w12xt22-mm_gt_plexiglass__pf_18x24-inch_pt_80-lb-cover-uncoated_cl_4-0_ct_none_prt_none_ver';
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ id: 'gel-order-frame' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await fulfillGelato('mvb-frame', RECIPIENT, frameUid, 1, '18x24 Dark Wood', 'https://blob.test/frame.png');
+
+    const call = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(call[1].body));
+    expect(body.items).toEqual([{
+      itemReferenceId: 'item-1',
+      productUid: frameUid,
+      files: [{ type: 'default', url: 'https://blob.test/frame.png' }],
+      quantity: 1,
+    }]);
   });
 
   it('returns without POSTing when GELATO_API_KEY is unset (fail closed)', async () => {

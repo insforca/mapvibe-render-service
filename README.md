@@ -60,13 +60,15 @@ Public. Returns `{ "status": "ok", "version": "3.6.0", "commit": "<git sha or nu
 
 ## Vendor routing (catalogue table)
 
-`/fulfill` loads `data/catalogue-skus.csv` at call time. Each row is SKU → vendor (`gelato` or `printful`) → product UID or Printful variant id → trim size, pixel size, and bleed. Design B (7 variants) is enabled by default:
+`/fulfill` loads `data/catalogue-skus.csv` at call time. Each row is SKU → vendor (`gelato` or `printful`) → product UID or Printful variant id → trim size, pixel size, and bleed. Design B (10 variants) is enabled by default:
 
 | SKU | Vendor | What is rendered |
 |---|---|---|
 | MVS-P-1824, MVS-P-2436 | Gelato giclée | nominal inches, single-pass 400 DPI |
 | MVS-P-2840 | Gelato 700×1000 mm | the existing 70×100 cm single-pass size (~365 DPI, 10059×14370) |
+| MVS-P-A0 | Gelato A0 giclée (841×1189 mm) | single-pass at the sheet (~307 DPI, 10165×14371), not the rounded 33.1×46.8 in label |
 | MVS-F-1824-BK, MVS-F-2436-BK | Printful framed poster (variants 3 and 4) | same pixels as the poster |
+| MVS-F-1824-BR, MVS-F-2436-BR | Gelato dark-wood framed poster | same pixels as the poster. The order item is the existing Gelato v4 shape: product UID plus one `default` print file |
 | MVS-C-1824-W, MVS-C-2436-W | Printful framed canvas (15699, 15700) | print area 21×27 in and 27×39 in, single-pass. The editor bounds stay in the centre; the margin is wrap |
 
 Optional rows (16×20 poster, natural-oak frames, gallery canvas including 30×40) are in the file and stay disabled until `CATALOGUE_ENABLE_OPTIONAL=true`.
