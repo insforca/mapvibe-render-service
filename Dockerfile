@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     libgeos-dev libproj-dev libgdal-dev \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json tsconfig.json ./
-RUN npm install
+COPY package.json package-lock.json tsconfig.json ./
+RUN npm ci
 
 # ── Python OSM renderer venv ──────────────────────────────────────────────────
 COPY python/requirements.txt ./python/requirements.txt
@@ -107,6 +107,11 @@ RUN Xvfb :99 -screen 0 64x64x24 +render -noreset & \
         console.log('RENDER OK buf:', buf ? buf.length : 0); \
       }); \
     " || true
+
+# The smoke test leaves /tmp/.X99-lock (mode 0444) naming the build
+# container's Xvfb pid. That pid is reused at runtime — Xvfb itself — so a
+# stock start treats the display as already active and start.sh exits.
+RUN rm -f /tmp/.X99-lock && rm -rf /tmp/.X11-unix
 
 RUN node -e "try{require('./node_modules/canvas');console.log('canvas OK')}catch(e){console.error('canvas FAIL:',e.message)}" || true
 RUN node -e "try{require('./node_modules/sharp');console.log('sharp OK')}catch(e){console.error('sharp FAIL:',e.message)}" || true
