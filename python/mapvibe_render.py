@@ -58,7 +58,7 @@ import struct
 
 # Canvas print sheets are larger than the visible poster. Pure arithmetic;
 # imported here so every _bounds_extent call site shares one implementation.
-from print_window import expand_projected_window
+from print_window import expand_projected_window, ground_crop_wgs84
 
 # ââ Headless matplotlib â MUST be set before any pyplot import âââââââââââââ
 import matplotlib
@@ -1000,16 +1000,20 @@ def get_coordinates(city: str, country: str):
 # ââ Fonts âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def load_fonts():
-    result = {}
-    for variant, filename in [
-        ('bold',    'Roboto-Bold.ttf'),
-        ('regular', 'Roboto-Regular.ttf'),
-        ('light',   'Roboto-Light.ttf'),
-    ]:
-        path = os.path.join(FONTS_DIR, filename)
-        if os.path.exists(path):
-            result[variant] = path
-    return result if len(result) == 3 else {}
+    # The Clean engine draws the city in Playfair Display 700, the country in
+    # Playfair (weight 300, which falls back to the bundled 400), and the
+    # coordinates in IBM Plex Mono. Roboto in python/fonts/ is a different
+    # family, and a missing file used to return {} — matplotlib then picked
+    # serif for the city, sans for the country, and mono for the coordinates.
+    from poster_fonts import resolve_poster_fonts
+    fonts = resolve_poster_fonts(SCRIPT_DIR)
+    if not fonts:
+        _log('poster fonts missing — city/country/coords will fall back to '
+             'matplotlib serif, sans-serif, and monospace')
+        return {}
+    _log('poster fonts: ' + ', '.join(
+        f'{key}={os.path.basename(path)}' for key, path in fonts.items()))
+    return fonts
 
 # ââ Logging âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
@@ -1889,6 +1893,21 @@ def render(params: dict) -> bytes:
                  f'({(_x1-_x0)/1000:.2f}×{(_y1-_y0)/1000:.2f} km, '
                  f'aspect {(_x1-_x0)/(_y1-_y0):.4f} vs poster '
                  f'{width_in/height_in:.4f})')
+        elif crop_dist_param is not None:
+            # /render and /preview send crop_dist so the sheet matches the
+            # editor. The square fetch bbox does not: set_aspect equal
+            # letterboxes it. /fulfill omits crop_dist; bounds (when present)
+            # already took the branch above, and legacy boundsless orders
+            # keep the square fallback below.
+            _rect = ground_crop_wgs84(point[0], point[1], effective_crop_dist,
+                                      width_in, height_in)
+            _x0, _x1, _y0, _y1 = _bounds_extent(_rect, target_crs,
+                                                width_in, height_in,
+                                                visible_width_in, visible_height_in)
+            _log(f'extent from crop_dist={effective_crop_dist} m '
+                 f'W/S/E/N={tuple(round(v, 5) for v in _rect)} → '
+                 f'aspect {(_x1-_x0)/(_y1-_y0):.4f} vs poster '
+                 f'{width_in/height_in:.4f}')
         else:
             from pyproj import Transformer
             _tr = Transformer.from_crs('EPSG:4326', target_crs, always_xy=True)
@@ -2052,7 +2071,7 @@ def render(params: dict) -> bytes:
 
         ax.text(0.98, 0.02, '\u00a9 OpenStreetMap contributors',
                 transform=ax.transAxes, color=theme['text'], alpha=0.5,
-                ha='right', va='bottom', fontproperties=fp('light', 8), zorder=11)
+                ha='right', va='bottom', fontproperties=fp('regular', 8), zorder=11)
 
     # ââ 11. Save to buffer âââââââââââââââââââââââââââââââââââââââââââââââââââ
     buf = io.BytesIO()

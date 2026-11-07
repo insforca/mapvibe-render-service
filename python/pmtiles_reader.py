@@ -385,7 +385,12 @@ class PMTilesR2Reader:
             tiles_hit += 1
 
             try:
-                decoded = mvt.decode(tile_bytes)
+                # y_coord_down=True keeps MVT spec orientation (y=0 at the
+                # north/top edge). The library default flips Y, which mirrors
+                # every tile. _tile_xy_to_lng_lat_factory assumes spec
+                # orientation, so the default breaks roads at tile boundaries
+                # and slides southern features (Lisbon's river) up the poster.
+                decoded = _decode_mvt(tile_bytes)
             except Exception as e:
                 _log.warning("MVT decode failed for tile z=%d x=%d y=%d: %s",
                              tz, tx, ty, e)
@@ -450,7 +455,20 @@ class PMTilesR2Reader:
         return gpd.GeoDataFrame(properties, geometry=geometries, crs="EPSG:4326")
 
 
-# ── Tile decompression ───────────────────────────────────────────────────────
+# ── Tile decode ──────────────────────────────────────────────────────────────
+
+
+def _decode_mvt(tile_bytes: bytes) -> dict:
+    """Decode one uncompressed MVT tile in spec coordinates.
+
+    mapbox-vector-tile defaults to ``y_coord_down=False``, which rewrites
+    each y as ``extent - y`` (origin at the bottom of the tile). Vector
+    tiles and ``_tile_xy_to_lng_lat_factory`` both put y=0 on the north
+    edge. Leaving the default on mirrors every tile vertically: streets
+    do not meet across a tile row, and a partial row at the top of the
+    view looks like a shifted strip. Preview and print share this decode.
+    """
+    return mvt.decode(tile_bytes, default_options={"y_coord_down": True})
 
 
 def _decompress_tile(data: bytes) -> bytes:

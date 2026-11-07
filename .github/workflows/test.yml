@@ -23,3 +23,9 @@ jobs:
 
       - name: Run unit tests
         run: npm test
+
+      - name: Python geometry and poster-font tests
+        run: |
+          python3 -m venv /tmp/pytests
+          /tmp/pytests/bin/pip install mapbox-vector-tile==2.2.0 shapely
+          /tmp/pytests/bin/python -m unittest discover -s python/tests -v
