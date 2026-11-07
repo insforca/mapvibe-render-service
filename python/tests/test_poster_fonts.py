@@ -1,4 +1,4 @@
-"""Detailed poster text uses the same faces as the Clean engine."""
+"""Detailed poster text uses the same Roboto faces as the Clean engine."""
 
 from __future__ import annotations
 
@@ -25,17 +25,18 @@ class PosterFontTest(unittest.TestCase):
         bold = Path(fonts["bold"])
         light = Path(fonts["light"])
         regular = Path(fonts["regular"])
-        self.assertEqual(bold.name, "PlayfairDisplay-Bold.ttf")
-        self.assertEqual(light.name, "PlayfairDisplay-Regular.ttf")
-        self.assertEqual(regular.name, "IBMPlexMono-Regular.ttf")
+        self.assertEqual(bold.name, "Roboto-Bold.ttf")
+        self.assertEqual(light.name, "Roboto-Light.ttf")
+        self.assertEqual(regular.name, "Roboto-Regular.ttf")
         self.assertNotEqual(bold, light)
-        self.assertTrue(_names_face(bold, "Playfair"))
-        self.assertTrue(_names_face(light, "Playfair"))
-        self.assertTrue(_names_face(regular, "IBM Plex Mono"))
-        # The old lookup was Roboto, and a miss fell through to DejaVu.
+        self.assertNotEqual(light, regular)
+        self.assertTrue(_names_face(bold, "Roboto"))
+        self.assertTrue(_names_face(light, "Roboto"))
+        self.assertTrue(_names_face(regular, "Roboto"))
         for path in (bold, light, regular):
-            self.assertNotIn("Roboto", path.name)
+            self.assertNotIn("Playfair", path.name)
             self.assertNotIn("DejaVu", path.name)
+            self.assertNotIn("Plex", path.name)
 
     def test_missing_face_does_not_return_a_partial_set(self):
         self.assertEqual(resolve_poster_fonts("/no/such/renderer"), {})

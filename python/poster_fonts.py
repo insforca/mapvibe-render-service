@@ -1,10 +1,10 @@
 """Poster typefaces shared with the Clean (node-canvas) engine.
 
-The Clean renderer registers Playfair Display for the city and country and
-IBM Plex Mono for the coordinates and the OSM credit. The Detailed renderer
-has to open the same files. Looking up Roboto — or returning nothing and
-letting matplotlib pick serif / sans / mono — is how Detailed posters ended
-up in a different family from the editor.
+The editor's poster block is Roboto: city Bold (700), country Light (300),
+coordinates and the credit line Regular (400) for the coordinates and Light
+for the credit. Both engines open these files. Roboto-Light.ttf has its
+name-table family set to "Roboto Light" so node-canvas can select it beside
+Regular; matplotlib opens the file directly and does not care.
 """
 
 from __future__ import annotations
@@ -12,15 +12,13 @@ from __future__ import annotations
 import os
 
 # Keys match the FontProperties slots in mapvibe_render.draw:
-#   bold    city name          Playfair Display 700
-#   light   country            Playfair Display 400
-#                              (no static Light file; the Clean engine's
-#                              weight-300 request lands on the 400 face)
-#   regular coordinates + credit  IBM Plex Mono 400
+#   bold    city name             Roboto 700
+#   light   country + OSM credit  Roboto 300
+#   regular coordinates           Roboto 400
 _FACE_FILES = {
-    "bold": "PlayfairDisplay-Bold.ttf",
-    "light": "PlayfairDisplay-Regular.ttf",
-    "regular": "IBMPlexMono-Regular.ttf",
+    "bold": "Roboto-Bold.ttf",
+    "light": "Roboto-Light.ttf",
+    "regular": "Roboto-Regular.ttf",
 }
 
 

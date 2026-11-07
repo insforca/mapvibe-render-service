@@ -65,7 +65,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
 from matplotlib.collections import LineCollection
 import numpy as np
 import osmnx as ox
@@ -1000,11 +999,8 @@ def get_coordinates(city: str, country: str):
 # ââ Fonts âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def load_fonts():
-    # The Clean engine draws the city in Playfair Display 700, the country in
-    # Playfair (weight 300, which falls back to the bundled 400), and the
-    # coordinates in IBM Plex Mono. Roboto in python/fonts/ is a different
-    # family, and a missing file used to return {} — matplotlib then picked
-    # serif for the city, sans for the country, and mono for the coordinates.
+    # Same Roboto faces as the Clean engine and the editor poster block:
+    # city Bold 700, country Light 300, coordinates Regular 400.
     from poster_fonts import resolve_poster_fonts
     fonts = resolve_poster_fonts(SCRIPT_DIR)
     if not fonts:
@@ -1989,89 +1985,116 @@ def render(params: dict) -> bytes:
 
     # ââ 10. Typography âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if show_text:
-        scale = min(height_in, width_in) / 12.0
         fonts = load_fonts()
 
-        # BUG 3 fix — per-letter halo matching the editor's drawPosterText.
-        # Editor: ctx.shadowColor = land colour @ 0.90 alpha, shadowBlur =
-        # max(4, 7*ds) — a soft Gaussian glow in the LAND/background colour
-        # (NOT white), applied to city+country+coords, reset before credit.
-        # matplotlib has no shadowBlur; stack 3 strokes (widest+faintest →
-        # narrowest+strongest) in theme['bg'] to approximate the falloff.
-        _halo_rgb = theme.get('bg', '#FFFFFF')   # = editor's _ph(land)
+        # Same strip as mapvibe.css .mvs-poster-*: Roboto sizes in cqmin,
+        # city tracking 0.45em, no halo (the strip has none). Measure the
+        # city, then stack the rule, country, and coordinates under it.
+        from PIL import ImageFont
 
-        def _glow(scale_factor: float):
-            return [
-                pe.withStroke(linewidth=7.0 * scale_factor, foreground=_halo_rgb, alpha=0.30),
-                pe.withStroke(linewidth=4.0 * scale_factor, foreground=_halo_rgb, alpha=0.55),
-                pe.withStroke(linewidth=2.0 * scale_factor, foreground=_halo_rgb, alpha=0.90),
-            ]
+        short_in = min(width_in, height_in)
+        city_pt = 0.0694 * short_in * 72.0
+        country_pt = 0.0255 * short_in * 72.0
+        coords_pt = 0.0162 * short_in * 72.0
+        credit_pt = (30.0 / 3600.0) * short_in * 72.0
 
-        # City label â single-space join for letter-spacing parity with the
-        # studio editor. Original maptoposter aesthetic used '  '.join (two
-        # spaces) which roughly doubles the rendered width; the editor moved
-        # to CSS letter-spacing: 0.45em on .mvs-poster-city (studio PR #154
-        # â "Removes Array.from().join('  ') that tripled string length and
-        # clipped names"). matplotlib has no letter-spacing primitive, so
-        # ' '.join is the closest visual match: WAS HING TON stays wide-
-        # tracked but no longer overflows the poster on 10-char names like
-        # WASHINGTON. Non-Latin scripts (Cyrillic, CJK) keep their natural
-        # glyph spacing, also matching the editor's isLatinScript guard.
-        spaced_city = (' '.join(list(display_city.upper()))
-                       if is_latin_script(display_city)
-                       else display_city)
+        def strip_pt(css_px: float) -> float:
+            # CSS px beside useFitText's 44px city cap, scaled with the city.
+            return css_px * (city_pt / 44.0)
 
-        # 60 * scale rendered Playfair 700 + ' '.join letter-spacing at
-        # ~95 % of poster width for 10-char names like WASHINGTON (production
-        # 2026-06-16 screenshot â print preview's "WASHINGTON" stretched
-        # corner-to-corner while the editor's MapLibre rendering sat at
-        # ~50 % width). matplotlib has no letter-spacing primitive so the
-        # spaced-glyph approach is the only way to match the editor's
-        # CSS letter-spacing aesthetic, but the size factor was tuned for the
-        # original two-space join and was never lowered after PR #154 moved
-        # to single-space join. 38 lands the spaced glyphs at ~55 % poster
-        # width on a 12.5Ã16.7 in classic â parity with the editor's
-        # visual weight. n_chars > 10 still shrinks proportionally so very
-        # long names (SAN FRANCISCO, JOHANNESBURG) stay inside the band.
-        base_main = 24 * scale
-        n_chars = len(display_city)
-        adjusted_size = (max(base_main * (10 / n_chars), 10 * scale)
-                         if n_chars > 10 else base_main)
+        def face(key: str):
+            return fonts.get(key) if fonts else None
+
+        def em_box(path, size_pt: float):
+            if not path:
+                return 0.72 * size_pt, 0.20 * size_pt
+            font = ImageFont.truetype(path, 1000)
+            ascent, descent = font.getmetrics()
+            return (ascent / 1000.0) * size_pt, (descent / 1000.0) * size_pt
+
+        def advance_pt(path, text: str, size_pt: float, tracking_em: float) -> float:
+            if not text:
+                return 0.0
+            if not path:
+                return (0.55 * len(text) + tracking_em * max(0, len(text) - 1)) * size_pt
+            font = ImageFont.truetype(path, 1000)
+            width = sum(font.getlength(ch) for ch in text) / 1000.0 * size_pt
+            return width + tracking_em * size_pt * max(0, len(text) - 1)
+
+        city_label = display_city.upper() if is_latin_script(display_city) else display_city
+        tracking = 0.45 if is_latin_script(display_city) else 0.0
+        content_pt = max(1.0, width_in * 72.0 - 2.0 * strip_pt(18))
+        city_path = face('bold')
+        while city_pt > 6.0 * (short_in / 12.0) and advance_pt(city_path, city_label, city_pt, tracking) > content_pt:
+            city_pt *= 0.92
+        country_label = display_country.upper()
+        country_path = face('light')
+        while country_pt > 4.0 * (short_in / 12.0) and advance_pt(country_path, country_label, country_pt, 0) > content_pt:
+            country_pt *= 0.92
 
         def fp(key, size):
-            if fonts:
-                return FontProperties(fname=fonts[key], size=size)
-            family = 'serif' if key == 'bold' else ('monospace' if key == 'regular' else 'sans-serif')
+            path = face(key)
+            if path:
+                return FontProperties(fname=path, size=size)
             weight = 'bold' if key == 'bold' else 'normal'
-            return FontProperties(family=family, weight=weight, size=size)
+            return FontProperties(family='sans-serif', weight=weight, size=size)
 
-        ax.text(0.5, 0.14, spaced_city,
-                transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('bold', adjusted_size), zorder=11,
-                path_effects=_glow(scale))
+        def axes_pt(pt: float) -> float:
+            return pt / (height_in * 72.0)
 
-        ax.text(0.5, 0.10, display_country.upper(),
+        _city_asc, city_desc = em_box(city_path, city_pt)
+        country_asc, country_desc = em_box(country_path, country_pt)
+        coords_asc, coords_desc = em_box(face('regular'), coords_pt)
+        rule_half = axes_pt(0.00115 * short_in * 72.0) / 2.0
+        # y grows upward. Bottom padding, then coordinates, country, rule, city.
+        coords_y = axes_pt(strip_pt(14) + coords_desc)
+        country_y = coords_y + axes_pt(coords_asc + strip_pt(3) + country_desc)
+        rule_y = country_y + axes_pt(country_asc + strip_pt(4)) + rule_half
+        city_y = rule_y + rule_half + axes_pt(strip_pt(3) + city_desc)
+
+        def draw_tracked(text, y, size_pt, tracking_em, fontprops, **kwargs):
+            if tracking_em <= 0 or len(text) < 2:
+                ax.text(0.5, y, text, transform=ax.transAxes, ha='center', va='baseline',
+                        fontproperties=fontprops, zorder=11, **kwargs)
+                return
+            path = fontprops.get_file()
+            advances = []
+            if path:
+                font = ImageFont.truetype(path, 1000)
+                advances = [font.getlength(ch) / 1000.0 * size_pt for ch in text]
+            else:
+                advances = [0.55 * size_pt for _ in text]
+            gap = tracking_em * size_pt
+            total = sum(advances) + gap * (len(text) - 1)
+            x = 0.5 - (total / (width_in * 72.0)) / 2.0
+            for ch, adv in zip(text, advances):
+                ax.text(x, y, ch, transform=ax.transAxes, ha='left', va='baseline',
+                        fontproperties=fontprops, zorder=11, **kwargs)
+                x += (adv + gap) / (width_in * 72.0)
+
+        draw_tracked(city_label, city_y, city_pt, tracking, fp('bold', city_pt),
+                     color=theme['text'])
+
+        ax.text(0.5, country_y, country_label,
                 transform=ax.transAxes, color=theme['text'],
-                ha='center', fontproperties=fp('light', 22 * scale), zorder=11,
-                path_effects=_glow(scale * 0.7))
+                ha='center', va='baseline', fontproperties=fp('light', country_pt), zorder=11)
 
         lat_v, lon_v = point
         hem_ns = 'N' if lat_v >= 0 else 'S'
         hem_ew = 'E' if lon_v >= 0 else 'W'
         coords_str = f'{abs(lat_v):.4f}\u00b0 {hem_ns} / {abs(lon_v):.4f}\u00b0 {hem_ew}'
 
-        ax.text(0.5, 0.07, coords_str,
+        ax.text(0.5, coords_y, coords_str,
                 transform=ax.transAxes, color=theme['text'], alpha=0.7,
-                ha='center', fontproperties=fp('regular', 14 * scale), zorder=11,
-                path_effects=_glow(scale * 0.55))
+                ha='center', va='baseline', fontproperties=fp('regular', coords_pt), zorder=11)
 
-        ax.plot([0.4, 0.6], [0.125, 0.125],
+        ax.plot([0.4, 0.6], [rule_y, rule_y],
                 transform=ax.transAxes,
-                color=theme['text'], linewidth=1 * scale, zorder=11)
+                color=theme['text'], linewidth=0.00115 * short_in * 72.0, zorder=11)
 
         ax.text(0.98, 0.02, '\u00a9 OpenStreetMap contributors',
                 transform=ax.transAxes, color=theme['text'], alpha=0.5,
-                ha='right', va='bottom', fontproperties=fp('regular', 8), zorder=11)
+                ha='right', va='bottom', fontproperties=fp('light', credit_pt), zorder=11)
 
     # ââ 11. Save to buffer âââââââââââââââââââââââââââââââââââââââââââââââââââ
     buf = io.BytesIO()
