@@ -145,4 +145,8 @@ The same `[FULFILL-FAIL]` tag is used by `mapvibe-studio`'s `shopify-order-webho
 
 ## Deploy
 
-Connect this repo to Railway — it auto-detects the Dockerfile. Container healthcheck targets `/health`.
+Production deploys come from Railway's GitHub integration, with **Wait for CI** on. A push to `main` is built and deployed by Railway after the GitHub Actions checks on that commit succeed (`test` and `npm audit`). Railway auto-detects the Dockerfile. The container healthcheck targets `/health`.
+
+Service variables, including `USE_PMTILES`, are configured on the Railway service and stay there across deploys.
+
+Do not add an Actions workflow that runs `railway up` on push to `main`. A failing job on the same commit makes Railway skip its native deployment of that commit.
