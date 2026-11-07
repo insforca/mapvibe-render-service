@@ -96,7 +96,7 @@ export function resolvePrintWindow(target: WrapTarget, dimensionsArePrintArea: b
   };
 }
 
-/** Viewport passed to zoomForBounds so the visible bounds fill the centre window, not the whole sheet. */
+/** Pixel size of the visible window inside a sheet that is larger than the product opening. */
 export function innerViewportPx(
   canvasW: number,
   canvasH: number,

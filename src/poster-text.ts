@@ -18,6 +18,8 @@
  * size while the sheet kept shrinking.
  */
 
+import { fadeKind } from './print-parity.js';
+
 export const TEXT_DIMENSION_REFERENCE_PX = 3600;
 export const EDGE_MARGIN = 0.02;
 const CITY_BASE = 250;
@@ -419,11 +421,13 @@ function dither(ctx: any, rx: number, ry: number, w: number, h: number, intensit
   ctx.putImageData(id, ax, ay);
 }
 
-/** Bottom (and, for fadeStyle 'text', top) gradient behind the poster lines. */
+/** Bottom (and, for fadeStyle 'text', top) gradient behind the poster lines.
+ *  fullbleed is the editor GradientFades bottom ease-in, the same stops as default.
+ */
 export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, layout?: string): void {
-  if (fadeStyle === 'fullbleed') return;
-  if (fadeStyle === 'none') return;
-  if (fadeStyle === 'text') {
+  const kind = fadeKind(fadeStyle);
+  if (kind === 'none') return;
+  if (kind === 'text') {
     const tH = Math.round(H * 0.25);
     const tg = ctx.createLinearGradient(0, 0, 0, tH);
     tg.addColorStop(0, withAlpha(color, 1));

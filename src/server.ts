@@ -41,8 +41,11 @@ import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
 import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
-import { innerViewportPx } from './print-window.js';
 import { applyFades, drawPosterText } from './poster-text.js';
+import {
+  preparePrintStyle,
+  resolvePrintCamera,
+} from './print-parity.js';
 import {
   notifyFulfillFail,
 } from './alerting.js';
@@ -287,61 +290,6 @@ function patchStyleForHalo(style: Record<string, unknown>, bgHex?: string): Reco
   return style;
 }
 
-// ── Print line-width fidelity ───────────────────────────────────────────────
-// The editor renders in the browser at devicePixelRatio ≈ 3, while the native
-// renderer draws at ratio=1 with a bounds-derived zoom, so identical styleJson
-// line widths come out ~2.5x thinner (proportionally) on a print canvas than
-// on the preview the customer approved. Scaling every line-width by this
-// factor restores parity. Validated on order #1086 (2026-08-04): road pixel
-// coverage 0.340% with factor 2.5 vs 0.364% in the approved preview
-// (vs 0.052% with the legacy Option C 3.5px clamp).
-const PRINT_LINE_WIDTH_FACTOR = Number(process.env.PRINT_LINE_WIDTH_FACTOR ?? '2.5');
-
-function scaleWidthValue(v: unknown, f: number): unknown {
-  if (typeof v === 'number') return Math.round(v * f * 1000) / 1000;
-  if (Array.isArray(v) && v.length > 0) {
-    const op = v[0];
-    if (op === 'interpolate') {
-      // ["interpolate", interp, input, in1, out1, in2, out2, ...]
-      const out = [...v];
-      for (let i = 4; i < out.length; i += 2) out[i] = scaleWidthValue(out[i], f);
-      return out;
-    }
-    if (op === 'step') {
-      // ["step", input, default_out, in1, out1, ...]
-      const out = [...v];
-      out[2] = scaleWidthValue(out[2], f);
-      for (let i = 4; i < out.length; i += 2) out[i] = scaleWidthValue(out[i], f);
-      return out;
-    }
-    // Other numeric-producing expression. Top-level ["zoom"] interpolations are
-    // handled above, so wrapping in "*" here is expression-spec safe.
-    return ['*', f, v];
-  }
-  if (v && typeof v === 'object' && Array.isArray((v as Record<string, unknown>).stops)) {
-    const stops = ((v as Record<string, unknown>).stops as Array<[number, unknown]>)
-      .map(([z, w]) => [z, scaleWidthValue(w, f)] as [number, unknown]);
-    return { ...(v as Record<string, unknown>), stops };
-  }
-  return v;
-}
-
-function scaleStyleLineWidths(style: Record<string, unknown>, factor: number): Record<string, unknown> {
-  if (!isFinite(factor) || factor === 1) return style;
-  const layers = style.layers as Array<Record<string, unknown>> | undefined;
-  if (!Array.isArray(layers)) return style;
-  let scaled = 0;
-  for (const layer of layers) {
-    if (String(layer.type ?? '') !== 'line') continue;
-    const paint = layer.paint as Record<string, unknown> | undefined;
-    if (!paint || paint['line-width'] === undefined) continue;
-    paint['line-width'] = scaleWidthValue(paint['line-width'], factor);
-    scaled++;
-  }
-  console.log(`[printWidth] line-width scaled x${factor} on ${scaled} line layers`);
-  return style;
-}
-
 function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
   const layers = style.layers as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(layers)) return style;
@@ -541,6 +489,7 @@ registerBundledFonts();
 registerSystemFonts();
 
 // Poster typography (drawPosterText) and fades (applyFades) are in ./poster-text.ts.
+// fullbleed is the editor bottom ease-in; applyFades decides that via fadeKind.
 
 // ── OverlayParams type ───────────────────────────────────────────────────────
 interface OverlayParams {
@@ -572,9 +521,22 @@ interface RenderParams {
    * Fraction of the canvas that holds the editor's visible composition.
    * 1 means the bounds fill the sheet (posters, frames). Canvas print areas
    * are larger than the visible product; the fraction is visible/print so
-   * zoomForBounds fits the framed map in the centre and the margin is wrap.
+   * the framed map stays in the centre and the margin is wrap. Zoom is not
+   * recomputed from this — the editor zoom is kept and the sheet's logical
+   * viewport grows by 1/fraction.
    */
   visibleFraction?: { w: number; h: number };
+  /**
+   * Editor Clean / Detailed toggle. false (Clean, the MapLibre path) applies
+   * the trunk/primary opacity curves. true leaves the style-file curve.
+   */
+  minorRoads?: boolean;
+  /**
+   * Internal map container in pixels (map.getContainer() before the CSS
+   * 1/5.5 shrink). Absent on current snapshots; derived from bounds + zoom.
+   */
+  mapWidth?: number;
+  mapHeight?: number;
 }
 
 
@@ -585,23 +547,6 @@ interface MapBounds {
   south: number;
   east:  number;
   north: number;
-}
-
-/**
- * Derive the correct MapLibre zoom level for a given bounding box and canvas.
- * Canvas-size-agnostic: same bounds always fills the same poster proportion
- * regardless of paper size. Mirrors terraink.app / MapLibre cameraForBounds.
- */
-function zoomForBounds(b: MapBounds, vpW: number, vpH: number, tileSize = 512): number {
-  const latToMerc = (lat: number) =>
-    Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
-  const lngRange = Math.abs(b.east - b.west) * (Math.PI / 180);
-  const latRange = Math.abs(latToMerc(b.north) - latToMerc(b.south));
-  // Guard against degenerate bounds (single point)
-  if (lngRange < 1e-9 || latRange < 1e-9) return MAX_ZOOM_RENDER;
-  const zW = Math.log2((vpW * 2 * Math.PI) / (lngRange * tileSize));
-  const zH = Math.log2((vpH * 2 * Math.PI) / (latRange * tileSize));
-  return Math.min(zW, zH, MAX_ZOOM_RENDER);
 }
 
 /**
@@ -620,14 +565,25 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const ps = Math.sqrt(MAX_PX / (w * h));
   if (ps < 1) { w = Math.floor(w * ps); h = Math.floor(h * ps); }
 
-  // Full-resolution native GL render — Railway now has 4 GB RAM (Workstream A).
-  // DEVICE_SCALE defaults to 1 (full res, no upscale, no Lanczos blur).
-  // Emergency rollback without redeploy: set RENDER_DEVICE_SCALE=2 in Railway env.
-  const DEVICE_SCALE = parseInt(process.env.RENDER_DEVICE_SCALE ?? '1', 10) || 1;
-  const vpW = Math.ceil(w / DEVICE_SCALE);
-  const vpH = Math.ceil(h / DEVICE_SCALE);
-  w = vpW * DEVICE_SCALE;
-  h = vpH * DEVICE_SCALE;
+  // Editor zoom + Terraink pixel ratio. The logical viewport is the internal
+  // map (bounds at cfg.zoom), not the print pixel grid, so line-width and
+  // opacity stops stay where the customer saw them. pixelRatio grows the
+  // framebuffer to the print size. RENDER_DEVICE_SCALE is not applied: it
+  // used to stand in for this ratio and would scale strokes a second time.
+  const camera = resolvePrintCamera({
+    zoom,
+    bounds,
+    outputWidth: w,
+    outputHeight: h,
+    visibleFractionW: params.visibleFraction?.w,
+    visibleFractionH: params.visibleFraction?.h,
+    mapWidth: params.mapWidth,
+    mapHeight: params.mapHeight,
+    maxZoom: MAX_ZOOM_RENDER,
+  });
+  if (process.env.RENDER_DEVICE_SCALE && process.env.RENDER_DEVICE_SCALE !== '1') {
+    console.warn('[render] RENDER_DEVICE_SCALE is ignored; resolution comes from the editor pixel ratio');
+  }
 
   // Bundled Roboto is registered at startup. This only fetches if that file is missing.
   await ensureFont('Roboto');
@@ -653,29 +609,21 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
         .then(buf => callback(null, { data: Buffer.from(buf) }))
         .catch(err => callback(err as Error));
     },
-    ratio: DEVICE_SCALE,
+    ratio: camera.pixelRatio,
   });
 
   let rawRgba: Buffer;
   try {
-    map.load(styleJson);
-
-    // Use bounds-derived zoom if available — canvas-size-agnostic.
-    // Canvas print files pass visibleFraction < 1 so the editor bounds fill
-    // the centre window (the product opening) rather than the whole sheet.
-    // Fraction 1 (or omitted) is the previous full-viewport zoom.
-    const viewport = innerViewportPx(
-      vpW,
-      vpH,
-      params.visibleFraction?.w ?? 1,
-      params.visibleFraction?.h ?? 1,
-    );
-    const renderZoomForCanvas = bounds ? zoomForBounds(bounds, viewport.w, viewport.h) : zoom;
+    // Clean (arteries) gets the editor's setPaintProperty opacity curves.
+    // Line widths are not multiplied: the style already stores the overzoom boost.
+    map.load(preparePrintStyle(styleJson as { layers?: Array<{ id?: string; type?: string; paint?: Record<string, unknown> }> }, {
+      minorRoads: params.minorRoads === true,
+    }));
 
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
       const timeoutId = setTimeout(() => reject(new Error('Native render timeout (55s)')), 55_000);
       map.render(
-        { zoom: renderZoomForCanvas, center: [lng, lat], width: vpW, height: vpH, bearing, pitch },
+        { zoom: camera.zoom, center: [lng, lat], width: camera.cssWidth, height: camera.cssHeight, bearing, pitch },
         (err: Error | null, buf: Buffer) => {
           clearTimeout(timeoutId);
           if (err) reject(err);
@@ -687,14 +635,20 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     try { map.release(); } catch {}
   }
 
-  // When DEVICE_SCALE=1 (default), vpW=w and vpH=h — rawRgba IS the final buffer.
-  // When DEVICE_SCALE>1 (emergency revert path), Lanczos upscale to w×h.
-  const finalRgba = DEVICE_SCALE > 1
-    ? await sharp(rawRgba, { raw: { width: vpW, height: vpH, channels: 4 } })
+  const bufW = camera.bufferWidth;
+  const bufH = camera.bufferHeight;
+  if (rawRgba.length !== bufW * bufH * 4) {
+    throw new Error(`[render] framebuffer is ${rawRgba.length} bytes, expected ${bufW}×${bufH} at ratio ${camera.pixelRatio}`);
+  }
+  // Terraink draws the GL canvas into the export bitmap. When the output is
+  // smaller than the internal map, ratio stays 1 and this scale-down keeps
+  // stroke weight proportional. A 1px float remainder takes the same path.
+  const finalRgba = (bufW === w && bufH === h)
+    ? rawRgba
+    : await sharp(rawRgba, { raw: { width: bufW, height: bufH, channels: 4 } })
         .resize(w, h, { kernel: sharp.kernel.lanczos3, fit: 'fill' })
         .raw()
-        .toBuffer()
-    : rawRgba;
+        .toBuffer();
 
   const bgColor = (overlay?.theme as any)?.map?.overlayBg ?? (overlay?.theme as any)?.ui?.bg ?? '#f5f5f0';
   const cv = createCanvas(w, h);
@@ -733,7 +687,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     .toColorspace('srgb')
     .png({ compressionLevel: 9 })
     .toBuffer();
-  const modeLabel = DEVICE_SCALE > 1 ? `${vpW}x${vpH}→${w}x${h}px (Lanczos${DEVICE_SCALE}x)` : `${w}x${h}px (native-res)`;
+  const modeLabel = `${w}x${h}px zoom=${camera.zoom.toFixed(3)} css=${camera.cssWidth}x${camera.cssHeight} ratio=${camera.pixelRatio} (${camera.source})`;
   console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, ${actualDensity}DPI sRGB)`);
   return pngBuf;
 }
@@ -797,13 +751,23 @@ async function renderTiledPng(
     const tileSouth      = mercYToLat(tileMercBottom);
 
     console.log(`[tiled] tile ${i + 1}/${numTiles}: ${totalW}×${thisTileH}px (y ${tileTop}–${tileTop + thisTileH})`);
+    // Same editor zoom as the sheet. The tile's own centre keeps the slice
+    // on its geographic band; the sheet centre would repeat the middle band.
+    const tileCenterLng = (bounds.west + bounds.east) / 2;
+    const tileCenterLat = mercYToLat((tileMercTop + tileMercBottom) / 2);
     const tileBuf = await renderPngInternal({
       ...params,
+      center:  [tileCenterLng, tileCenterLat],
       width:   totalW,
       height:  thisTileH,
       bounds:  { west: bounds.west, east: bounds.east, north: tileNorth, south: tileSouth },
       overlay: undefined,
       dpi:     undefined,
+      // The slice is the whole tile. A sheet-level wrap fraction must not be
+      // applied again inside each strip (tiled + wrap is already refused).
+      visibleFraction: undefined,
+      mapWidth: undefined,
+      mapHeight: undefined,
     });
     rawTileBuffers.push({ buf: tileBuf, top: tileTop });
   }
@@ -1038,6 +1002,11 @@ interface MapvibeConfigSnapshot {
   // Editor flag (useStoreConfig). True means bounds are already the print
   // sheet, so fulfillment must not expand them by the canvas wrap again.
   dimensionsArePrintArea?: boolean;
+  // Internal map container (map.getContainer() client size, before the CSS
+  // 1/5.5 shrink). Not sent by useStoreConfig today. When present it is the
+  // logical viewport; otherwise it is derived from bounds + zoom.
+  mapWidth?: number;
+  mapHeight?: number;
   // Live palette forwarded by ShopifyExportOverlay (>= v3.1). When present,
   // renderConfigToBlobUrl builds theme_json from these and bypasses load_theme(),
   // making fulfillment immune to theme-filename drift (e.g. vintage_noir → no
@@ -1160,15 +1129,13 @@ async function renderConfigToBlobUrl(
   }
 
   // ── Print styling ─────────────────────────────────────────────────────────
-  // Option C's constant 3.5px road clamp renders hairline-thin on print
-  // canvases (native ratio=1 + bounds-derived zoom): measured 0.052% road
-  // pixel coverage on order #1086 vs 0.364% in the customer-approved preview.
-  // Default: preserve the customer's own styleJson width curves and scale
-  // them for print parity. Set OPTION_C_STYLE=1 to restore the legacy clamp.
+  // Width stops stay in editor pixels. renderPngInternal evaluates them at
+  // the snapshot zoom and scales the framebuffer with pixelRatio, the way
+  // Terraink's exporter does. The old 2.5× multiply stacked on top of the
+  // 5.5^0.8 boost and printed roads about 14× heavier than the preview.
+  // Set OPTION_C_STYLE=1 to restore the legacy constant-width clamp.
   if (process.env.OPTION_C_STYLE === '1') {
     styleJson = patchStyleForOptionC(styleJson);
-  } else {
-    styleJson = scaleStyleLineWidths(styleJson, PRINT_LINE_WIDTH_FACTOR);
   }
   // ── Text-halo legibility: halos are applied at the canvas (poster-text) level
   // only, NOT to MapLibre tile symbol layers. Tile halos create road-corridor
@@ -1284,6 +1251,13 @@ async function renderConfigToBlobUrl(
     bearing:   cfg.bearing ?? 0,
     pitch:     cfg.pitch   ?? 0,
     bounds:    cfg.bounds,
+    // Snapshot flag, not the route flag. detailed-without-bounds stays on
+    // this path with route.minorRoads false, but the editor was in
+    // neighbourhood mode and its opacity curve must be left alone.
+    minorRoads: cfg.minorRoads === true,
+    ...(typeof cfg.mapWidth === 'number' && typeof cfg.mapHeight === 'number'
+      ? { mapWidth: cfg.mapWidth, mapHeight: cfg.mapHeight }
+      : {}),
     printMode: true,
     dpi:       actualDpi,
     ...(printWindow?.hasWrap ? {
@@ -1400,6 +1374,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 
   const {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
+    mapWidth, mapHeight,
     displayCity, displayCountry, fontFamily, showPosterText, fadeStyle, includeCredits, textLayout, theme,
     // ── OSM/maptoposter routing ─────────────────────────────────────────────
     // engine — per-request override; falls back to RENDER_ENGINE env var.
@@ -1624,7 +1599,11 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           ...(typeof preview_max_px === 'number' ? { preview_max_px } : {}),
         }, clientAbort.signal);
       } else {
-        png = await renderPngInternal({ styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay });
+        png = await renderPngInternal({
+          styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay,
+          minorRoads: minorRoads === true,
+          ...(typeof mapWidth === 'number' && typeof mapHeight === 'number' ? { mapWidth, mapHeight } : {}),
+        });
       }
       // Last-chance check: if the proxy disconnected between Python finishing
       // and us sending the bytes, drop the response and the PNG on the floor —
