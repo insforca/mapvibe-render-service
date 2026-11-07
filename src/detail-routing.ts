@@ -1,30 +1,25 @@
 /**
- * Detailed-roads fulfillment routing (feat/fulfill-detailed-osm).
+ * Detailed-roads fulfillment routing.
  *
- * Problem: editor-authored (styleJson) snapshots always replay fulfillment
- * through the vector-tile pipeline. Poster-zoom tiles carry almost no
- * residential/service road data in low-density suburbs (order #1086's Fair
- * Haven tile holds 3 minor-road features), so the editor's "Detailed" mode
- * cannot be reproduced on the print file through that path — the layers turn
- * on, but there is nothing to draw. The OSM engine in this same service draws
- * from the full OpenStreetMap dataset and reproduces Detailed correctly.
+ * The editor's Detailed preview is the MapLibre style from generateMapStyle
+ * (neighbourhood mode): casings, zoom-stopped widths, waterways, buildings,
+ * aeroway, dashed rail, and the road classes whose line-opacity is above 0.
+ * Residential and paths stay at opacity 0 unless the customer turned those
+ * toggles on. Replaying that snapshot through the Python/OSM poster draws a
+ * different map (one stroke per class, no casings, no zoom curve, no
+ * buildings). Order #1086's missing residential roads were a zoom mismatch
+ * against the same OpenFreeMap tiles, not a second street network the
+ * editor was showing.
  *
- * Contract (additive; default behaviour is unchanged byte-for-byte):
- *  - Snapshot minorRoads === true AND bounds present → OSM engine, Detailed.
- *  - FulfillBody.detailedRoads overrides the snapshot for staff reprints:
- *    true forces the Detailed/OSM path, false forces the legacy tile path.
- *  - Detailed wanted but NO bounds → stay on the tile path and warn loudly.
- *    Framing fidelity outranks road detail: without a bounds rectangle the
- *    OSM engine would reframe the poster via dist-around-center — the exact
- *    pre-#79 failure mode (crop drift vs the approved editor view).
- *
- * Why routing a styleJson config through the OSM engine is safe NOW (it was
- * not on 2026-08-04, see the #1086 incident note in server.ts):
- *  1. Crop: v2 snapshots carry bounds, and the OSM engine frames from bounds
- *     since #79 — the print matches the approved editor view.
- *  2. Theme: themeJsonFromEditorTheme() derives the engine palette from the
- *     snapshot's nested editor theme, so no load_theme() filename fallback.
- *  3. Chrome: fulfillment always sets full_bleed + no_fade, so no axes chrome.
+ * Contract:
+ *  - minorRoads (or detailedRoads override) AND bounds AND a style with
+ *    layers → MapLibre, rendered at the snapshot zoom. Python is not used.
+ *  - Same request but no usable style → OSM engine. There is nothing to
+ *    replay, so the legacy street graph is still the only picture we can make.
+ *  - cfg.engine === 'osm' stays on the OSM engine (explicit legacy snapshots).
+ *  - Detailed wanted but NO bounds → tile path and a loud warning. Framing
+ *    outranks road detail (pre-#79 crop drift).
+ *  - detailedRoads false forces the Clean tile path.
  */
 
 export interface DetailRoutingFields {
@@ -36,12 +31,23 @@ export interface DetailRoutingFields {
 
 export interface FulfillRoute {
   engine: 'osm' | 'maplibre';
-  /** Only meaningful when engine === 'osm'. */
+  /**
+   * True when the print should show the editor's Detailed road set.
+   * On the MapLibre path the style's own opacities decide which classes
+   * are actually inked. On the OSM path it is forwarded as minor_roads.
+   */
   minorRoads: boolean;
   /** Stable slug for the log line — never silent (post-#79 rule). */
   reason: string;
   /** Present when a Detailed request could not be honoured. */
   warning?: string;
+}
+
+/** A style the MapLibre renderer can replay. `{}` is not one. */
+export function hasUsableMapStyle(style: unknown): boolean {
+  if (!style || typeof style !== 'object' || Array.isArray(style)) return false;
+  const layers = (style as { layers?: unknown }).layers;
+  return Array.isArray(layers) && layers.length > 0;
 }
 
 export function resolveFulfillRoute(
@@ -60,15 +66,22 @@ export function resolveFulfillRoute(
     return { engine: 'osm', minorRoads: wantDetailed, reason: 'env-osm-legacy-config' };
   }
 
-  // NEW: Detailed-roads orders route through the OSM engine — but only when
-  // the snapshot carries a bounds rectangle, so print framing stays identical
-  // to the approved editor view.
+  // Detailed with the editor's own style replays that style. The style
+  // already encodes which classes are visible and at what opacity. Python
+  // remains only when there is no style to replay.
   if (wantDetailed) {
+    if (cfg.bounds && hasUsableMapStyle(cfg.styleJson)) {
+      return {
+        engine: 'maplibre',
+        minorRoads: true,
+        reason: detailedOverride === true ? 'detailed-override' : 'detailed-style-parity',
+      };
+    }
     if (cfg.bounds) {
       return {
         engine: 'osm',
         minorRoads: true,
-        reason: detailedOverride === true ? 'detailed-override' : 'snapshot-minor-roads',
+        reason: detailedOverride === true ? 'detailed-override-no-style' : 'detailed-osm-no-style',
       };
     }
     return {
@@ -92,17 +105,30 @@ interface EditorThemeRoads {
   minor_high?: string;
   minor_mid?: string;
   minor_low?: string;
+  path?: string;
+  outline?: string;
 }
 
 interface EditorThemeShape {
+  name?: string;
+  id?: string;
   map?: {
     land?: string;
     water?: string;
+    waterway?: string;
     parks?: string;
+    buildings?: string;
+    aeroway?: string;
     rail?: string;
     roads?: EditorThemeRoads;
   };
   ui?: { text?: string };
+}
+
+function themeLabel(theme: unknown): string {
+  if (!theme || typeof theme !== 'object') return 'unnamed';
+  const t = theme as EditorThemeShape;
+  return t.name || t.id || 'unnamed';
 }
 
 /**
@@ -113,7 +139,12 @@ interface EditorThemeShape {
  * colours on theme-filename drift.
  *
  * Returns undefined when the nested theme lacks the minimum fields (land,
- * roads, ui.text) — callers then keep the existing load_theme fallback.
+ * roads, ui.text). Callers must not then silently load midnight_blue or
+ * the terracotta file when a theme object was actually provided.
+ *
+ * Secondary is roads.minor_high. The editor paints `road-secondary` with
+ * that colour, the same as trunk and primary — not minor_mid.
+ * A missing water colour is omitted. It is not replaced with land.
  */
 export function themeJsonFromEditorTheme(
   theme: unknown,
@@ -124,18 +155,45 @@ export function themeJsonFromEditorTheme(
   if (!m?.land || !m.roads || !text) return undefined;
   const r = m.roads;
   const major = r.major ?? text;
-  return {
+  const out: Record<string, string> = {
+    name: themeLabel(theme),
     bg: m.land,
     text,
     gradient_color: m.land,
-    water: m.water ?? m.land,
     parks: m.parks ?? m.land,
     road_motorway: major,
     road_primary: r.minor_high ?? major,
-    road_secondary: r.minor_mid ?? r.minor_high ?? major,
+    road_secondary: r.minor_high ?? major,
     road_tertiary: r.minor_mid ?? r.minor_high ?? major,
     road_residential: r.minor_low ?? r.minor_mid ?? major,
     road_default: r.minor_mid ?? r.minor_high ?? major,
     rail: m.rail ?? r.minor_mid ?? major,
   };
+  if (m.water) out.water = m.water;
+  if (m.waterway) out.waterway = m.waterway;
+  if (m.buildings) out.buildings = m.buildings;
+  if (m.aeroway) out.aeroway = m.aeroway;
+  if (r.outline) out.road_outline = r.outline;
+  if (r.path) out.road_path = r.path;
+  return out;
+}
+
+/**
+ * Palette problems a caller should log next to the theme name.
+ * Empty when the value is not a theme object, or when nothing was dropped.
+ */
+export function editorThemePaletteWarnings(theme: unknown): string[] {
+  if (!theme || typeof theme !== 'object' || Array.isArray(theme)) return [];
+  const t = theme as EditorThemeShape;
+  const name = themeLabel(theme);
+  const warnings: string[] = [];
+  if (t.map && !t.map.water) {
+    warnings.push(`theme '${name}': map.water is missing — not substituting land`);
+  }
+  if (t.map?.roads && !t.map.roads.minor_high) {
+    warnings.push(
+      `theme '${name}': roads.minor_high is missing — secondary uses major, not minor_mid`,
+    );
+  }
+  return warnings;
 }

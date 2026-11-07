@@ -70,9 +70,11 @@ import {
   fulfillGelato,
 } from './gelato.js';
 import {
+  editorThemePaletteWarnings,
   resolveFulfillRoute,
   themeJsonFromEditorTheme,
 } from './detail-routing.js';
+import { applyNeighbourhoodDetail } from './detailed-style.js';
 
 // ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
 let sRGBIccPath: string | null = null;
@@ -817,8 +819,6 @@ async function renderTiledPng(
   return pngBuf;
 }
 
-
-
 // ── OSM Python renderer ───────────────────────────────────────────────────────
 
 interface OsmRenderParams {
@@ -1134,6 +1134,8 @@ async function renderConfigToBlobUrl(
   // Terraink's exporter does. The old 2.5× multiply stacked on top of the
   // 5.5^0.8 boost and printed roads about 14× heavier than the preview.
   // Set OPTION_C_STYLE=1 to restore the legacy constant-width clamp.
+  // Styled Detailed uses this same camera (resolvePrintCamera). It does not
+  // multiply line widths either.
   if (process.env.OPTION_C_STYLE === '1') {
     styleJson = patchStyleForOptionC(styleJson);
   }
@@ -1152,27 +1154,15 @@ async function renderConfigToBlobUrl(
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
-  // 5. Render via OSM Python pipeline or native MapLibre pipeline.
-  //    Routing lives in resolveFulfillRoute() (see detail-routing.ts):
-  //    - cfg.engine === 'osm', and RENDER_ENGINE=osm for legacy configs
-  //      without styleJson — unchanged pre-existing rules.
-  //    - NEW (Detailed fulfillment): snapshots with minorRoads === true and a
-  //      bounds rectangle — or a per-request FulfillBody.detailedRoads
-  //      override — render on the OSM engine, because poster-zoom vector
-  //      tiles carry almost no residential-road data in low-density areas
-  //      (order #1086's Fair Haven tile holds 3 minor-road features), so the
-  //      tile path cannot reproduce the editor's Detailed mode at all.
-  //    HISTORY (order #1086, 2026-08-04): styleJson configs used to lose the
-  //    design on the OSM path — wrong colors via load_theme fallback, crop
-  //    from dist-around-center, matplotlib axes chrome. Each is now covered
-  //    on this path: theme_json is derived from the snapshot (flat palette
-  //    fields, else the nested editor theme), the crop frames from the
-  //    snapshot bounds (#79) and Detailed never routes here without bounds,
-  //    and fulfillment renders full_bleed + no_fade (no axes chrome).
+  // 5. Route. Detailed + a real style replays that style through the same
+  //    MapLibre camera as Clean (resolvePrintCamera: editor zoom, pixel
+  //    ratio, no second line-width scale). Python remains for explicit
+  //    engine=osm and for Detailed snapshots that have bounds but no style.
   const route = resolveFulfillRoute(cfg, RENDER_ENGINE, detailedRoads);
   if (route.warning) console.warn(`[fulfill] ${route.warning}`);
   console.log(`[fulfill] engine route: ${route.engine} (${route.reason})`);
   const useOsm = route.engine === 'osm';
+  const useDetailedParity = route.reason === 'detailed-style-parity' || route.reason === 'detailed-override';
   let pngBuffer: Buffer;
 
   if (useOsm) {
@@ -1183,23 +1173,45 @@ async function renderConfigToBlobUrl(
     // load_theme() when present — renders are then immune to filename drift
     // (e.g. vintage_noir has no matching themes/vintage_noir.json, so load_theme
     // silently falls back to terracotta without this forwarding).
-    const fulfillThemeJson = cfg.textColor ? {
-      bg:               cfg.bgColor             ?? '#1B2A4A',
-      text:             cfg.textColor,
-      gradient_color:   cfg.bgColor             ?? '#1B2A4A',
-      water:            cfg.waterColor          ?? cfg.bgColor    ?? '#1B2A4A',
-      parks:            cfg.parksColor          ?? cfg.bgColor    ?? '#1B2A4A',
-      road_motorway:    cfg.roadMotorwayColor   ?? cfg.textColor,
-      road_primary:     cfg.roadPrimaryColor    ?? cfg.roadMotorwayColor ?? cfg.textColor,
-      road_secondary:   cfg.roadSecondaryColor  ?? cfg.roadPrimaryColor  ?? cfg.textColor,
-      road_tertiary:    cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
-      road_residential: cfg.roadLocalColor      ?? cfg.roadTertiaryColor ?? cfg.textColor,
-      road_default:     cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
-      rail:             cfg.railColor           ?? cfg.roadSecondaryColor ?? cfg.textColor,
-    // Editor snapshots that predate the v3.1 flat-palette fields carry their
-    // palette only as the nested editor theme — derive theme_json from it so
-    // the OSM path never falls back to load_theme() filename matching.
-    } : themeJsonFromEditorTheme(cfg.theme);
+    for (const warning of editorThemePaletteWarnings(cfg.theme)) {
+      console.warn(`[fulfill] ${warning}`);
+    }
+    const themeName = (cfg.theme && typeof cfg.theme === 'object'
+      ? ((cfg.theme as { name?: string; id?: string }).name
+        || (cfg.theme as { id?: string }).id)
+      : undefined) || cfg.osmTheme || 'unnamed';
+    let fulfillThemeJson: Record<string, string> | undefined;
+    if (cfg.textColor) {
+      fulfillThemeJson = {
+        name:             themeName,
+        bg:               cfg.bgColor             ?? '#1B2A4A',
+        text:             cfg.textColor,
+        gradient_color:   cfg.bgColor             ?? '#1B2A4A',
+        parks:            cfg.parksColor          ?? cfg.bgColor    ?? '#1B2A4A',
+        road_motorway:    cfg.roadMotorwayColor   ?? cfg.textColor,
+        road_primary:     cfg.roadPrimaryColor    ?? cfg.roadMotorwayColor ?? cfg.textColor,
+        // roadPrimaryColor is the editor's minor_high. Secondary uses it
+        // when the flat snapshot has no separate secondary field.
+        road_secondary:   cfg.roadSecondaryColor  ?? cfg.roadPrimaryColor  ?? cfg.textColor,
+        road_tertiary:    cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
+        road_residential: cfg.roadLocalColor      ?? cfg.roadTertiaryColor ?? cfg.textColor,
+        road_default:     cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
+        rail:             cfg.railColor           ?? cfg.roadSecondaryColor ?? cfg.textColor,
+      };
+      if (cfg.waterColor) fulfillThemeJson.water = cfg.waterColor;
+      else console.warn(`[fulfill] theme '${themeName}': water colour missing — not substituting land`);
+    } else {
+      // Nested editor theme. A provided theme that cannot be derived must
+      // not fall through to load_theme(midnight_blue) or terracotta.
+      fulfillThemeJson = themeJsonFromEditorTheme(cfg.theme);
+      if (!fulfillThemeJson && cfg.theme && typeof cfg.theme === 'object') {
+        console.error(
+          `[fulfill] theme '${themeName}' was provided but is missing map.land, ` +
+          `map.roads, or ui.text — refusing midnight_blue/terracotta fallback`,
+        );
+        return null;
+      }
+    }
     const osmParams: OsmRenderParams = {
       city:            cfg.city            ?? '',
       country:         cfg.country         ?? '',
@@ -1243,7 +1255,14 @@ async function renderConfigToBlobUrl(
       return null;
     }
   } else {
-  // Native MapLibre pipeline — tiled or single-pass
+  // Native MapLibre pipeline — tiled or single-pass. Clean and styled
+  // Detailed share renderPngInternal (resolvePrintCamera + poster-text).
+  // A staff detailedRoads override may be sitting on a Clean snapshot, so
+  // reveal the neighbourhood layers before that render. preparePrintStyle
+  // leaves the style-file opacity curve alone when minorRoads is true.
+  if (route.reason === 'detailed-override') {
+    styleJson = applyNeighbourhoodDetail(styleJson);
+  }
   const sharedParams: RenderParams = {
     styleJson,
     center:    cfg.center,
@@ -1254,7 +1273,9 @@ async function renderConfigToBlobUrl(
     // Snapshot flag, not the route flag. detailed-without-bounds stays on
     // this path with route.minorRoads false, but the editor was in
     // neighbourhood mode and its opacity curve must be left alone.
-    minorRoads: cfg.minorRoads === true,
+    // Styled Detailed (including the override) passes true so the Clean
+    // arteries curves are not written over the neighbourhood curve.
+    minorRoads: useDetailedParity ? true : cfg.minorRoads === true,
     ...(typeof cfg.mapWidth === 'number' && typeof cfg.mapHeight === 'number'
       ? { mapWidth: cfg.mapWidth, mapHeight: cfg.mapHeight }
       : {}),
