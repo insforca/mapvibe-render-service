@@ -786,22 +786,18 @@ def _fetch_rail_from_pbf(pbf_path: str, lat: float, lon: float, dist: int):
 
 # ââ Theme loading âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
-_TERRACOTTA_DEFAULT = {
-    "name": "Terracotta",
-    "bg": "#F5EDE4", "text": "#8B4513", "gradient_color": "#F5EDE4",
-    "water": "#A8C4C4", "parks": "#E8E0D0",
-    "road_motorway": "#A0522D", "road_primary": "#B8653A",
-    "road_secondary": "#C9846A", "road_tertiary": "#D9A08A",
-    "road_residential": "#E5C4B0", "road_default": "#D9A08A",
-}
-
 def load_theme(theme_name: str = 'midnight_blue') -> dict:
     theme_file = os.path.join(THEMES_DIR, f'{theme_name}.json')
     if os.path.exists(theme_file):
         with open(theme_file, 'r', encoding='utf-8') as f:
             return json.load(f)
-    _log(f'Theme {theme_name!r} not found; using terracotta fallback')
-    return _TERRACOTTA_DEFAULT.copy()
+    # A named theme that is not on disk must fail the render. Substituting
+    # terracotta (or midnight_blue) printed the wrong poster with no signal
+    # in the file itself.
+    raise RuntimeError(
+        f"Theme {theme_name!r} was provided but {theme_file} does not exist; "
+        f"refusing the terracotta fallback"
+    )
 
 # ââ Script detection ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
@@ -1275,6 +1271,48 @@ def _extent_to_lnglat_bbox(x0: float, x1: float, y0: float, y1: float,
     return (min(lngs), min(lats), max(lngs), max(lats))
 
 
+def _coords_look_like_degrees(x: float, y: float) -> bool:
+    return abs(x) <= 180.0 and abs(y) <= 90.0
+
+
+def _reproject_degree_edge_geometries(G):
+    """Move edge LineStrings that project_graph left in lon/lat into G's CRS.
+
+    osmnx.project_graph reprojects edge geometries only when
+    G.graph['simplified'] is true. Pyrosm's to_graph keeps curved
+    geometries and does not set that flag, so plot_graph draws degrees
+    into an axis whose limits are metres and the PNG is a solid sheet.
+    PMTiles streets are a GeoDataFrame and go through to_crs, which does
+    reproject the geometry column; this helper is the OSMnx path.
+    """
+    crs = G.graph.get('crs')
+    if crs is None:
+        return G
+    from pyproj import Transformer
+    from shapely.ops import transform as shp_transform
+    transformer = None
+    moved = 0
+    for _u, _v, _k, data in G.edges(keys=True, data=True):
+        geom = data.get('geometry')
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type == 'LineString':
+            x, y = geom.coords[0]
+        elif geom.geom_type == 'MultiLineString' and len(geom.geoms):
+            x, y = geom.geoms[0].coords[0]
+        else:
+            continue
+        if not _coords_look_like_degrees(x, y):
+            continue
+        if transformer is None:
+            transformer = Transformer.from_crs('EPSG:4326', crs, always_xy=True)
+        data['geometry'] = shp_transform(transformer.transform, geom)
+        moved += 1
+    if moved:
+        _log(f'reprojected {moved} edge geometries left in lon/lat by project_graph')
+    return G
+
+
 def render(params: dict) -> bytes:
     city            = params.get('city', '')
     country         = params.get('country', '')
@@ -1354,7 +1392,16 @@ def render(params: dict) -> bytes:
          f'full_bleed={full_bleed}  no_fade={no_fade}  minor_roads={minor_roads}')
 
     # ââ 2. Load theme ââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
-    theme = theme_override if isinstance(theme_override, dict) else load_theme(theme_name)
+    if isinstance(theme_override, dict) and theme_override:
+        theme = theme_override
+        if not theme.get('water'):
+            label = theme.get('name') or theme_name
+            _log(
+                f"WARNING theme {label!r}: water colour missing — "
+                f"not substituting land"
+            )
+    else:
+        theme = load_theme(theme_name)
 
     # ââ 3. Fetch OSM data ââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # Compensated dist ensures the map fills poster aspect ratio without clipping
@@ -1775,12 +1822,19 @@ def render(params: dict) -> bytes:
 
         # ââ 5b. Project pre-clipped graph âââââââââââââââââââââââââââââââââ
         _proj_t0 = time.time()
-    # OSMnx path: project the NetworkX graph into the local UTM zone, then
-    # use that as the target CRS for water/parks/rail polygons so everything
-    # lines up. PMTiles path: g is None — project everything to Web Mercator
-    # (EPSG:3857) directly. Same visual result; both are metric CRSes that
-    # matplotlib treats as equal-scale axes.
-    g_proj = ox.project_graph(g) if g is not None else None
+        g_proj = ox.project_graph(g)
+    else:
+        # PMTiles path: g is None. Street geometries are reprojected with
+        # GeoDataFrame.to_crs, which does move the coordinates. The draw CRS
+        # is Web Mercator.
+        g_proj = None
+        _proj_t0 = time.time()
+    # project_graph leaves edge geometries in lon/lat unless the graph is
+    # marked simplified. Pyrosm graphs carry those LineStrings and are not
+    # marked, so plot_graph draws degrees into a metre axis and the PNG is
+    # a blank sheet. Cached pview graphs have the same stale geometries.
+    if g_proj is not None:
+        g_proj = _reproject_degree_edge_geometries(g_proj)
     target_crs = g_proj.graph['crs'] if g_proj is not None else _PMTILES_DRAW_CRS
     if g_proj is not None:
         _log(f'project_graph: {time.time()-_proj_t0:.1f}s '
@@ -1789,12 +1843,15 @@ def render(params: dict) -> bytes:
     # ââ 6. Water layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if water is not None and not water.empty:
         water_polys = water[water.geometry.type.isin(['Polygon', 'MultiPolygon'])]
-        if not water_polys.empty:
+        water_color = theme.get('water')
+        if not water_polys.empty and water_color:
             # BUG 1 fix: project to target_crs (3857 on PMTiles path, graph UTM
             # on OSMnx path) so water aligns with streets+axes. project_gdf's
             # auto-UTM fell outside the 3857 axis limits → drawn off-screen.
             water_polys = water_polys.to_crs(target_crs)
-            water_polys.plot(ax=ax, facecolor=theme['water'], edgecolor='none', zorder=0.5)
+            water_polys.plot(ax=ax, facecolor=water_color, edgecolor='none', zorder=0.5)
+        elif not water_polys.empty:
+            _log('skipping water fill — theme has no water colour')
 
     # ââ 7. Parks layer âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if parks is not None and not parks.empty:
@@ -1816,7 +1873,15 @@ def render(params: dict) -> bytes:
             # BUG 1 fix: project to target_crs, not project_gdf's auto-UTM.
             rail_lines = rail_lines.to_crs(target_crs)
             rail_color = theme.get('rail', theme.get('road_default', theme['text']))
-            rail_lines.plot(ax=ax, color=rail_color, linewidth=0.6, zorder=0.9)
+            # Editor rail is a dashed stroke at ~0.6 opacity, not a solid
+            # hairline. Buildings, waterways, aeroway and casings are not
+            # drawn on this legacy path: fetching them for a whole city on
+            # top of the street graph exceeds the 7 GB render budget, and
+            # Detailed orders that carry a style are rendered by MapLibre.
+            rail_lines.plot(
+                ax=ax, color=rail_color, linewidth=0.6,
+                linestyle=(0, (2, 1.6)), alpha=0.64, zorder=0.9,
+            )
 
     # ââ 8. Roads ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     # crop_dist override lets the caller (server.ts /render) align the visible
