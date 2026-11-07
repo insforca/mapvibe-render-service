@@ -42,6 +42,7 @@ import { memoryWatch } from './memory-watch.js';
 import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
 import { innerViewportPx } from './print-window.js';
+import { applyFades, drawPosterText } from './poster-text.js';
 import {
   notifyFulfillFail,
 } from './alerting.js';
@@ -417,7 +418,7 @@ const registeredFonts = new Set<string>();
 function registerSystemFonts(): void {
   const candidates: Array<{ path: string; family: string; weight?: string; style?: string }> = [
     // Liberation fonts (fonts-liberation apt package)
-    // NOTE: use neutral aliases so design fonts (Playfair Display / DM Sans) are always fetched from Google Fonts
+    // Neutral aliases so a custom poster family is not satisfied by a system face.
     { path: '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',    family: 'Liberation-Sans-Fallback' },
     { path: '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',    family: 'Liberation-Mono-Fallback' },
     // Open Sans (fonts-open-sans)
@@ -487,49 +488,26 @@ async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
   }
 }
 
-/** Register design-system fonts bundled in ./assets/fonts/ at Docker build time.
- *  This eliminates the Google Fonts download dependency — fonts are always
- *  available regardless of outbound network access.
+/** Register the editor poster faces bundled in ./assets/fonts/.
  *
- *  WEIGHT-AWARE REGISTRATION (fixes editor vs print typography mismatch):
- *  drawPosterText requests three Playfair Display weights (300, 400, 700) and
- *  two DM Sans weights (300, 400). node-canvas requires a registered face for
- *  each weight — when only one face is registered per family, ALL weight
- *  requests collapse onto that face and node-canvas synthesises "bold" via
- *  stroke-thickening (faux-bold). Result: city name renders as faux-bold
- *  instead of true 700, country renders as regular instead of true 300 —
- *  visibly different from what the editor's browser engine renders.
- *
- *  Resolution order per (family, weight):
- *    1. Weight-specific static file (e.g. PlayfairDisplay-Bold.ttf) — preferred,
- *       commit these alongside the existing variable TTF.
- *    2. Variable file (PlayfairDisplay.ttf) registered with the requested
- *       weight metadata — node-canvas v3+ uses the wght variation axis to
- *       pick the right instance.
- *    3. Skip — ensureFont() Google Fonts fallback covers it on first use.
+ *  The editor's poster block is Roboto: city 700, coordinates 400, country
+ *  and the credit line 300. node-canvas matches faces by the name table, and
+ *  Light and Regular both ship as family "Roboto", so a weight-300 request
+ *  lands on Regular. Roboto-Light.ttf is renamed to family "Roboto Light"
+ *  (glyphs unchanged; Apache-2.0) and registered under that family.
  */
 function registerBundledFonts(): void {
   const FONTS_DIR = join(__dirname, '..', 'assets', 'fonts');
 
-  // Each row: [family, weight (CSS number), static filename, variable fallback].
-  // The static filename is preferred — drop weight-specific TTFs into assets/fonts/
-  // to get true (not synthesised) weights. Variable fallback always exists.
   const bundled: Array<{
     family: string;
     weight: string;
     staticFile: string;
     variableFile: string;
   }> = [
-    // Playfair Display weight 300 (Light) intentionally omitted: no static Light instance on
-    // Google Fonts; variable wght axis starts at 400. Both browser and node-canvas apply
-    // nearest-weight fallback → '300 Playfair' requests land on the registered 400 face,
-    // identical to editor behaviour. Listing it would log a misleading wt=300 registration.
-    { family: 'Playfair Display', weight: '400', staticFile: 'PlayfairDisplay-Regular.ttf', variableFile: 'PlayfairDisplay.ttf' },
-    { family: 'Playfair Display', weight: '700', staticFile: 'PlayfairDisplay-Bold.ttf',    variableFile: 'PlayfairDisplay.ttf' },
-    { family: 'DM Sans',          weight: '300', staticFile: 'DMSans-Light.ttf',            variableFile: 'DMSans.ttf' },
-    { family: 'DM Sans',          weight: '400', staticFile: 'DMSans-Regular.ttf',          variableFile: 'DMSans.ttf' },
-    // IBM Plex Mono — editor body font used for coordinates and attribution in PosterTextOverlay
-    { family: 'IBM Plex Mono',    weight: '400', staticFile: 'IBMPlexMono-Regular.ttf',     variableFile: '' },
+    { family: 'Roboto Light', weight: '300', staticFile: 'Roboto-Light.ttf',    variableFile: 'Roboto-Light.ttf' },
+    { family: 'Roboto',       weight: '400', staticFile: 'Roboto-Regular.ttf',  variableFile: 'Roboto-Regular.ttf' },
+    { family: 'Roboto',       weight: '700', staticFile: 'Roboto-Bold.ttf',     variableFile: 'Roboto-Bold.ttf' },
   ];
 
   for (const { family, weight, staticFile, variableFile } of bundled) {
@@ -562,32 +540,7 @@ registerBundledFonts();
 // Register available system fonts as fallbacks
 registerSystemFonts();
 
-// ── Compositing constants (match COMPOSITING_JS header in v2.x) ─────────────
-// ── Poster strip constants — MUST match src/features/poster/domain/textLayout.ts ─
-// TEXT_DIMENSION_REFERENCE_PX = 3600, edge margin = 2%
-// City: base=250px min=110px  Country: base=92px  Coords: base=58px  Attribution: base=30px
-// Letter-spacing (em): city=0.15  country=0.20  coords=0.25
-const _DR = 3600, _AB = 30,   _EM = .02,  _CB = 250,  _CM = 110;
-const _CS  = .15,  _CTB = 92,  _CTS = .20, _COB = 58,  _COS = .25; // match textLayout.ts §CITY/COUNTRY/COORDS_LETTER_SPACING
-
-// ── Compositing functions — Canvas 2D API; identical logic to v2.x ──────────
-function _wa(hex: any, a: any){var h=(hex||'#000').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return 'rgba('+parseInt(h.slice(0,2),16)+','+parseInt(h.slice(2,4),16)+','+parseInt(h.slice(4,6),16)+','+a+')';}
-function _ph(hex: any){var h=(hex||'#808080').replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return{r:parseInt(h.slice(0,2),16)||0,g:parseInt(h.slice(2,4),16)||0,b:parseInt(h.slice(4,6),16)||0};}
-function _dr(ctx: any, rx: any, ry: any, w: any, h: any, i?: any){i=i||4;var rw=Math.round(w),rh=Math.round(h);if(rw<=0||rh<=0)return;var t=ctx.getTransform(),ax=Math.round(rx+t.e),ay=Math.round(ry+t.f),id=ctx.getImageData(ax,ay,rw,rh),d=id.data,B=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];for(var py=0;py<rh;py++){var rb=py*rw,br=(py&3)*4;for(var px=0;px<rw;px++){var ii=(rb+px)*4,dv=Math.round(((B[br+(px&3)]/15)-0.5)*2*i);d[ii]=Math.max(0,Math.min(255,d[ii]+dv));d[ii+1]=Math.max(0,Math.min(255,d[ii+1]+dv));d[ii+2]=Math.max(0,Math.min(255,d[ii+2]+dv));}}ctx.putImageData(id,ax,ay);}
-function applyFades(ctx: any, W: any, H: any, color: any, fs: any, layout?: any){// 'fullbleed' is the canonical Option 4 name; maps to the bottom-only fade path
-if(fs==='fullbleed')return; // fullbleed = no gradient, map fills edge-to-edge
-if(fs==='none')return;if(fs==='text'){var tH=Math.round(H*0.25),tg=ctx.createLinearGradient(0,0,0,tH);tg.addColorStop(0,_wa(color,1));tg.addColorStop(.4,_wa(color,.45));tg.addColorStop(.7,_wa(color,.12));tg.addColorStop(1,_wa(color,0));ctx.fillStyle=tg;ctx.fillRect(0,0,W,tH);_dr(ctx,0,0,W,tH);var fH=Math.round(H*.065),gH=Math.round(H*.15),fT=H-fH-gH,fg=ctx.createLinearGradient(0,fT,0,fT+gH);fg.addColorStop(0,_wa(color,0));fg.addColorStop(.10,_wa(color,.04));fg.addColorStop(.22,_wa(color,.10));fg.addColorStop(.36,_wa(color,.26));fg.addColorStop(.5,_wa(color,.44));fg.addColorStop(.64,_wa(color,.63));fg.addColorStop(.76,_wa(color,.80));fg.addColorStop(.87,_wa(color,.92));fg.addColorStop(.95,_wa(color,.98));fg.addColorStop(1,color);ctx.fillStyle=fg;ctx.fillRect(0,fT,W,gH);ctx.fillStyle=color;ctx.fillRect(0,H-fH,W,fH);_dr(ctx,0,fT,W,gH+fH);} else {var _ds=Math.max(.45,Math.min(W,H)/_DR),_m=textMetrics(W,H,layout||'centered'),_bY0=_m.cY-_CB*_ds*.55,bY=Math.round(Math.max(_bY0-H*.035,H*.6)),bH=H-bY,bg=ctx.createLinearGradient(0,H,0,bY);if(process.env.DISABLE_EASEIN_FADE==='true'){bg.addColorStop(0,_wa(color,1));bg.addColorStop(.30,_wa(color,.70));bg.addColorStop(.65,_wa(color,.20));bg.addColorStop(1,_wa(color,0));}else{bg.addColorStop(0,_wa(color,1));bg.addColorStop(.12,_wa(color,.94));bg.addColorStop(.26,_wa(color,.80));bg.addColorStop(.40,_wa(color,.62));bg.addColorStop(.54,_wa(color,.43));bg.addColorStop(.66,_wa(color,.27));bg.addColorStop(.78,_wa(color,.14));bg.addColorStop(.88,_wa(color,.055));bg.addColorStop(.95,_wa(color,.014));bg.addColorStop(1,_wa(color,0));}ctx.fillStyle=bg;ctx.fillRect(0,bY,W,bH);_dr(ctx,0,bY,W,bH);}}
-function fmtCoords(lat: any, lon: any){return Math.abs(lat).toFixed(4)+'\u00b0 '+(lat>=0?'N':'S')+' / '+Math.abs(lon).toFixed(4)+'\u00b0 '+(lon>=0?'E':'W');}
-function fmtCity(c: any){if(!c)return'';var lc=0,ac=0;for(var i=0;i<c.length;i++){var ch=c[i];if(/[A-Za-z\u00C0-\u024F]/.test(ch)){lc++;ac++;}else if(/\p{L}/u.test(ch)){ac++;}}return(ac===0||lc/ac>.8)?c.toUpperCase():c;}
-function shrinkFont(base: any, min: any, len: any, sp: any){len=Math.max(len,1);var s=base;if(len>10)s=Math.max(min,base*(10/len));var wE=len*.62+(len-1)*sp,mW=_DR*.92;if(wE*s>mW)s=Math.max(min,mW/wE);return s;}
-function textMetrics(w: any, h: any, layout: any, cfs?: any, ctFS?: any, coFS?: any){
-  // Y-ratios match textLayout.ts: TEXT_CITY_Y=0.885 DIVIDER=0.900 COUNTRY=0.915 COORDS=0.934
-  // Editorial: EDITORIAL_CITY=0.820 DIVIDER=0.855 COUNTRY=0.885 COORDS=0.920
-  if(layout==='editorial'){var x=w*.06;return{cX:x,cY:h*.820,dX:x,dY:h*.855,coX:x,coY:h*.885,crX:x,crY:h*.920,al:'left',dW:120};}
-  var cx=w*.5,cY=h*.885;return{cX:cx,cY,dX:cx,dY:h*.900,coX:cx,coY:h*.915,crX:cx,crY:h*.934,al:'center',dW:w*.2};
-}
-function drawSpaced(ctx: any, text: any, x: any, y: any, sp: any, fs: any, al: any){if(sp===0){ctx.fillText(text,x,y);return;}var s=sp*fs,tot=ctx.measureText(text).width+s*(text.length-1),sx=al==='center'?x-tot/2:al==='right'?x-tot:x,sa=ctx.textAlign;ctx.textAlign='left';var cx=sx;for(var i=0;i<text.length;i++){var ch=text[i];ctx.fillText(ch,cx,y);cx+=ctx.measureText(ch).width+s;}ctx.textAlign=sa;}
-function drawPosterText(ctx: any, W: any, H: any, theme: any, lat: any, lon: any, city: any, country: any, ff: any, showText: any, credits: any, layout: any){var land=(theme&&theme.map&&theme.map.land)||'#808080',rgb=_ph(land),luma=(.2126*rgb.r+.7152*rgb.g+.0722*rgb.b)/255;var tc=(theme&&theme.ui&&theme.ui.text)||(luma<.5?'#FFFFFF':'#111111'),ac=luma<.52?'#f5faff':'#0e1822';var tFF=ff?'"'+ff+'","Playfair Display",serif':'"Playfair Display",serif';var bFF=ff?'"'+ff+'","IBM Plex Mono",monospace':'"IBM Plex Mono",monospace';var ds=Math.max(.45,Math.min(W,H)/_DR),afs=_AB*ds;if(showText){var cl=fmtCity(city||''),cfs=shrinkFont(_CB*ds,_CM*ds,(city||'').length,_CS),ctFS=_CTB*ds,coFS=_COB*ds,m=textMetrics(W,H,layout||'centered',cfs,ctFS,coFS);ctx.fillStyle=tc;ctx.textAlign=m.al;ctx.textBaseline='middle';ctx.font='700 '+cfs+'px '+tFF;/* Divider between city name and country/coords is CONSTANT width — independent of the city-name text width, so long names cannot stretch it (previously min(cityWidth, 20%): short names shrank it, long names pushed it to the cap). Centered: fixed 20% of canvas width, matching the Python renderer's fixed [0.4,0.6] rule. Editorial: 120px at design scale, resolution-scaled so it holds proportion on print canvases. */if(m.al==='center'){m.dW=W*.20;}else{m.dW=120*ds;}m.cY=m.dY-cfs*.50;var _hr=_ph(land).r,_hg=_ph(land).g,_hb=_ph(land).b;ctx.shadowColor='rgba('+_hr+','+_hg+','+_hb+',.90)';ctx.shadowBlur=Math.max(4,Math.round(7*ds));drawSpaced(ctx,cl,m.cX,m.cY,_CS,cfs,m.al);ctx.strokeStyle=tc;ctx.lineWidth=3*ds;ctx.beginPath();if(m.al==='center'){ctx.moveTo(m.dX-m.dW/2,m.dY);ctx.lineTo(m.dX+m.dW/2,m.dY);}else{ctx.moveTo(m.dX,m.dY);ctx.lineTo(m.dX+m.dW,m.dY);}ctx.stroke();ctx.font='300 '+ctFS+'px '+tFF;drawSpaced(ctx,(country||'').toUpperCase(),m.coX,m.coY,_CTS,ctFS,m.al);ctx.globalAlpha=.75;ctx.font='400 '+coFS+'px '+bFF;drawSpaced(ctx,fmtCoords(lat,lon),m.crX,m.crY,_COS,coFS,m.al);ctx.globalAlpha=1;if(m.al==='center'){var fc=fmtCoords(lat,lon);var cW=ctx.measureText(fc).width+_COS*coFS*(fc.length>1?fc.length-1:0);var gL=24*ds,gG=9*ds;ctx.strokeStyle=tc;ctx.globalAlpha=.55;ctx.lineWidth=Math.max(1,1.5*ds);ctx.lineCap='round';ctx.beginPath();ctx.moveTo(m.crX-cW/2-gG-gL,m.crY);ctx.lineTo(m.crX-cW/2-gG,m.crY);ctx.moveTo(m.crX+cW/2+gG,m.crY);ctx.lineTo(m.crX+cW/2+gG+gL,m.crY);ctx.stroke();ctx.globalAlpha=1;}}ctx.shadowBlur=0;ctx.shadowColor='transparent';ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='right';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('\u00a9 OpenStreetMap contributors',W*(1-_EM),H*(1-_EM));ctx.globalAlpha=1;if(credits){ctx.fillStyle=ac;ctx.globalAlpha=.9;ctx.textAlign='left';ctx.textBaseline='bottom';ctx.font='300 '+afs+'px '+bFF;ctx.fillText('created with mapvibestudio.com',W*_EM,H*(1-_EM));ctx.globalAlpha=1;}}
+// Poster typography (drawPosterText) and fades (applyFades) are in ./poster-text.ts.
 
 // ── OverlayParams type ───────────────────────────────────────────────────────
 interface OverlayParams {
@@ -676,8 +629,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   w = vpW * DEVICE_SCALE;
   h = vpH * DEVICE_SCALE;
 
-  // Ensure design-system fonts are always loaded from Google Fonts
-  await Promise.all([ensureFont('Playfair Display', '400'), ensureFont('Playfair Display', '700'), ensureFont('DM Sans', '300'), ensureFont('DM Sans', '400'), ensureFont('IBM Plex Mono', '400')]);
+  // Bundled Roboto is registered at startup. This only fetches if that file is missing.
+  await ensureFont('Roboto');
   // Also load any per-poster custom font override
   if (overlay?.fontFamily) await ensureFont(overlay.fontFamily);
 
