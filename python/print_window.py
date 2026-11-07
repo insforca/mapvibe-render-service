@@ -9,6 +9,30 @@ No network. No vendor clients.
 """
 
 
+def ground_crop_wgs84(lat: float, lng: float, crop_dist_m: float,
+                      width_in: float, height_in: float) -> tuple:
+    """WGS-84 rectangle for a no-bounds preview, in ground metres.
+
+    Half-width is ``crop_dist_m``. Half-height is ``crop_dist_m`` times the
+    figure's height/width, the same window ``get_crop_limits`` uses on the
+    OSMnx path. A 3:4 poster therefore fills the sheet.
+
+    Framing the square fetch bbox instead (what the PMTiles path did when
+    ``bounds`` was absent) is square in ground metres. ``set_aspect('equal',
+    adjustable='box')`` then shrinks the axes to a square and the figure
+    facecolor shows as empty bands above and below the map.
+
+    Returns ``(west, south, east, north)``.
+    """
+    import math
+    half_w = float(crop_dist_m)
+    half_h = half_w * (float(height_in) / float(width_in))
+    radius = 6_371_000.0
+    dlat = (half_h / radius) * (180.0 / math.pi)
+    dlng = (half_w / radius) * (180.0 / math.pi) / math.cos(math.radians(lat))
+    return (lng - dlng, lat - dlat, lng + dlng, lat + dlat)
+
+
 def expand_projected_window(x0, x1, y0, y1, print_w_in, print_h_in,
                             visible_w_in=None, visible_h_in=None):
     if visible_w_in is None or visible_h_in is None:
