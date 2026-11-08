@@ -1,50 +1,63 @@
 /**
  * Clean-engine poster typography.
  *
- * The editor's poster block (mapvibe.css .mvs-poster-*) is Roboto:
- * city 700 / 6.94cqmin / letter-spacing 0.45em / uppercase,
- * country 300 / 2.55cqmin / uppercase, coordinates 400 / 1.62cqmin.
- * Those cqmin sizes are 250 / 92 / 58 px on a 3600px short side.
- * The strip is normal flow, not a fraction of the sheet. The city is
- * measured, the rule is placed under that ink, then the country, then
- * the coordinates. A fixed fraction (rule at 0.900, country at 0.915)
- * let the country em-box cross the rule. Flow cannot.
+ * The editor's poster block (mapvibe.css .mvs-poster-*) is normal flow,
+ * not a fraction of the sheet and not a stack of glyph ink:
+ *   .mvs-poster-text-strip   padding 6px 18px 14px
+ *   .mvs-poster-city         Roboto 700 / 6.94cqmin / letter-spacing 0.45em
+ *                            margin 0 0 3px
+ *   .mvs-poster-divider      border-top 1px, width 20% of the content box,
+ *                            margin 0 auto 4px
+ *   .mvs-poster-country      Roboto 300 / 2.55cqmin, margin 0 0 3px
+ *   .mvs-poster-coords       Roboto 400 / 1.62cqmin, margin 1em 0
+ * Adjacent vertical margins collapse, so the 3px under the country and
+ * the 1em above the coordinates become max(3px, 1em). Each line's box is
+ * CSS line-height 1.15, with the alphabetic baseline where Chrome puts it
+ * for Roboto: half-leading around the hhea content box (ascender 1900,
+ * descender 500, unitsPerEm 2048). Centred letter-spacing keeps a trailing
+ * gap, so the city ink sits 0.225em left of the content-box centre.
  *
- * CSS margins are 3px under the city, 4px under the rule, 3px under the
- * country, and 14px of bottom padding, beside a city that useFitText
- * caps at 44px on screen. Those pixels scale with the city so a print
- * keeps that same gap-to-type ratio. Type scale is min(width, height) /
- * 3600 with no 0.45 floor — the floor held the faces at their 1620px
- * size while the sheet kept shrinking.
+ * The 6/18/14/3/4/1px lengths are the desktop editor's CSS pixels on a
+ * 482.390625px-wide poster (18×24 at the measured preview). They scale
+ * with the short side, which is how cqmin and those pixels stay in the
+ * same proportion on a print. python/poster_text.py is the same model.
  */
 
 import { fadeKind } from './print-parity.js';
 
 export const TEXT_DIMENSION_REFERENCE_PX = 3600;
 export const EDGE_MARGIN = 0.02;
+/** Short side of the desktop poster the editor DOM was measured on. */
+export const EDITOR_POSTER_SHORT_PX = 482.390625;
+/** line-height used by the editor's Roboto strip. Normal is the font's 1.17; the preview boxes are 1.15. */
+export const CSS_LINE_HEIGHT = 1.15;
+const ROBOTO_HHEA_ASCENT = 1900 / 2048;
+const ROBOTO_HHEA_LINE = (1900 + 500) / 2048;
+/** Alphabetic baseline, in em, down from the top of a 1.15em line box. */
+export const CSS_BASELINE_EM = ROBOTO_HHEA_ASCENT + (CSS_LINE_HEIGHT - ROBOTO_HHEA_LINE) / 2;
+
 const CITY_BASE = 250;
 const CITY_MIN = 110;
+const CITY_CQMIN = 0.0694;
+const COUNTRY_CQMIN = 0.0255;
+const COORDS_CQMIN = 0.0162;
 /** Desktop .mvs-poster-city. The 0.15em value is only the width<=900px override. */
 const CITY_SPACING = 0.45;
-const COUNTRY_BASE = 92;
 /** .mvs-poster-country sets no letter-spacing on desktop. */
 const COUNTRY_SPACING = 0;
-const COORDS_BASE = 58;
 /** .mvs-poster-coords sets no letter-spacing on desktop. */
 const COORDS_SPACING = 0;
 const ATTRIBUTION_BASE = 30;
-/** useFitText ceiling in the editor. CSS px gaps are authored next to it. */
-const CITY_SCREEN_CAP_PX = 44;
-const STRIP_GAP_CITY_PX = 3;
-const STRIP_GAP_RULE_PX = 4;
-const STRIP_GAP_COUNTRY_PX = 3;
-const STRIP_PAD_BOTTOM_PX = 14;
+const STRIP_PAD_TOP_PX = 6;
 const STRIP_PAD_X_PX = 18;
+const STRIP_PAD_BOTTOM_PX = 14;
+const CITY_MARGIN_BOTTOM_PX = 3;
+const RULE_MARGIN_BOTTOM_PX = 4;
+const COUNTRY_MARGIN_BOTTOM_PX = 3;
+/** Computed border-top of .mvs-poster-divider at the reference poster. */
+const RULE_BORDER_PX = 1;
+const CREDIT_EDGE_PX = 6;
 const EDITORIAL_INSET = 0.06;
-
-function stripPx(cssPx: number, citySize: number): number {
-  return cssPx * (citySize / CITY_SCREEN_CAP_PX);
-}
 
 export interface GlyphBox {
   /** Sum of glyph advances at this font size, before letter-spacing. */
@@ -67,10 +80,14 @@ export interface PosterLine {
   y: number;
   size: number;
   spacing: number;
-  /** Spaced width actually drawn. */
+  /** Spaced width actually drawn, without CSS's trailing letter-spacing gap. */
   width: number;
   ascent: number;
   descent: number;
+  /** Top of the CSS line box. */
+  boxTop: number;
+  /** CSS line-box height. Zero when the line is not rendered. */
+  boxHeight: number;
 }
 
 export interface PosterTextLayout {
@@ -80,6 +97,8 @@ export interface PosterTextLayout {
   divider: { x: number; y: number; width: number; halfStroke: number };
   country: PosterLine;
   coords: PosterLine;
+  /** Top of .mvs-poster-text-strip, in canvas pixels from the top of the poster. */
+  stripTop: number;
   credit: { size: number; y: number; leftX: number; rightX: number };
 }
 
@@ -99,9 +118,10 @@ function shrinkFont(base: number, min: number, len: number, spacing: number): nu
   return size;
 }
 
-function spacedWidth(ink: GlyphBox, fontPx: number, spacing: number, text: string): number {
+function spacedWidth(ink: GlyphBox, fontPx: number, spacing: number, text: string, trailing: boolean): number {
   const gaps = Math.max(0, text.length - 1);
-  return ink.width + spacing * fontPx * gaps;
+  const extra = trailing && spacing > 0 && text.length > 0 ? 1 : 0;
+  return ink.width + spacing * fontPx * (gaps + extra);
 }
 
 function fitToWidth(
@@ -114,13 +134,14 @@ function fitToWidth(
 ): { size: number; ink: GlyphBox; width: number } {
   const first = text ? glyph(role, text, fontPx) : { width: 0, ascent: 0, descent: 0 };
   let size = fontPx;
-  const widthAt = (ink: GlyphBox, fs: number) => spacedWidth(ink, fs, spacing, text);
-  const firstWidth = widthAt(first, fontPx);
+  // The fit uses the CSS inline size, which includes the trailing letter-spacing gap.
+  const inlineAt = (ink: GlyphBox, fs: number) => spacedWidth(ink, fs, spacing, text, true);
+  const firstWidth = inlineAt(first, fontPx);
   if (text && firstWidth > maxWidth && firstWidth > 0) {
     size = fontPx * (maxWidth / firstWidth);
   }
   const ink = size === fontPx ? first : glyph(role, text, size);
-  return { size, ink, width: widthAt(ink, size) };
+  return { size, ink, width: spacedWidth(ink, size, spacing, text, false) };
 }
 
 export function layoutPosterText(input: {
@@ -139,76 +160,111 @@ export function layoutPosterText(input: {
   const ds = posterDimensionScale(width, height);
   const editorial = input.textLayout === 'editorial';
   const align: 'center' | 'left' = editorial ? 'left' : 'center';
-  const x = editorial ? width * EDITORIAL_INSET : width * 0.5;
-  // .mvs-poster-divider is border-top: .115cqmin, 0.115% of the short side.
-  const halfStroke = (0.00115 * Math.min(width, height)) / 2;
-  // 20% on every breakpoint. The mobile stylesheet's 24px rule is preview-only.
-  const dividerWidth = width * 0.20;
-  const designCity = CITY_BASE * ds;
-  const padX = stripPx(STRIP_PAD_X_PX, designCity);
+  const anchorX = editorial ? width * EDITORIAL_INSET : width * 0.5;
+  const short = Math.min(width, height);
+  const css = short / EDITOR_POSTER_SHORT_PX;
+  const px = (cssPx: number) => cssPx * css;
+  // 1px at the reference poster, scaled with the sheet. 20% of the content
+  // box (the strip's 18px side padding), not 20% of the full sheet.
+  const border = px(RULE_BORDER_PX);
+  const halfStroke = border / 2;
+  const padX = px(STRIP_PAD_X_PX);
+  const dividerWidth = 0.20 * Math.max(1, width - 2 * padX);
   const maxWidth = editorial
     ? Math.max(1, width * (1 - EDITORIAL_INSET) - padX)
     : Math.max(1, width - 2 * padX);
 
-  const citySize0 = shrinkFont(designCity, CITY_MIN * ds, city.length, CITY_SPACING);
+  const citySize0 = shrinkFont(CITY_CQMIN * short, CITY_MIN * ds, city.length, CITY_SPACING);
   const cityFit = fitToWidth('city', city, citySize0, CITY_SPACING, maxWidth, glyph);
-  const countryFit = fitToWidth('country', country, COUNTRY_BASE * ds, COUNTRY_SPACING, maxWidth, glyph);
-  const coordsFit = fitToWidth('coords', coords, COORDS_BASE * ds, COORDS_SPACING, maxWidth, glyph);
+  const countryFit = fitToWidth('country', country, COUNTRY_CQMIN * short, COUNTRY_SPACING, maxWidth, glyph);
+  const coordsFit = fitToWidth('coords', coords, COORDS_CQMIN * short, COORDS_SPACING, maxWidth, glyph);
 
-  // Flow, top to bottom in canvas coordinates, then shifted so the
-  // coordinates sit on the strip's bottom padding. Gaps are outside the
-  // measured ink, so a descender cannot reach the next line.
-  const gapCity = stripPx(STRIP_GAP_CITY_PX, designCity);
-  const gapRule = stripPx(STRIP_GAP_RULE_PX, designCity);
-  const gapCountry = stripPx(STRIP_GAP_COUNTRY_PX, designCity);
-  // The editor strip has no credit line. Ours sits in the bottom padding,
-  // under the coordinates, in Roboto Light.
-  const creditSize = ATTRIBUTION_BASE * ds;
-  const creditAscent = creditSize * 1.04;
-  const bottomInset = stripPx(6, designCity);
-  const padBottom = Math.max(
-    stripPx(STRIP_PAD_BOTTOM_PX, designCity),
-    creditAscent + gapCountry + bottomInset,
-  );
-  const cityDescent = cityFit.ink.descent > 0 ? cityFit.ink.descent : cityFit.size * 0.2;
-  const countryAscent = countryFit.ink.ascent > 0 ? countryFit.ink.ascent : countryFit.size * 0.35;
-  const countryDescent = countryFit.ink.descent > 0 ? countryFit.ink.descent : countryFit.size * 0.2;
-  const coordsAscent = coordsFit.ink.ascent > 0 ? coordsFit.ink.ascent : coordsFit.size * 0.35;
-  const coordsDescent = coordsFit.ink.descent > 0 ? coordsFit.ink.descent : coordsFit.size * 0.2;
+  // CSS block flow inside the strip's padding. Vertical margins collapse.
+  // y grows downward. The strip is bottom-aligned, so the stack is shifted
+  // to sit on the 14px bottom padding. Line boxes are 1.15em; a descender
+  // stays inside its box instead of pushing the next line down.
+  interface FlowBlock { box: number; marginTop: number; marginBottom: number }
+  const blocks: FlowBlock[] = [];
+  if (city) blocks.push({ box: cityFit.size * CSS_LINE_HEIGHT, marginTop: 0, marginBottom: px(CITY_MARGIN_BOTTOM_PX) });
+  blocks.push({ box: border, marginTop: 0, marginBottom: px(RULE_MARGIN_BOTTOM_PX) });
+  if (country) blocks.push({ box: countryFit.size * CSS_LINE_HEIGHT, marginTop: 0, marginBottom: px(COUNTRY_MARGIN_BOTTOM_PX) });
+  if (coords) blocks.push({ box: coordsFit.size * CSS_LINE_HEIGHT, marginTop: coordsFit.size, marginBottom: coordsFit.size });
 
-  let cityY = 0;
-  let dividerY = cityY + cityDescent + gapCity + halfStroke;
-  let countryY = dividerY + halfStroke + gapRule + countryAscent;
-  let coordsY = countryY + countryDescent + gapCountry + coordsAscent;
-  const shift = (height - padBottom - coordsDescent) - coordsY;
-  cityY += shift;
-  dividerY += shift;
-  countryY += shift;
-  coordsY += shift;
+  const placed: Array<{ top: number; bottom: number }> = [];
+  let cursor = 0;
+  let prevMarginBottom = 0;
+  for (const block of blocks) {
+    const gap = placed.length === 0 ? block.marginTop : Math.max(prevMarginBottom, block.marginTop);
+    const top = cursor + gap;
+    const bottom = top + block.box;
+    placed.push({ top, bottom });
+    cursor = bottom;
+    prevMarginBottom = block.marginBottom;
+  }
+  const contentBottom = cursor + prevMarginBottom;
+  const padTop = px(STRIP_PAD_TOP_PX);
+  const padBottom = px(STRIP_PAD_BOTTOM_PX);
+  const stripTop = height - (padTop + contentBottom + padBottom);
+  const origin = stripTop + padTop;
+
+  let slot = 0;
+  const take = () => {
+    const box = placed[slot];
+    slot += 1;
+    return box;
+  };
+  const cityBox = city ? take() : { top: 0, bottom: 0 };
+  const ruleBox = take();
+  const countryBox = country ? take() : { top: 0, bottom: 0 };
+  const coordsBox = coords ? take() : { top: 0, bottom: 0 };
+  const baselineY = (box: { top: number }, size: number, text: string) =>
+    origin + box.top + (text ? CSS_BASELINE_EM * size : 0);
+
+  // Trailing letter-spacing is part of the centred inline box, so the ink
+  // sits half a spacing to the left. Left-aligned editorial text starts at
+  // the inset; the trailing gap only extends to the right.
+  const cityX = align === 'center' && city
+    ? anchorX - (CITY_SPACING / 2) * cityFit.size
+    : anchorX;
 
   const line = (
     text: string,
     y: number,
+    lineX: number,
     fit: { size: number; ink: GlyphBox; width: number },
     spacing: number,
+    box: { top: number; bottom: number },
   ): PosterLine => ({
     text,
-    x,
+    x: lineX,
     y,
     size: fit.size,
     spacing,
     width: fit.width,
     ascent: fit.ink.ascent,
     descent: fit.ink.descent,
+    boxTop: origin + box.top,
+    boxHeight: text ? box.bottom - box.top : 0,
   });
+
+  // The editor has no credit line. Ours is Roboto Light in the bottom
+  // padding, under the coordinates, and does not move the strip.
+  const creditSize = ATTRIBUTION_BASE * ds;
+  const bottomInset = px(CREDIT_EDGE_PX);
 
   return {
     ds,
     align,
-    city: line(city, cityY, cityFit, CITY_SPACING),
-    divider: { x, y: dividerY, width: dividerWidth, halfStroke },
-    country: line(country, countryY, countryFit, COUNTRY_SPACING),
-    coords: line(coords, coordsY, coordsFit, COORDS_SPACING),
+    city: line(city, baselineY(cityBox, cityFit.size, city), cityX, cityFit, CITY_SPACING, cityBox),
+    divider: {
+      x: anchorX,
+      y: origin + (ruleBox.top + ruleBox.bottom) / 2,
+      width: dividerWidth,
+      halfStroke,
+    },
+    country: line(country, baselineY(countryBox, countryFit.size, country), anchorX, countryFit, COUNTRY_SPACING, countryBox),
+    coords: line(coords, baselineY(coordsBox, coordsFit.size, coords), anchorX, coordsFit, COORDS_SPACING, coordsBox),
+    stripTop,
     credit: {
       size: creditSize,
       y: height - bottomInset,
@@ -262,7 +318,7 @@ function drawSpaced(
 
 function measureCanvasGlyph(ctx: any, font: string, text: string): GlyphBox {
   ctx.font = font;
-  ctx.textBaseline = 'middle';
+  ctx.textBaseline = 'alphabetic';
   // Whole-string width matches drawSpaced's centering measure. Vertical
   // extent is per glyph so a space (negative ascent) cannot pad the line box.
   const width = text ? ctx.measureText(text).width : 0;
@@ -329,7 +385,7 @@ export function drawPosterText(
 
     ctx.fillStyle = textColor;
     ctx.textAlign = laid.align;
-    ctx.textBaseline = 'middle';
+    ctx.textBaseline = 'alphabetic';
     ctx.font = '700 ' + laid.city.size + 'px ' + titleFamily;
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
