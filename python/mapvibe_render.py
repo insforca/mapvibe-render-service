@@ -2052,45 +2052,39 @@ def render(params: dict) -> bytes:
     if show_text:
         fonts = load_fonts()
 
-        # Same strip as mapvibe.css .mvs-poster-*: Roboto sizes in cqmin,
-        # city tracking 0.45em, no halo (the strip has none). Measure the
-        # city, then stack the rule, country, and coordinates under it.
+        # Same strip as mapvibe.css .mvs-poster-* and src/poster-text.ts:
+        # 1.15em line boxes, editor margins, content-box rule. No halo.
         from PIL import ImageFont
+        from poster_text import layout_poster_strip
 
         short_in = min(width_in, height_in)
         city_pt = 0.0694 * short_in * 72.0
         country_pt = 0.0255 * short_in * 72.0
         coords_pt = 0.0162 * short_in * 72.0
         credit_pt = (30.0 / 3600.0) * short_in * 72.0
-
-        def strip_pt(css_px: float) -> float:
-            # CSS px beside useFitText's 44px city cap, scaled with the city.
-            return css_px * (city_pt / 44.0)
+        width_pt = width_in * 72.0
+        height_pt = height_in * 72.0
 
         def face(key: str):
             return fonts.get(key) if fonts else None
 
-        def em_box(path, size_pt: float):
-            if not path:
-                return 0.72 * size_pt, 0.20 * size_pt
-            font = ImageFont.truetype(path, 1000)
-            ascent, descent = font.getmetrics()
-            return (ascent / 1000.0) * size_pt, (descent / 1000.0) * size_pt
-
-        def advance_pt(path, text: str, size_pt: float, tracking_em: float) -> float:
+        def advance_pt(path, text: str, size_pt: float, tracking_em: float, trailing: bool = False) -> float:
             if not text:
                 return 0.0
+            gaps = max(0, len(text) - 1)
+            if trailing and tracking_em > 0:
+                gaps += 1
             if not path:
-                return (0.55 * len(text) + tracking_em * max(0, len(text) - 1)) * size_pt
+                return (0.55 * len(text) + tracking_em * gaps) * size_pt
             font = ImageFont.truetype(path, 1000)
             width = sum(font.getlength(ch) for ch in text) / 1000.0 * size_pt
-            return width + tracking_em * size_pt * max(0, len(text) - 1)
+            return width + tracking_em * size_pt * gaps
 
         city_label = display_city.upper() if is_latin_script(display_city) else display_city
         tracking = 0.45 if is_latin_script(display_city) else 0.0
-        content_pt = max(1.0, width_in * 72.0 - 2.0 * strip_pt(18))
+        content_pt = max(1.0, width_pt - 2.0 * (18.0 * short_in * 72.0 / 482.390625))
         city_path = face('bold')
-        while city_pt > 6.0 * (short_in / 12.0) and advance_pt(city_path, city_label, city_pt, tracking) > content_pt:
+        while city_pt > 6.0 * (short_in / 12.0) and advance_pt(city_path, city_label, city_pt, tracking, True) > content_pt:
             city_pt *= 0.92
         country_label = display_country.upper()
         country_path = face('light')
@@ -2104,58 +2098,63 @@ def render(params: dict) -> bytes:
             weight = 'bold' if key == 'bold' else 'normal'
             return FontProperties(family='sans-serif', weight=weight, size=size)
 
-        def axes_pt(pt: float) -> float:
-            return pt / (height_in * 72.0)
+        lat_v, lon_v = point
+        hem_ns = 'N' if lat_v >= 0 else 'S'
+        hem_ew = 'E' if lon_v >= 0 else 'W'
+        coords_str = f'{abs(lat_v):.4f}\u00b0 {hem_ns} / {abs(lon_v):.4f}\u00b0 {hem_ew}'
 
-        _city_asc, city_desc = em_box(city_path, city_pt)
-        country_asc, country_desc = em_box(country_path, country_pt)
-        coords_asc, coords_desc = em_box(face('regular'), coords_pt)
-        rule_half = axes_pt(0.00115 * short_in * 72.0) / 2.0
-        # y grows upward. Bottom padding, then coordinates, country, rule, city.
-        coords_y = axes_pt(strip_pt(14) + coords_desc)
-        country_y = coords_y + axes_pt(coords_asc + strip_pt(3) + country_desc)
-        rule_y = country_y + axes_pt(country_asc + strip_pt(4)) + rule_half
-        city_y = rule_y + rule_half + axes_pt(strip_pt(3) + city_desc)
+        laid = layout_poster_strip(
+            width_pt, height_pt, city_pt, country_pt, coords_pt,
+            tracking_em=tracking,
+            has_city=bool(city_label),
+            has_country=bool(country_label),
+            has_coords=bool(coords_str),
+        )
 
-        def draw_tracked(text, y, size_pt, tracking_em, fontprops, **kwargs):
-            if tracking_em <= 0 or len(text) < 2:
-                ax.text(0.5, y, text, transform=ax.transAxes, ha='center', va='baseline',
+        def from_bottom(y_from_top: float) -> float:
+            return (height_pt - y_from_top) / height_pt
+
+        def draw_tracked(text, y, size_pt, tracking_em, fontprops, center=0.5, **kwargs):
+            if not text:
+                return
+            if tracking_em <= 0:
+                ax.text(center, y, text, transform=ax.transAxes, ha='center', va='baseline',
                         fontproperties=fontprops, zorder=11, **kwargs)
                 return
             path = fontprops.get_file()
-            advances = []
             if path:
                 font = ImageFont.truetype(path, 1000)
                 advances = [font.getlength(ch) / 1000.0 * size_pt for ch in text]
             else:
                 advances = [0.55 * size_pt for _ in text]
             gap = tracking_em * size_pt
-            total = sum(advances) + gap * (len(text) - 1)
-            x = 0.5 - (total / (width_in * 72.0)) / 2.0
+            # `center` is the ink centre. layout_poster_strip already shifts it
+            # left by half the letter-spacing, which is the CSS trailing gap.
+            total = sum(advances) + gap * max(0, len(text) - 1)
+            x = center - (total / width_pt) / 2.0
             for ch, adv in zip(text, advances):
                 ax.text(x, y, ch, transform=ax.transAxes, ha='left', va='baseline',
                         fontproperties=fontprops, zorder=11, **kwargs)
-                x += (adv + gap) / (width_in * 72.0)
+                x += (adv + gap) / width_pt
 
-        draw_tracked(city_label, city_y, city_pt, tracking, fp('bold', city_pt),
-                     color=theme['text'])
+        if city_label:
+            draw_tracked(city_label, from_bottom(laid['city_baseline']), city_pt, tracking,
+                         fp('bold', city_pt), center=laid['city_x'], color=theme['text'])
 
-        ax.text(0.5, country_y, country_label,
-                transform=ax.transAxes, color=theme['text'],
-                ha='center', va='baseline', fontproperties=fp('light', country_pt), zorder=11)
+        if country_label:
+            ax.text(0.5, from_bottom(laid['country_baseline']), country_label,
+                    transform=ax.transAxes, color=theme['text'],
+                    ha='center', va='baseline', fontproperties=fp('light', country_pt), zorder=11)
 
-        lat_v, lon_v = point
-        hem_ns = 'N' if lat_v >= 0 else 'S'
-        hem_ew = 'E' if lon_v >= 0 else 'W'
-        coords_str = f'{abs(lat_v):.4f}\u00b0 {hem_ns} / {abs(lon_v):.4f}\u00b0 {hem_ew}'
-
-        ax.text(0.5, coords_y, coords_str,
+        ax.text(0.5, from_bottom(laid['coords_baseline']), coords_str,
                 transform=ax.transAxes, color=theme['text'], alpha=0.7,
                 ha='center', va='baseline', fontproperties=fp('regular', coords_pt), zorder=11)
 
-        ax.plot([0.4, 0.6], [rule_y, rule_y],
+        rule_y = from_bottom(laid['rule_y'])
+        ax.plot([laid['rule_x0'], laid['rule_x1']], [rule_y, rule_y],
                 transform=ax.transAxes,
-                color=theme['text'], linewidth=0.00115 * short_in * 72.0, zorder=11)
+                color=theme['text'], linewidth=laid['rule_linewidth'],
+                solid_capstyle='butt', zorder=11)
 
         ax.text(0.98, 0.02, '\u00a9 OpenStreetMap contributors',
                 transform=ax.transAxes, color=theme['text'], alpha=0.5,
