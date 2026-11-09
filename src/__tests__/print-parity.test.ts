@@ -7,6 +7,8 @@ import {
   OVERZOOM_LINE_WIDTH_SCALE,
   boundsForViewport,
   evalInterpolate,
+  EDITOR_BOTTOM_FADE_HEIGHT,
+  editorBottomFadeAlpha,
   fadeKind,
   preparePrintStyle,
   resolvePrintCamera,
@@ -246,6 +248,23 @@ describe('Clean arterial opacity (gap 7)', () => {
     const high = after.layers.find((l) => l.id === 'road-minor-high')!;
     expect(high.paint['line-opacity']).toEqual(terrainkOpacity);
   });
+
+  it('keeps the snapshot opacity when the request carries the editor style', () => {
+    // Wide view. The Clean override is lighter than the curve live getStyle() returns.
+    expect(evalInterpolate(CLEAN_MINOR_HIGH_LINE_OPACITY, 11.5)).toBeCloseTo(0.68, 5);
+    expect(evalInterpolate(terrainkOpacity, 11.5)).toBeCloseTo(0.935, 5);
+    const after = preparePrintStyle(style(), { minorRoads: false, editorStyle: true });
+    const high = after.layers.find((l) => l.id === 'road-minor-high')!;
+    const casing = after.layers.find((l) => l.id === 'road-minor-high-casing')!;
+    expect(high.paint['line-opacity']).toEqual(terrainkOpacity);
+    expect(casing.paint['line-opacity']).toEqual(
+      style().layers[1].paint['line-opacity'],
+    );
+    // Without an editor style the Clean curve is still installed.
+    const bare = preparePrintStyle(style(), { minorRoads: false });
+    expect(bare.layers.find((l) => l.id === 'road-minor-high')!.paint['line-opacity'])
+      .toEqual([...CLEAN_MINOR_HIGH_LINE_OPACITY]);
+  });
 });
 
 describe('fullbleed fade (gap 6)', () => {
@@ -254,5 +273,18 @@ describe('fullbleed fade (gap 6)', () => {
     expect(fadeKind('default')).toBe('bottom');
     expect(fadeKind('none')).toBe('none');
     expect(fadeKind('text')).toBe('text');
+  });
+
+  it('matches the editor .poster-fade band: bottom 14%, clear at 86% of the height', () => {
+    expect(EDITOR_BOTTOM_FADE_HEIGHT).toBeCloseTo(0.14, 5);
+    // Above the band the map is untouched. The city ink starts near 0.855,
+    // just above this edge, so it is not sitting in a tall wash.
+    expect(editorBottomFadeAlpha(0.80)).toBe(0);
+    expect(editorBottomFadeAlpha(0.86)).toBe(0);
+    // 90% of the height is 4/14 of the way up the band.
+    expect(editorBottomFadeAlpha(0.90)).toBeCloseTo(0.21119, 4);
+    // 94% of the height. The old city-anchor band was more opaque here.
+    expect(editorBottomFadeAlpha(0.94)).toBeCloseTo(0.58122, 4);
+    expect(editorBottomFadeAlpha(1)).toBe(1);
   });
 });

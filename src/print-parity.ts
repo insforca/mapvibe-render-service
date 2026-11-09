@@ -59,6 +59,55 @@ export function fadeKind(fs: string | undefined | null): FadeKind {
   return 'bottom';
 }
 
+/**
+ * `.poster-fade` in the editor. The fullbleed / default wash is only this
+ * bottom slice; the stops below are fractions of that slice, not of the sheet.
+ * `linear-gradient(to top, …)` so stop 0 is the bottom edge.
+ */
+export const EDITOR_BOTTOM_FADE_HEIGHT = 0.14;
+
+export const EDITOR_BOTTOM_FADE_STOPS: ReadonlyArray<readonly [number, number]> = [
+  [0, 1],
+  [0.12, 0.94],
+  [0.26, 0.8],
+  [0.4, 0.62],
+  [0.54, 0.43],
+  [0.66, 0.27],
+  [0.78, 0.14],
+  [0.88, 0.055],
+  [0.95, 0.014],
+  [1, 0],
+];
+
+/** Linear stops. `t` is 0 at the first stop and 1 at the last. */
+export function fadeStopAlpha(stops: ReadonlyArray<readonly [number, number]>, t: number): number {
+  if (stops.length === 0) return 0;
+  if (t <= stops[0][0]) return stops[0][1];
+  const last = stops[stops.length - 1];
+  if (t >= last[0]) return last[1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [z0, v0] = stops[i];
+    const [z1, v1] = stops[i + 1];
+    if (t >= z0 && t <= z1) {
+      const u = z1 === z0 ? 0 : (t - z0) / (z1 - z0);
+      return v0 + u * (v1 - v0);
+    }
+  }
+  return last[1];
+}
+
+/**
+ * Overlay alpha of the editor bottom ease-in.
+ * `heightFraction` is 0 at the top of the sheet and 1 at the bottom.
+ */
+export function editorBottomFadeAlpha(heightFraction: number): number {
+  if (heightFraction >= 1) return 1;
+  const fromBottom = 1 - heightFraction;
+  // 1 - 0.86 is 0.13999999999999999, which is the top of the band.
+  if (fromBottom >= EDITOR_BOTTOM_FADE_HEIGHT - 1e-9) return 0;
+  return fadeStopAlpha(EDITOR_BOTTOM_FADE_STOPS, fromBottom / EDITOR_BOTTOM_FADE_HEIGHT);
+}
+
 export function mercatorY(lat: number): number {
   return Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
 }
@@ -306,16 +355,21 @@ interface StyleLayer {
 
 /**
  * Clean print style. Does not multiply line-width: those stops are already
- * in editor pixels. On the arteries (Clean) path, trunk/primary and their
- * casing take the opacity curves the editor applies with setPaintProperty.
- * Neighbourhood leaves the style-file curve alone.
+ * in editor pixels.
+ *
+ * Trunk/primary (`road-minor-high`) and its casing get the Clean opacity
+ * curve only when the caller has no editor style. A style captured from
+ * `map.getStyle()` is what the editor is showing; the Clean curve is not in
+ * that snapshot (the editor's setPaintProperty returns early until the style
+ * is loaded, and live snapshots keep the style-file curve). Neighbourhood
+ * also leaves the snapshot curve alone.
  */
 export function preparePrintStyle<T extends { layers?: StyleLayer[] }>(
   style: T,
-  opts?: { minorRoads?: boolean },
+  opts?: { minorRoads?: boolean; editorStyle?: boolean },
 ): T {
   const copy = JSON.parse(JSON.stringify(style)) as T;
-  if (opts?.minorRoads === true || !Array.isArray(copy.layers)) return copy;
+  if (opts?.editorStyle === true || opts?.minorRoads === true || !Array.isArray(copy.layers)) return copy;
   for (const layer of copy.layers) {
     if (String(layer.type ?? '') !== 'line') continue;
     const opacity =

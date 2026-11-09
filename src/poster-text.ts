@@ -23,7 +23,11 @@
  * same proportion on a print. python/poster_text.py is the same model.
  */
 
-import { fadeKind } from './print-parity.js';
+import {
+  EDITOR_BOTTOM_FADE_HEIGHT,
+  EDITOR_BOTTOM_FADE_STOPS,
+  fadeKind,
+} from './print-parity.js';
 
 export const TEXT_DIMENSION_REFERENCE_PX = 3600;
 export const EDGE_MARGIN = 0.02;
@@ -36,7 +40,6 @@ const ROBOTO_HHEA_LINE = (1900 + 500) / 2048;
 /** Alphabetic baseline, in em, down from the top of a 1.15em line box. */
 export const CSS_BASELINE_EM = ROBOTO_HHEA_ASCENT + (CSS_LINE_HEIGHT - ROBOTO_HHEA_LINE) / 2;
 
-const CITY_BASE = 250;
 const CITY_MIN = 110;
 const CITY_CQMIN = 0.0694;
 const COUNTRY_CQMIN = 0.0255;
@@ -478,9 +481,11 @@ function dither(ctx: any, rx: number, ry: number, w: number, h: number, intensit
 }
 
 /** Bottom (and, for fadeStyle 'text', top) gradient behind the poster lines.
- *  fullbleed is the editor GradientFades bottom ease-in, the same stops as default.
+ *  fullbleed / default is the editor's `.poster-fade` bottom 14% ease-in.
+ *  The sheet fraction is the band; the stops are fractions of that band.
+ *  No dither: the editor gradient is smooth, and a ±4 dither shifted the cream.
  */
-export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, layout?: string): void {
+export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string): void {
   const kind = fadeKind(fadeStyle);
   if (kind === 'none') return;
   if (kind === 'text') {
@@ -515,31 +520,14 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
     return;
   }
 
-  // Keep the previous fade geometry. Text layout no longer uses this anchor.
-  const ds = Math.max(0.45, posterDimensionScale(W, H));
-  const cityAnchor = H * (layout === 'editorial' ? 0.820 : 0.885);
-  const bandTop = cityAnchor - CITY_BASE * ds * 0.55;
-  const bY = Math.round(Math.max(bandTop - H * 0.035, H * 0.6));
-  const bH = H - bY;
+  // Editor `.poster-fade` / `.poster-fade--bottom`: height 14%, pinned to the bottom.
+  const bH = Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT));
+  const bY = H - bH;
   const bg = ctx.createLinearGradient(0, H, 0, bY);
-  if (process.env.DISABLE_EASEIN_FADE === 'true') {
-    bg.addColorStop(0, withAlpha(color, 1));
-    bg.addColorStop(0.30, withAlpha(color, 0.70));
-    bg.addColorStop(0.65, withAlpha(color, 0.20));
-    bg.addColorStop(1, withAlpha(color, 0));
-  } else {
-    bg.addColorStop(0, withAlpha(color, 1));
-    bg.addColorStop(0.12, withAlpha(color, 0.94));
-    bg.addColorStop(0.26, withAlpha(color, 0.80));
-    bg.addColorStop(0.40, withAlpha(color, 0.62));
-    bg.addColorStop(0.54, withAlpha(color, 0.43));
-    bg.addColorStop(0.66, withAlpha(color, 0.27));
-    bg.addColorStop(0.78, withAlpha(color, 0.14));
-    bg.addColorStop(0.88, withAlpha(color, 0.055));
-    bg.addColorStop(0.95, withAlpha(color, 0.014));
-    bg.addColorStop(1, withAlpha(color, 0));
-  }
+  const stops = process.env.DISABLE_EASEIN_FADE === 'true'
+    ? [[0, 1], [0.30, 0.70], [0.65, 0.20], [1, 0]] as const
+    : EDITOR_BOTTOM_FADE_STOPS;
+  for (const [t, a] of stops) bg.addColorStop(t, withAlpha(color, a));
   ctx.fillStyle = bg;
   ctx.fillRect(0, bY, W, bH);
-  dither(ctx, 0, bY, W, bH);
 }
