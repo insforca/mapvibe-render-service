@@ -1,0 +1,42 @@
+sRGB2014 ICC profile
+File: sRGB2014.icc
+Bytes: 3024 (unmodified)
+SHA-256: 384b832de3412066743b52a75ee906b6fb9fb8d9e09e936fc2c43223815c6e0a
+ICC version: 2.0.0
+Profile class: mntr (display)
+
+Source:
+https://registry.color.org/rgb-registry/profiles/sRGB2014.icc
+
+Profile listing (sRGB v2 section):
+https://registry.color.org/rgb-registry/srgbprofiles
+
+The registry describes this file as the ICC v2 sRGB profile with the black
+point scaled to zero, the media white point at D50, the standard linearized
+Bradford D65-to-D50 chromatic adaptation tag, and the header rendering intent
+set to perceptual. It was revised in February 2015 so the black point tag
+matches the ISO and IEC recommendation.
+
+Profile copyright tag:
+Copyright International Color Consortium, 2015
+
+License, where ICC is the copyright owner
+(https://registry.color.org/profile-library/#license):
+
+"This profile is made available by the International Color Consortium, and may
+be copied, distributed, embedded, made, used, and sold without restriction.
+Altered versions of this profile shall have the original identification and
+copyright information removed and shall not be misrepresented as the original
+profile."
+
+This copy is the original profile. It was retrieved on 2026-11-09.
+
+Why this profile, and not sRGB_v4_ICC_preference.icc:
+The v4 preference profile is a different colour encoding, meant to be used
+with other v4 profiles. Sharp embeds a profile by converting into it. That
+conversion changes saturated colours (pure green 255 becomes about 206, pure
+blue 255 becomes about 191). These print pixels are already sRGB. sRGB2014
+describes those values, and the same conversion leaves them within one code
+value. The old startup URL
+https://www.color.org/sRGB_v4_ICC_preference.icc now redirects to an HTML page
+and must not be downloaded as the profile.

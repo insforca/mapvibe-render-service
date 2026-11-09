@@ -24,7 +24,6 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { tmpdir } from 'os';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
@@ -75,28 +74,13 @@ import {
 } from './detail-routing.js';
 import { notifyRejectedFulfillRoute } from './style-fail.js';
 import { applyNeighbourhoodDetail } from './detailed-style.js';
+import { encodePrintPng } from './print-png.js';
+import { loadPackagedSrgbIcc } from './srgb-icc.js';
 
-// ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
-let sRGBIccPath: string | null = null;
-(async () => {
-  try {
-    const iccPath = `${tmpdir()}/sRGB_v4_ICC.icc`;
-    const res = await fetch('https://www.color.org/sRGB_v4_ICC_preference.icc', {
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (res.ok) {
-      const buf = Buffer.from(await res.arrayBuffer());
-      writeFileSync(iccPath, buf);
-      sRGBIccPath = iccPath;
-      console.log(`[startup] sRGB ICC v4 profile cached (${buf.length} bytes)`);
-    } else {
-      console.warn(`[startup] sRGB ICC fetch HTTP ${res.status} — PNG will export without explicit ICC`);
-    }
-  } catch (e: any) {
-    console.warn('[startup] sRGB ICC fetch failed — PNG will export without explicit ICC:', e?.message);
-  }
-})();
-// ─────────────────────────────────────────────────────────────────────────────
+// Vendored ICC sRGB profile (sRGB2014). Print encodes embed this file.
+// A missing or invalid profile fails startup so a print cannot ship untagged.
+const packagedSrgbIcc = loadPackagedSrgbIcc();
+console.log(`[startup] sRGB ICC profile loaded (${packagedSrgbIcc.bytes} bytes)`);
 
 // Native renderer + compositing
 // Load native renderer — log error but keep service alive if GL is unavailable
@@ -682,20 +666,11 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     );
   }
 
-  // Encode as sRGB RGB PNG via Sharp — flattens alpha onto white.
-  // pHYs density = actual DPI after dimension caps (passed via params.dpi; defaults to 400).
-  // compressionLevel 9 = maximum lossless compression (~10-15% smaller files vs 6).
-  // sRGB ICC v4 profile embedded when available (fetched once at startup).
+  // Encode as sRGB RGB PNG — flattens alpha onto white, writes DPI, embeds the
+  // vendored sRGB ICC profile. compressionLevel 9 is lossless.
   const rawData = (cv.getContext('2d') as any).getImageData(0, 0, w, h).data;
   const actualDensity = params.dpi ?? 400;
-  const metadataOpts: { density: number; icc?: string } = { density: actualDensity };
-  if (sRGBIccPath) metadataOpts.icc = sRGBIccPath;
-  const pngBuf = await sharp(Buffer.from(rawData), { raw: { width: w, height: h, channels: 4 } })
-    .flatten({ background: '#ffffff' })
-    .withMetadata(metadataOpts)
-    .toColorspace('srgb')
-    .png({ compressionLevel: 9 })
-    .toBuffer();
+  const pngBuf = await encodePrintPng(rawData, w, h, actualDensity);
   const modeLabel = `${w}x${h}px zoom=${camera.zoom.toFixed(3)} css=${camera.cssWidth}x${camera.cssHeight} ratio=${camera.pixelRatio} (${camera.source})`;
   console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, ${actualDensity}DPI sRGB)`);
   return pngBuf;
@@ -812,15 +787,7 @@ async function renderTiledPng(
 
   const finalRaw      = (ctx.getImageData(0, 0, totalW, totalH) as any).data;
   const actualDensity = params.dpi ?? 400;
-  const metaOpts: { density: number; icc?: string } = { density: actualDensity };
-  if (sRGBIccPath) metaOpts.icc = sRGBIccPath;
-
-  const pngBuf = await sharp(Buffer.from(finalRaw), { raw: { width: totalW, height: totalH, channels: 4 } })
-    .flatten({ background: '#ffffff' })
-    .withMetadata(metaOpts)
-    .toColorspace('srgb')
-    .png({ compressionLevel: 9 })
-    .toBuffer();
+  const pngBuf = await encodePrintPng(finalRaw, totalW, totalH, actualDensity);
 
   console.log(`[tiled] done in ${Math.round((Date.now() - totalStart) / 1000)}s — ${totalW}×${totalH}px @ ${actualDensity} DPI`);
   return pngBuf;
