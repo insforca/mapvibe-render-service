@@ -1,26 +1,28 @@
 /**
- * Detailed-roads fulfillment routing.
+ * Fulfillment routing for Clean and Detailed prints.
  *
- * The editor's Detailed preview is the MapLibre style from generateMapStyle
- * (neighbourhood mode): casings, zoom-stopped widths, waterways, buildings,
- * aeroway, dashed rail, and the road classes whose line-opacity is above 0.
- * Residential and paths stay at opacity 0 unless the customer turned those
- * toggles on. Replaying that snapshot through the Python/OSM poster draws a
- * different map (one stroke per class, no casings, no zoom curve, no
- * buildings). Order #1086's missing residential roads were a zoom mismatch
- * against the same OpenFreeMap tiles, not a second street network the
- * editor was showing.
+ * Both modes replay the editor snapshot through MapLibre. The Python/OSMnx
+ * renderer is retired: a snapshot with no usable style, and any snapshot that
+ * asks for engine 'osm', fails instead of drawing a different map.
  *
  * Contract:
  *  - minorRoads (or detailedRoads override) AND bounds AND a style with
- *    layers → MapLibre, rendered at the snapshot zoom. Python is not used.
- *  - Same request but no usable style → OSM engine. There is nothing to
- *    replay, so the legacy street graph is still the only picture we can make.
- *  - cfg.engine === 'osm' stays on the OSM engine (explicit legacy snapshots).
- *  - Detailed wanted but NO bounds → tile path and a loud warning. Framing
- *    outranks road detail (pre-#79 crop drift).
- *  - detailedRoads false forces the Clean tile path.
+ *    layers → MapLibre, rendered at the snapshot zoom.
+ *  - Same request but no usable style → rejected. The reason slug is the
+ *    route the Python fallback used to take (detailed-osm-no-style, …).
+ *  - cfg.engine === 'osm' → rejected (osm-engine-retired), even when a
+ *    style is present. Explicit legacy snapshots are not silently replayed.
+ *  - RENDER_ENGINE=osm with no styleJson → rejected. The env var used to
+ *    select the Python pipeline; it no longer does. A usable styleJson is
+ *    still MapLibre (the #1086 rule: the env must not steal a real style).
+ *  - Detailed wanted, bounds missing, usable style → tile path and a loud
+ *    warning. Framing outranks road detail (pre-#79 crop drift).
+ *  - detailedRoads false forces the Clean tile path when the style is usable.
  */
+
+export type StyleState = 'missing' | 'empty' | 'unusable' | 'usable';
+
+export type StyleFailReason = 'missing-style' | 'osm-engine-retired';
 
 export interface DetailRoutingFields {
   engine?: 'maplibre' | 'osm';
@@ -29,25 +31,79 @@ export interface DetailRoutingFields {
   bounds?: { west: number; south: number; east: number; north: number };
 }
 
-export interface FulfillRoute {
-  engine: 'osm' | 'maplibre';
-  /**
-   * True when the print should show the editor's Detailed road set.
-   * On the MapLibre path the style's own opacities decide which classes
-   * are actually inked. On the OSM path it is forwarded as minor_roads.
-   */
-  minorRoads: boolean;
-  /** Stable slug for the log line — never silent (post-#79 rule). */
-  reason: string;
-  /** Present when a Detailed request could not be honoured. */
-  warning?: string;
+export type FulfillRoute =
+  | {
+      engine: 'maplibre';
+      /**
+       * True when the print should show the editor's Detailed road set.
+       * The style's own opacities decide which classes are actually inked.
+       */
+      minorRoads: boolean;
+      /** Stable slug for the log line — never silent (post-#79 rule). */
+      reason: string;
+      styleState: 'usable';
+      /** Present when a Detailed request could not be honoured. */
+      warning?: string;
+    }
+  | {
+      engine: 'rejected';
+      minorRoads: boolean;
+      /**
+       * The route the retired Python renderer would have taken, or the
+       * MapLibre path that cannot run without a style.
+       */
+      reason: string;
+      failReason: StyleFailReason;
+      styleState: StyleState;
+      /** Caller-facing sentence. No style payload, no secrets. */
+      message: string;
+    };
+
+export interface ImageRenderRejection {
+  status: 400;
+  failReason: StyleFailReason;
+  styleState: StyleState;
+  error: string;
+}
+
+/** Classify a snapshot style without reading layer paint or sources. */
+export function styleStateOf(style: unknown): StyleState {
+  if (style == null) return 'missing';
+  if (typeof style !== 'object' || Array.isArray(style)) return 'unusable';
+  const layers = (style as { layers?: unknown }).layers;
+  if (!Array.isArray(layers) || layers.length === 0) return 'empty';
+  return 'usable';
 }
 
 /** A style the MapLibre renderer can replay. `{}` is not one. */
 export function hasUsableMapStyle(style: unknown): boolean {
-  if (!style || typeof style !== 'object' || Array.isArray(style)) return false;
-  const layers = (style as { layers?: unknown }).layers;
-  return Array.isArray(layers) && layers.length > 0;
+  return styleStateOf(style) === 'usable';
+}
+
+function styleStatePhrase(state: StyleState): string {
+  if (state === 'missing') return 'missing';
+  if (state === 'empty') return 'empty (no layers)';
+  if (state === 'unusable') return 'unusable';
+  return 'usable';
+}
+
+/**
+ * What the Python router would have done with a snapshot that has no
+ * usable style. Order matches the pre-retirement checks: the env legacy
+ * path won over Detailed-without-a-style.
+ */
+function formerRouteWithoutStyle(
+  cfg: DetailRoutingFields,
+  renderEngineEnv: string | undefined,
+  detailedOverride: boolean | undefined,
+  wantDetailed: boolean,
+): string {
+  if (renderEngineEnv === 'osm' && !cfg.styleJson) return 'env-osm-legacy-config';
+  if (wantDetailed && cfg.bounds) {
+    return detailedOverride === true ? 'detailed-override-no-style' : 'detailed-osm-no-style';
+  }
+  if (wantDetailed) return 'detailed-without-bounds';
+  return 'default-tile-path';
 }
 
 export function resolveFulfillRoute(
@@ -56,38 +112,53 @@ export function resolveFulfillRoute(
   detailedOverride?: boolean,
 ): FulfillRoute {
   const wantDetailed = detailedOverride ?? cfg.minorRoads === true;
+  const styleState = styleStateOf(cfg.styleJson);
 
-  // Pre-existing rules, unchanged: explicit OSM snapshots, and legacy
-  // flat-palette-era configs (no styleJson) under RENDER_ENGINE=osm.
+  // Explicit engine=osm used to force the Python renderer, including when
+  // a style was present. That request now fails. It is not replayed.
   if (cfg.engine === 'osm') {
-    return { engine: 'osm', minorRoads: wantDetailed, reason: 'cfg-engine-osm' };
+    return {
+      engine: 'rejected',
+      minorRoads: wantDetailed,
+      reason: 'cfg-engine-osm',
+      failReason: 'osm-engine-retired',
+      styleState,
+      message:
+        `OSM/Python renderer is retired (cfg-engine-osm). Not printed. ` +
+        `styleJson is ${styleStatePhrase(styleState)}.`,
+    };
   }
-  if (renderEngineEnv === 'osm' && !cfg.styleJson) {
-    return { engine: 'osm', minorRoads: wantDetailed, reason: 'env-osm-legacy-config' };
+
+  if (styleState !== 'usable') {
+    const former = formerRouteWithoutStyle(cfg, renderEngineEnv, detailedOverride, wantDetailed);
+    return {
+      engine: 'rejected',
+      minorRoads: false,
+      reason: former,
+      failReason: 'missing-style',
+      styleState,
+      message:
+        `No usable editor style (styleJson ${styleStatePhrase(styleState)}). ` +
+        `Not printed. Previous route: ${former}.`,
+    };
   }
 
   // Detailed with the editor's own style replays that style. The style
-  // already encodes which classes are visible and at what opacity. Python
-  // remains only when there is no style to replay.
+  // already encodes which classes are visible and at what opacity.
   if (wantDetailed) {
-    if (cfg.bounds && hasUsableMapStyle(cfg.styleJson)) {
+    if (cfg.bounds) {
       return {
         engine: 'maplibre',
         minorRoads: true,
         reason: detailedOverride === true ? 'detailed-override' : 'detailed-style-parity',
-      };
-    }
-    if (cfg.bounds) {
-      return {
-        engine: 'osm',
-        minorRoads: true,
-        reason: detailedOverride === true ? 'detailed-override-no-style' : 'detailed-osm-no-style',
+        styleState: 'usable',
       };
     }
     return {
       engine: 'maplibre',
       minorRoads: false,
       reason: 'detailed-without-bounds',
+      styleState: 'usable',
       warning:
         'Detailed roads requested but the snapshot has no bounds — staying on ' +
         'the tile path to preserve framing; minor roads will be missing from ' +
@@ -95,105 +166,35 @@ export function resolveFulfillRoute(
     };
   }
 
-  return { engine: 'maplibre', minorRoads: false, reason: 'default-tile-path' };
-}
-
-// ── Editor-theme → OSM engine palette ────────────────────────────────────────
-
-interface EditorThemeRoads {
-  major?: string;
-  minor_high?: string;
-  minor_mid?: string;
-  minor_low?: string;
-  path?: string;
-  outline?: string;
-}
-
-interface EditorThemeShape {
-  name?: string;
-  id?: string;
-  map?: {
-    land?: string;
-    water?: string;
-    waterway?: string;
-    parks?: string;
-    buildings?: string;
-    aeroway?: string;
-    rail?: string;
-    roads?: EditorThemeRoads;
-  };
-  ui?: { text?: string };
-}
-
-function themeLabel(theme: unknown): string {
-  if (!theme || typeof theme !== 'object') return 'unnamed';
-  const t = theme as EditorThemeShape;
-  return t.name || t.id || 'unnamed';
+  return { engine: 'maplibre', minorRoads: false, reason: 'default-tile-path', styleState: 'usable' };
 }
 
 /**
- * Derive the Python engine's theme_json from a snapshot's nested editor theme
- * (`cfg.theme`). Editor snapshots that predate the ShopifyExportOverlay v3.1
- * flat-palette fields (e.g. order #1086) carry their palette ONLY here; without
- * this the OSM path falls back to load_theme(osmTheme) and prints the wrong
- * colours on theme-filename drift.
- *
- * Returns undefined when the nested theme lacks the minimum fields (land,
- * roads, ui.text). Callers must not then silently load midnight_blue or
- * the terracotta file when a theme object was actually provided.
- *
- * Secondary is roads.minor_high. The editor paints `road-secondary` with
- * that colour, the same as trunk and primary — not minor_mid.
- * A missing water colour is omitted. It is not replaced with land.
+ * /render (image-only) decision. Does not email. `RENDER_ENGINE` is ignored:
+ * a usable style is MapLibre, and engine 'osm' or a missing style is a 400.
  */
-export function themeJsonFromEditorTheme(
-  theme: unknown,
-): Record<string, string> | undefined {
-  const t = theme as EditorThemeShape | null | undefined;
-  const m = t?.map;
-  const text = t?.ui?.text;
-  if (!m?.land || !m.roads || !text) return undefined;
-  const r = m.roads;
-  const major = r.major ?? text;
-  const out: Record<string, string> = {
-    name: themeLabel(theme),
-    bg: m.land,
-    text,
-    gradient_color: m.land,
-    parks: m.parks ?? m.land,
-    road_motorway: major,
-    road_primary: r.minor_high ?? major,
-    road_secondary: r.minor_high ?? major,
-    road_tertiary: r.minor_mid ?? r.minor_high ?? major,
-    road_residential: r.minor_low ?? r.minor_mid ?? major,
-    road_default: r.minor_mid ?? r.minor_high ?? major,
-    rail: m.rail ?? r.minor_mid ?? major,
-  };
-  if (m.water) out.water = m.water;
-  if (m.waterway) out.waterway = m.waterway;
-  if (m.buildings) out.buildings = m.buildings;
-  if (m.aeroway) out.aeroway = m.aeroway;
-  if (r.outline) out.road_outline = r.outline;
-  if (r.path) out.road_path = r.path;
-  return out;
-}
-
-/**
- * Palette problems a caller should log next to the theme name.
- * Empty when the value is not a theme object, or when nothing was dropped.
- */
-export function editorThemePaletteWarnings(theme: unknown): string[] {
-  if (!theme || typeof theme !== 'object' || Array.isArray(theme)) return [];
-  const t = theme as EditorThemeShape;
-  const name = themeLabel(theme);
-  const warnings: string[] = [];
-  if (t.map && !t.map.water) {
-    warnings.push(`theme '${name}': map.water is missing — not substituting land`);
+export function rejectImageRender(input: {
+  engine?: unknown;
+  styleJson?: unknown;
+}): ImageRenderRejection | null {
+  const styleState = styleStateOf(input.styleJson);
+  if (input.engine === 'osm') {
+    return {
+      status: 400,
+      failReason: 'osm-engine-retired',
+      styleState,
+      error: 'OSM/Python renderer is retired. Send a MapLibre styleJson with at least one layer.',
+    };
   }
-  if (t.map?.roads && !t.map.roads.minor_high) {
-    warnings.push(
-      `theme '${name}': roads.minor_high is missing — secondary uses major, not minor_mid`,
-    );
+  if (styleState !== 'usable') {
+    return {
+      status: 400,
+      failReason: 'missing-style',
+      styleState,
+      error:
+        `styleJson is ${styleStatePhrase(styleState)}. A MapLibre style with at least one layer ` +
+        'is required. The OSM/Python fallback has been removed.',
+    };
   }
-  return warnings;
+  return null;
 }

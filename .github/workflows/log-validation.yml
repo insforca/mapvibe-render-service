@@ -2,11 +2,6 @@ name: Railway Log Validation v2
 
 on:
   workflow_dispatch:
-    inputs:
-      api_secret:
-        description: 'RENDER_API_SECRET'
-        required: true
-        type: string
 
 jobs:
   validate:
@@ -52,39 +47,7 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
-      - name: "Task 2 Render 1 — cold fetch (new container, empty /tmp cache)"
+      - name: "Task 2 retired — do not POST engine=osm to production"
         run: |
-          echo "=== RENDER 1 START $(date -u +%H:%M:%S) ==="
-          curl -s -X POST https://render-production-78ee.up.railway.app/render \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${{ inputs.api_secret }}" \
-            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":9000,"dist":9000,"width":2400,"height":3000,"dpi":150}' \
-            --max-time 180 \
-            -o /tmp/r1.bin \
-            -w "Render1: HTTP %{http_code} | wall_time: %{time_total}s\n"
-          echo "=== RENDER 1 END $(date -u +%H:%M:%S) ==="
-          file /tmp/r1.bin
-
-      - name: "Task 2 Render 2 — warm fetch (same params, /tmp cache populated)"
-        run: |
-          echo "=== RENDER 2 START $(date -u +%H:%M:%S) ==="
-          curl -s -X POST https://render-production-78ee.up.railway.app/render \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${{ inputs.api_secret }}" \
-            -d '{"center":[-77.0369,38.9072],"zoom":13,"engine":"osm","osmTheme":"midnight_blue","osmDist":9000,"dist":9000,"width":2400,"height":3000,"dpi":150}' \
-            --max-time 120 \
-            -o /tmp/r2.bin \
-            -w "Render2: HTTP %{http_code} | wall_time: %{time_total}s\n"
-          echo "=== RENDER 2 END $(date -u +%H:%M:%S) ==="
-          file /tmp/r2.bin
-
-      - name: "Wait for Railway log propagation"
-        run: |
-          for i in $(seq 1 9); do sleep 5 && railway logs --service render --tail 5 2>&1 | grep -q "Fetch phase" && echo "Logs ready at iteration $i" && break || true; done
-
-      - name: "Task 2: Read Railway logs — Fetch phase lines"
-        run: |
-          echo "=== RAILWAY LOGS (filtered) ==="
-          railway logs --service render --tail 500 2>&1 | grep -E "(Fetch phase|render done|fetch=|Queued|preview|mapvibe_render)" || echo "(no matching lines)"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          echo "The Python OSM smoke renders were removed."
+          echo "engine=osm and a missing styleJson now fail. Do not curl production /render or /fulfill from this workflow."

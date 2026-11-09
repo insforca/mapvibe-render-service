@@ -20,7 +20,7 @@
  * The 6/18/14/3/4/1px lengths are the desktop editor's CSS pixels on a
  * 482.390625px-wide poster (18×24 at the measured preview). They scale
  * with the short side, which is how cqmin and those pixels stay in the
- * same proportion on a print. python/poster_text.py is the same model.
+ * same proportion on a print.
  */
 
 import {

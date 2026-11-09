@@ -24,7 +24,6 @@
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { spawnSync, spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
@@ -70,10 +69,11 @@ import {
   fulfillGelato,
 } from './gelato.js';
 import {
-  editorThemePaletteWarnings,
+  rejectImageRender,
   resolveFulfillRoute,
-  themeJsonFromEditorTheme,
+  type FulfillRoute,
 } from './detail-routing.js';
+import { notifyRejectedFulfillRoute } from './style-fail.js';
 import { applyNeighbourhoodDetail } from './detailed-style.js';
 
 // ── sRGB ICC v4 profile — fetched once at startup for PNG embedding ───────────
@@ -156,8 +156,6 @@ const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
 const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
 const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-studio-alpha.vercel.app';
-const PREVIEW_CANVAS_PX = parseInt(process.env.PREVIEW_CANVAS_PX ?? '600', 10) || 600;
-const CM_PER_INCH       = 2.54;
 const MAX_RENDER_PX_WH  = PRODUCTION_RENDER_CAPS.maxEdgePx;  // full 400 DPI up to 24×36; larger sizes drop DPI
 const MAX_PX            = PRODUCTION_RENDER_CAPS.maxPx; // max single render/tile pixels; fits 400 DPI 24×36 (138 MP)
 const MAX_ZOOM_RENDER   = 17;
@@ -171,12 +169,13 @@ const MAX_ZOOM_RENDER   = 17;
 const TARGET_DPI          = PRODUCTION_RENDER_CAPS.targetDpi;          // ceiling we never exceed
 const MIN_SINGLE_PASS_DPI = PRODUCTION_RENDER_CAPS.minSinglePassDpi;  // advertised customer standard; below this, tile
 
-// ── OSM renderer config ───────────────────────────────────────────────────────
-// RENDER_ENGINE=osm  → use Python/OSMnx pipeline for fulfillment renders
-// RENDER_ENGINE=maplibre (default) → keep native GL pipeline during transition
+// RENDER_ENGINE is no longer an engine switch. `osm` used to select the
+// Python pipeline for snapshots with no styleJson. Those requests now fail.
+// The value is still read so the failure names the old route (env-osm-legacy-config).
 const RENDER_ENGINE  = process.env.RENDER_ENGINE  ?? 'maplibre';
-const MAPVIBE_PYTHON = process.env.MAPVIBE_PYTHON ?? 'python3';
-const OSM_SCRIPT     = join(__dirname, '..', 'python', 'mapvibe_render.py');
+if (RENDER_ENGINE === 'osm') {
+  console.warn('[startup] RENDER_ENGINE=osm no longer selects a renderer. A snapshot without a usable styleJson fails instead of printing the Python map.');
+}
 
 const MAX_CONCURRENT    = parseInt(process.env.MAX_CONCURRENT    ?? '4',  10);
 const MAX_QUEUE_SIZE    = parseInt(process.env.MAX_QUEUE_SIZE    ?? '20', 10);
@@ -827,165 +826,6 @@ async function renderTiledPng(
   return pngBuf;
 }
 
-// ── OSM Python renderer ───────────────────────────────────────────────────────
-
-interface OsmRenderParams {
-  city?:           string;
-  country?:        string;
-  lat:             number;
-  lng:             number;
-  display_city:    string;
-  display_country: string;
-  theme_name?:     string;
-  theme_json?:     unknown;
-  dist?:           number;
-  /**
-   * Override for matplotlib's axis half-extent. When omitted, Python uses
-   * `dist` itself (legacy /fulfill contract). `/render` passes the post-
-   * formula fetch radius so the visible axes equal what OSMnx actually has
-   * data for, eliminating the empty background area on bounds-tight previews.
-   */
-  crop_dist?:      number;
-  /**
-   * The WGS-84 rectangle the studio composed the poster against,
-   * {west, south, east, north} in degrees. When present Python uses it as the
-   * sole source of the plot extent and both `dist` and `crop_dist` stop
-   * affecting framing (`dist` reverts to a pure fetch radius). When omitted —
-   * v1 order snapshots, or any caller not yet updated — Python falls back to
-   * the legacy centre ± comp_dist framing, unchanged.
-   */
-  bounds?:         MapBounds;
-  width_in:        number;
-  height_in:       number;
-  /**
-   * Visible product size, inches. Set only for canvas, where width_in/height_in
-   * are the larger print area. Python expands the editor bounds so this window
-   * stays centred and the margin is wrap. Omitted for posters and frames.
-   */
-  visible_width_in?:  number;
-  visible_height_in?: number;
-  dpi:             number;
-  show_text?:      boolean;
-  full_bleed?:     boolean;
-  no_fade?:        boolean;
-  /**
-   * Editor fade name. `fullbleed` / `default` draw the bottom 14% ease-in.
-   * `none` draws nothing. `text` is the legacy top-and-bottom wash.
-   * When set, this wins over `no_fade`.
-   */
-  fade_style?:     string;
-  /** Left credit. The OSM copyright line is drawn either way when text is on. */
-  include_credits?: boolean;
-  minor_roads?:    boolean;
-  preview_max_px?: number;     // cap long edge of matplotlib figure; Python scales width_in/height_in
-}
-
-/**
- * Render a city map poster using the Python/OSMnx pipeline (maptoposter).
- * Full bleed. Fade follows `fade_style` (editor bottom ease-in unless `none`).
- *
- * DPI contract:
- *   • Standard sizes  → 400 DPI (caller must pass actualDpi)
- *   • Archival        → ≥300 DPI (tiled path maintains this via actualDpi)
- *
- * @param params  OsmRenderParams
- * @returns       PNG Buffer
- */
-async function renderOsmPython(params: OsmRenderParams, signal?: AbortSignal): Promise<Buffer> {
-  const tmpFile = join(tmpdir(), `mapvibe-osm-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
-  const payload = JSON.stringify({ ...params, output_path: tmpFile });
-  const renderStart = Date.now();
-
-  // Async spawn so the caller can kill the Python subprocess when the client
-  // (Vercel proxy / Shopify webhook) disconnects mid-render. The previous
-  // spawnSync blocked the Node event loop for the full 30-90 s of an OSM
-  // render — even if /render's request had already closed, we kept Overpass
-  // fetching, matplotlib drawing, and PNG encoding. Production observation
-  // 2026-06-14: a 72 s render finished and was discarded after Vercel's 50 s
-  // proxy timeout because the disconnect handler couldn't run while spawnSync
-  // held the loop. Pure waste on both sides.
-  return await new Promise<Buffer>((resolve, reject) => {
-    const child = spawn(MAPVIBE_PYTHON, [OSM_SCRIPT], { timeout: 300_000 });
-
-    // Collect stderr for diagnostic logging AND forward it to the parent
-    // process's stderr in real time. The earlier version only kept stderrBuf
-    // for the failure path (lines 926 / 930). On the success path, the entire
-    // Python log — including `[mapvibe_render] Fetch phase Xs — streets=…`,
-    // `Done — N bytes`, geocode warnings, etc. — was silently discarded, so
-    // Railway showed only the `[render] Queued` / `[osm] render done` lines
-    // emitted from this file. That made it impossible to tell whether 0024's
-    // graph cache was hitting or missing on any given render (production
-    // 2026-06-16 logs). Forwarding to process.stderr keeps Railway's log
-    // collector flushing each line as Python writes it, while stderrBuf still
-    // tail-buffers the last 800 bytes for error-path reporting.
-    let stderrBuf = '';
-    child.stderr.on('data', (chunk: Buffer) => {
-      process.stderr.write(chunk);
-      stderrBuf += chunk.toString();
-    });
-
-    // Send the params payload over stdin, then close — Python reads stdin to
-    // EOF before parsing.
-    child.stdin.write(payload);
-    child.stdin.end();
-
-    let settled = false;
-    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
-
-    // SIGTERM gives Python a chance to flush; SIGKILL is the hard fallback if
-    // it ignores the polite ask for 2 seconds.
-    const killChild = () => {
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 2_000);
-    };
-
-    const onAbort = () => {
-      const elapsed = Math.round((Date.now() - renderStart) / 1000);
-      console.warn(`[osm] aborted at ${elapsed}s — killing Python subprocess (pid=${child.pid})`);
-      killChild();
-      settle(() => {
-        try { unlinkSync(tmpFile); } catch { /* may not exist */ }
-        const err = new Error('aborted') as Error & { code?: string };
-        err.code = 'ABORTED';
-        reject(err);
-      });
-    };
-
-    if (signal) {
-      if (signal.aborted) { onAbort(); return; }
-      signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    child.on('error', (err: Error) => {
-      settle(() => {
-        signal?.removeEventListener('abort', onAbort);
-        reject(new Error(`[osm] Python spawn error: ${err.message}`));
-      });
-    });
-
-    child.on('close', (code: number | null) => {
-      if (settled) return;
-      signal?.removeEventListener('abort', onAbort);
-      const elapsed = Math.round((Date.now() - renderStart) / 1000);
-
-      if (code !== 0) {
-        try { unlinkSync(tmpFile); } catch { /* may not exist */ }
-        settle(() => reject(new Error(`[osm] Python renderer exited ${code}: ${stderrBuf.slice(-800)}`)));
-        return;
-      }
-      if (!existsSync(tmpFile)) {
-        settle(() => reject(new Error(`[osm] Python renderer produced no output file. stderr: ${stderrBuf.slice(-500)}`)));
-        return;
-      }
-
-      const pngBuf = readFileSync(tmpFile);
-      try { unlinkSync(tmpFile); } catch { /* best-effort cleanup */ }
-      console.log(`[osm] render done in ${elapsed}s — ${pngBuf.length.toLocaleString()} bytes (${params.dpi} DPI, ${params.width_in?.toFixed(1)}×${params.height_in?.toFixed(1)}in)`);
-      settle(() => resolve(pngBuf));
-    });
-  });
-}
-
 // ── MapvibeConfigSnapshot type ───────────────────────────────────────────────
 interface MapvibeConfigSnapshot {
   styleJson:      unknown;
@@ -1004,7 +844,8 @@ interface MapvibeConfigSnapshot {
   includeCredits: boolean;
   textLayout:     string;
   theme:          unknown;
-  // OSM renderer fields (only used when engine === 'osm' or RENDER_ENGINE=osm)
+  // engine 'osm' is rejected. osmTheme / osmDist are ignored leftovers from
+  // the Python renderer; current orders still send them.
   engine?:   'maplibre' | 'osm';
   city?:     string;
   country?:  string;
@@ -1023,10 +864,8 @@ interface MapvibeConfigSnapshot {
   // logical viewport; otherwise it is derived from bounds + zoom.
   mapWidth?: number;
   mapHeight?: number;
-  // Live palette forwarded by ShopifyExportOverlay (>= v3.1). When present,
-  // renderConfigToBlobUrl builds theme_json from these and bypasses load_theme(),
-  // making fulfillment immune to theme-filename drift (e.g. vintage_noir → no
-  // matching .json → silent terracotta fallback without this forwarding).
+  // Flat palette fields still arrive on snapshots from ShopifyExportOverlay.
+  // MapLibre replays styleJson; these colours are not a second renderer.
   textColor?:          string;
   bgColor?:            string;
   waterColor?:         string;
@@ -1064,13 +903,24 @@ interface PrintWindow {
   hasWrap: boolean;
 }
 
+type ConfigRenderResult =
+  | { ok: true; url: string }
+  | {
+      ok: false;
+      kind: 'rejected';
+      route: Extract<FulfillRoute, { engine: 'rejected' }>;
+      city?: string;
+      country?: string;
+    }
+  | { ok: false; kind: 'failed' };
+
 async function renderConfigToBlobUrl(
   configUrl: string,
   dimsOverride?: { widthCm: number; heightCm: number },
   detailedRoads?: boolean,
   preloadedCfg?: MapvibeConfigSnapshot | null,
   printWindow?: PrintWindow,
-): Promise<string | null> {
+): Promise<ConfigRenderResult> {
   // 1. Download config snapshot (skipped when /fulfill already fetched it,
   // so a download failure can be a non-2xx before the 202 ack).
   let cfg: MapvibeConfigSnapshot;
@@ -1078,8 +928,17 @@ async function renderConfigToBlobUrl(
     cfg = preloadedCfg;
   } else {
     const downloaded = await downloadConfigSnapshot(configUrl);
-    if (!downloaded) return null;
+    if (!downloaded) return { ok: false, kind: 'failed' };
     cfg = downloaded;
+  }
+
+  // No usable style, or an explicit request for the retired OSM engine.
+  // Fail before any pixels. The caller logs [FULFILL-FAIL] and emails.
+  const route = resolveFulfillRoute(cfg, RENDER_ENGINE, detailedRoads);
+  if (route.engine === 'rejected') {
+    const city = cfg.displayCity || cfg.city || undefined;
+    const country = cfg.displayCountry || cfg.country || undefined;
+    return { ok: false, kind: 'rejected', route, city, country };
   }
 
   // 2. Compute pixel dims — HARD RULE: never under 300 DPI effective.
@@ -1106,7 +965,7 @@ async function renderConfigToBlobUrl(
 
   if (printWindow?.hasWrap && numTiles > 1) {
     console.error(`[fulfill] canvas print area ${widthCm}×${heightCm} cm would tile ×${numTiles}; refusing (wrap must be single-pass)`);
-    return null;
+    return { ok: false, kind: 'failed' };
   }
 
   if (dims.mode === 'tiled') {
@@ -1170,108 +1029,14 @@ async function renderConfigToBlobUrl(
   const userZoom   = typeof cfg.zoom === 'number' && isFinite(cfg.zoom) ? cfg.zoom : 0;
   const renderZoom = Math.min(MAX_ZOOM_RENDER, userZoom);
 
-  // 5. Route. Detailed + a real style replays that style through the same
-  //    MapLibre camera as Clean (resolvePrintCamera: editor zoom, pixel
-  //    ratio, no second line-width scale). Python remains for explicit
-  //    engine=osm and for Detailed snapshots that have bounds but no style.
-  const route = resolveFulfillRoute(cfg, RENDER_ENGINE, detailedRoads);
+  // 5. MapLibre only. Detailed + a real style replays that style through
+  //    the same camera as Clean (resolvePrintCamera: editor zoom, pixel
+  //    ratio, no second line-width scale). Unusable styles already returned.
   if (route.warning) console.warn(`[fulfill] ${route.warning}`);
   console.log(`[fulfill] engine route: ${route.engine} (${route.reason})`);
-  const useOsm = route.engine === 'osm';
   const useDetailedParity = route.reason === 'detailed-style-parity' || route.reason === 'detailed-override';
   let pngBuffer: Buffer;
 
-  if (useOsm) {
-    const widthIn  = widthCm  / CM_PER_INCH;
-    const heightIn = heightCm / CM_PER_INCH;
-    // When the config snapshot includes flat palette fields (ShopifyExportOverlay >= v3.1),
-    // build a Python-shaped theme_json and forward it. Python uses theme_json over
-    // load_theme() when present — renders are then immune to filename drift
-    // (e.g. vintage_noir has no matching themes/vintage_noir.json, so load_theme
-    // silently falls back to terracotta without this forwarding).
-    for (const warning of editorThemePaletteWarnings(cfg.theme)) {
-      console.warn(`[fulfill] ${warning}`);
-    }
-    const themeName = (cfg.theme && typeof cfg.theme === 'object'
-      ? ((cfg.theme as { name?: string; id?: string }).name
-        || (cfg.theme as { id?: string }).id)
-      : undefined) || cfg.osmTheme || 'unnamed';
-    let fulfillThemeJson: Record<string, string> | undefined;
-    if (cfg.textColor) {
-      fulfillThemeJson = {
-        name:             themeName,
-        bg:               cfg.bgColor             ?? '#1B2A4A',
-        text:             cfg.textColor,
-        gradient_color:   cfg.bgColor             ?? '#1B2A4A',
-        parks:            cfg.parksColor          ?? cfg.bgColor    ?? '#1B2A4A',
-        road_motorway:    cfg.roadMotorwayColor   ?? cfg.textColor,
-        road_primary:     cfg.roadPrimaryColor    ?? cfg.roadMotorwayColor ?? cfg.textColor,
-        // roadPrimaryColor is the editor's minor_high. Secondary uses it
-        // when the flat snapshot has no separate secondary field.
-        road_secondary:   cfg.roadSecondaryColor  ?? cfg.roadPrimaryColor  ?? cfg.textColor,
-        road_tertiary:    cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
-        road_residential: cfg.roadLocalColor      ?? cfg.roadTertiaryColor ?? cfg.textColor,
-        road_default:     cfg.roadTertiaryColor   ?? cfg.roadSecondaryColor ?? cfg.textColor,
-        rail:             cfg.railColor           ?? cfg.roadSecondaryColor ?? cfg.textColor,
-      };
-      if (cfg.waterColor) fulfillThemeJson.water = cfg.waterColor;
-      else console.warn(`[fulfill] theme '${themeName}': water colour missing — not substituting land`);
-    } else {
-      // Nested editor theme. A provided theme that cannot be derived must
-      // not fall through to load_theme(midnight_blue) or terracotta.
-      fulfillThemeJson = themeJsonFromEditorTheme(cfg.theme);
-      if (!fulfillThemeJson && cfg.theme && typeof cfg.theme === 'object') {
-        console.error(
-          `[fulfill] theme '${themeName}' was provided but is missing map.land, ` +
-          `map.roads, or ui.text — refusing midnight_blue/terracotta fallback`,
-        );
-        return null;
-      }
-    }
-    const osmParams: OsmRenderParams = {
-      city:            cfg.city            ?? '',
-      country:         cfg.country         ?? '',
-      lat:             cfg.center[1],        // MapLibre center = [lng, lat]
-      lng:             cfg.center[0],
-      display_city:    cfg.displayCity     ?? '',
-      display_country: cfg.displayCountry  ?? '',
-      theme_name:      cfg.osmTheme        ?? 'midnight_blue',
-      // Python uses theme_json over load_theme() when present.
-      ...(fulfillThemeJson ? { theme_json: fulfillThemeJson } : {}),
-      dist:            cfg.osmDist         ?? 15000,
-      // The snapshot's framing rectangle. Present on v2+ snapshots; undefined
-      // on v1 orders, where Python falls back to comp_dist framing so old
-      // orders replay exactly as they did before.
-      ...(cfg.bounds ? { bounds: cfg.bounds } : {}),
-      width_in:        widthIn,
-      height_in:       heightIn,
-      // Canvas only. Posters and frames omit this so the Python extent is
-      // unchanged from the previous single-axis aspect expansion.
-      ...(printWindow?.hasWrap ? {
-        visible_width_in:  printWindow.visibleWIn,
-        visible_height_in: printWindow.visibleHIn,
-      } : {}),
-      dpi:             actualDpi,
-      show_text:       cfg.showPosterText  !== false,
-      full_bleed:      true,
-      fade_style:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
-      include_credits: cfg.includeCredits !== false,
-      // Road-detail mode resolved by resolveFulfillRoute(): the snapshot's
-      // persisted toggle, unless a FulfillBody.detailedRoads override is
-      // present. Orders without the field keep the historical behaviour.
-      minor_roads:     route.minorRoads,
-    };
-    const themeSrc = cfg.textColor
-      ? 'flat-palette'
-      : (fulfillThemeJson ? 'editor-theme' : `load_theme:${cfg.osmTheme ?? 'midnight_blue'}`);
-    console.log(`[fulfill] OSM render (${route.reason}, theme=${themeSrc}): ${cfg.displayCity}, ${cfg.displayCountry} @ ${actualDpi} DPI (${widthIn.toFixed(1)}×${heightIn.toFixed(1)}in) minor_roads=${osmParams.minor_roads}`);
-    try {
-      pngBuffer = await renderOsmPython(osmParams);
-    } catch (err) {
-      console.error('[fulfill] OSM render error:', err);
-      return null;
-    }
-  } else {
   // Native MapLibre pipeline — tiled or single-pass. Clean and styled
   // Detailed share renderPngInternal (resolvePrintCamera + poster-text).
   // A staff detailedRoads override may be sitting on a Clean snapshot, so
@@ -1322,15 +1087,14 @@ async function renderConfigToBlobUrl(
     }
   } catch (err) {
     console.error('[fulfill] Render error:', err);
-    return null;
+    return { ok: false, kind: 'failed' };
   }
-  } // end else (MapLibre path)
 
   // 6. Validate PNG magic bytes
   const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   if (!pngBuffer.slice(0, 8).equals(PNG_MAGIC)) {
     console.error('[fulfill] Render returned invalid PNG (bad magic bytes)');
-    return null;
+    return { ok: false, kind: 'failed' };
   }
 
   // 7. Upload to Vercel Blob
@@ -1341,10 +1105,10 @@ async function renderConfigToBlobUrl(
       ...(process.env.BLOB_READ_WRITE_TOKEN ? { token: process.env.BLOB_READ_WRITE_TOKEN } : {}),
     });
     console.log(`[fulfill] PNG uploaded: ${blob.url} (${width}x${height}px @ ${actualDpi} DPI)`);
-    return blob.url;
+    return { ok: true, url: blob.url };
   } catch (err) {
     console.error('[fulfill] Blob upload failed:', err);
-    return null;
+    return { ok: false, kind: 'failed' };
   }
 }
 
@@ -1363,7 +1127,7 @@ app.get('/health', (req: Request, res: Response) => {
   commit: identity.commit,
   build: identity.build,
   capabilities: identity.capabilities,
-  engine:  RENDER_ENGINE,
+  engine:  'maplibre',
   queue: {
     size:           renderQueue.size,
     pending:        renderQueue.pending,
@@ -1371,9 +1135,9 @@ app.get('/health', (req: Request, res: Response) => {
     maxQueueSize:   MAX_QUEUE_SIZE,
   },
   preview: {
-    size:           previewQueue.size,
-    pending:        previewQueue.pending,
-    concurrency:    2,
+    size:           0,
+    pending:        0,
+    concurrency:    0,
   },
   uptime: process.uptime(),
   // Value-level drift surface (2026-09-02). `version` alone only catches a
@@ -1415,51 +1179,28 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
     mapWidth, mapHeight,
     displayCity, displayCountry, fontFamily, showPosterText, fadeStyle, includeCredits, textLayout, theme,
-    // ── OSM/maptoposter routing ─────────────────────────────────────────────
-    // engine — per-request override; falls back to RENDER_ENGINE env var.
-    // osmTheme / osmDist — already plumbed by api/render-and-upload (PR #140).
-    // previewMode — sent by the editor's live preview tile (studio PR #142)
-    //   so the server can shape DPI / quality cheaply. Print previews and
-    //   live preview tile go through this endpoint; full-print fulfillment
-    //   goes through /fulfill which has its own OSM branch.
-    engine, osmTheme, osmDist, previewMode,
-    // themeJson — Python-shaped palette object assembled by the Vercel proxy
-    // from the studio's flat per-color fields. When present we hand it to
-    // renderOsmPython as `theme_json`; Python uses it directly instead of
-    // `load_theme(osmTheme)`, so the preview matches the editor's actual
-    // colors (vintage_noir cream/black instead of midnight_blue navy/gold).
-    themeJson,
-    // minorRoads — editor's Clean / Detailed road-detail toggle. When the
-    // studio sends `true` we include residential / service / footway in
-    // both the Overpass fetch and the matplotlib draw, matching what the
-    // user is looking at in the editor canvas. Falls back to false (the
-    // historical hardcoded default) when omitted.
+    // engine 'osm' is a hard error. osmTheme / osmDist / themeJson are ignored.
+    // previewMode marks an editor preview tile; it does not select a renderer.
+    engine, previewMode,
+    // minorRoads — editor's Clean / Detailed toggle. MapLibre replays the
+    // snapshot style; preparePrintStyle leaves the opacity curve alone when
+    // this is true.
     minorRoads,
-    // dpi — explicit DPI override from the studio's two-stage preview.
-    //   Stage 1 (rough): dpi=32, preview_max_px=480 → ~3-6s
-    //   Stage 2 (full):  dpi=96, preview_max_px=480 → faster than today
-    // Falls back to the previewMode heuristic (96 / 300) when absent.
-    dpi: dpiOverride,
-    // preview_max_px — cap the PNG long edge so max(W,H) px == this value.
-    // Supersedes the OSM_MAX_PIXELS pixel-budget when present.
-    preview_max_px,
   } = req.body;
-
-  // useOsm decides routing for THIS request. Per-request `engine` wins so a
-  // legacy MapLibre fallback is still reachable while RENDER_ENGINE=osm is
-  // the global default.
-  const useOsm = engine === 'osm' || (engine !== 'maplibre' && RENDER_ENGINE === 'osm');
 
   if (!center||zoom==null) { res.status(400).json({error:'Missing required fields: center, zoom'}); return; }
 
-  // styleJson is mandatory only on the MapLibre path. The Python/OSM pipeline
-  // builds its own style from `osmTheme` + the theme JSON bundled in the
-  // image, so it ignores styleJson entirely.
-  if (!useOsm) {
-    if (!styleJson||typeof styleJson!=='object'||Array.isArray(styleJson)) { res.status(400).json({error:'styleJson must be a non-null object'}); return; }
-    const urlError = validateStyleJsonUrls(styleJson);
-    if (urlError) { res.status(400).json({ error: urlError }); return; }
+  // No Python fallback. engine=osm and a style with no layers both 400.
+  // This path does not email — /render is also used for image tests.
+  const imageRejection = rejectImageRender({ engine, styleJson });
+  if (imageRejection) {
+    const engineLabel = typeof engine === 'string' ? engine.slice(0, 32) : 'unset';
+    console.error(`[render] rejected code=${imageRejection.failReason} styleState=${imageRejection.styleState} engine=${engineLabel}`);
+    res.status(imageRejection.status).json({ error: imageRejection.error, code: imageRejection.failReason });
+    return;
   }
+  const urlError = validateStyleJsonUrls(styleJson);
+  if (urlError) { res.status(400).json({ error: urlError }); return; }
 
   // Queue-depth check — reject immediately if queue is saturated
   if (renderQueue.size >= MAX_QUEUE_SIZE) {
@@ -1484,11 +1225,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       theme:          theme          ?? {},
     } : undefined;
 
-  // Track client connection so we can abort an in-progress render when the
-  // proxy / browser disconnects mid-flight. Without this, a Vercel proxy that
-  // times out at 50 s still leaves a Python subprocess running on Railway for
-  // the full render duration — pure waste on compute + Blob upload + nothing
-  // delivered to the user.
+  // Track client connection so we can skip an in-progress render when the
+  // proxy / browser disconnects mid-flight.
   const clientAbort = new AbortController();
   let clientGone = false;
   // IMPORTANT: listen on `res`, NOT `req`. `app.use(express.json())` fully
@@ -1507,157 +1245,39 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   const onClientClose = () => {
     if (res.writableEnded) return; // normal completion — not a disconnect
     clientGone = true;
-    console.warn(`[render] Client disconnected before response — aborting${useOsm ? ' OSM render' : ' MapLibre render'}`);
+    console.warn('[render] Client disconnected before response — aborting MapLibre render');
     clientAbort.abort();
   };
   res.on('close', onClientClose);
 
-  console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=${useOsm ? 'osm' : 'maplibre'}${previewMode ? ' previewMode' : ''}`);
+  console.log(`[render] Queued — size=${renderQueue.size} pending=${renderQueue.pending} engine=maplibre${previewMode ? ' previewMode' : ''}`);
   await renderQueue.add(async () => memoryWatch.track(
-    `render ${width}×${height}px${useOsm ? ' osm' : ' maplibre'}${previewMode ? ' previewMode' : ''}`,
+    `render ${width}×${height}px maplibre${previewMode ? ' previewMode' : ''}`,
     async () => {
     const renderStart = Date.now();
     try {
       // If the client gave up while we were waiting in the queue, skip the
-      // render entirely — no point spawning Python for output nobody will
-      // receive.
+      // render entirely.
       if (clientGone) {
         console.warn(`[render] Skipping queued render — client already gone`);
         return;
       }
-      let png: Buffer;
-      if (useOsm) {
-        // Studio sends width/height as pixels already shaped for the target
-        // DPI: ~96 for the live preview tile (capped at 2400 px long edge),
-        // higher for the in-app print preview. Derive DPI accordingly so
-        // width_in / height_in stay accurate; the Python renderer uses these
-        // to size the matplotlib figure and pick line weights.
-        // DPI: explicit override wins (two-stage preview uses dpi=32 for rough,
-        // dpi=96 for full); falls back to the historical previewMode heuristic.
-        const dpi = (Number.isFinite(dpiOverride) && dpiOverride > 0)
-          ? dpiOverride
-          : (previewMode ? 96 : 300);
-
-        // Canvas sizing: preview_max_px caps the long edge so the PNG's longest
-        // dimension equals exactly preview_max_px pixels (aspect ratio preserved).
-        // When absent, fall through to the legacy pixel-budget cap.
-        let capW = width, capH = height;
-        if (typeof preview_max_px === 'number' && preview_max_px > 0) {
-          const pmx   = Math.round(preview_max_px);
-          const scale = pmx / Math.max(capW, capH);
-          if (scale < 1) {
-            capW = Math.round(capW * scale);
-            capH = Math.round(capH * scale);
-            console.log(`[render][osm] preview_max_px=${pmx}: ${width}×${height} → ${capW}×${capH}`);
-          }
-        } else {
-          // Legacy pixel-budget fallback — keeps existing behaviour when studio
-          // does not send preview_max_px (e.g. old clients, /fulfill path).
-          const OSM_MAX_PIXELS = previewMode ? 6_000_000 : 12_000_000;
-          if (capW * capH > OSM_MAX_PIXELS) {
-            const k = Math.sqrt(OSM_MAX_PIXELS / (capW * capH));
-            capW = Math.round(capW * k);
-            capH = Math.round(capH * k);
-            console.warn(`[render][osm] Pixel budget exceeded: ${width}×${height} → ${capW}×${capH} (cap ${(OSM_MAX_PIXELS/1e6).toFixed(0)} MP)`);
-          }
-        }
-        const widthIn  = capW / dpi;
-        const heightIn = capH / dpi;
-
-        // Compensate for the Python pipeline's coverage formula:
-        //   comp_dist = dist * (max(W_in, H_in) / min(W_in, H_in)) / 4
-        // The studio's `osmDist` is the half-diagonal of the editor's bbox
-        // (the radius that just covers what the user designed). To make
-        // `comp_dist` come out equal to that radius we have to pre-divide
-        // by the aspect inflation and pre-multiply by 4. Without this, a
-        // 1.4-aspect portrait at osmDist=5000 ended up with comp_dist≈1750m
-        // — Python fetched ~3.5 km of road graph and dropped it into a
-        // 16.67"-tall figure, producing the "small cluster in a sea of
-        // empty background" preview the customer was seeing.
-        const userOsmDist = typeof osmDist === 'number' ? osmDist : 2000;
-        const aspectRatio = Math.max(widthIn, heightIn) / Math.min(widthIn, heightIn);
-        const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
-        // Python's `dist` parameter drives the matplotlib axis half-extent
-        // via get_crop_limits, but the OSMnx fetch radius is
-        // `comp_dist = dist * aspectRatio / 4`. After the compensation above
-        // comp_dist == userOsmDist, but the axes would still span the much
-        // larger `dist` value — leaving a tiny road cluster floating in
-        // empty background. Override `crop_dist` so the visible area equals
-        // what we actually fetched.
-        // Inscribe the crop rectangle inside the fetch circle.
-        // The crop rectangle has half-width = crop_dist and
-        // half-height = crop_dist × figAspect (set in get_crop_limits),
-        // so its half-diagonal is crop_dist × √(1 + aspectRatio²).
-        // Setting crop_dist = userOsmDist / √(1 + aspectRatio²) makes
-        // the half-diagonal equal the fetch radius exactly — no empty
-        // facecolor wedges at the corners of portrait/landscape posters.
-        // Bonus: the rectangle's full diagonal equals 2×userOsmDist, which
-        // is the editor's bbox diagonal (boundsToOsmDist returns the
-        // half-diagonal), so preview scale matches what the user designed.
-        const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
-
-  // Preview dist cap — see PREVIEW_DIST_CAP constant above.
-  // Scale crop_dist by the same factor so the crop window stays proportional.
-  const distScale       = compensatedDist > PREVIEW_DIST_CAP ? PREVIEW_DIST_CAP / compensatedDist : 1;
-  const previewDist     = Math.min(compensatedDist, PREVIEW_DIST_CAP);
-  const previewCropDist = Math.round(cropDistOverride * distScale);
-
-        png = await renderOsmPython({
-          city:            '',                                     // OSMnx geocodes from lat/lng
-          country:         '',
-          lat:             center[1],                              // MapLibre center = [lng, lat]
-          lng:             center[0],
-          display_city:    displayCity    ?? '',
-          display_country: displayCountry ?? '',
-          theme_name:      osmTheme       ?? 'midnight_blue',
-          // theme_json wins over theme_name in Python: load_theme is skipped
-          // when an explicit dict is passed in. Studio + Vercel proxy build
-          // this from the full MapVibe palette so editor and preview agree.
-          theme_json:      themeJson,
-          dist:            previewDist,     // capped to PREVIEW_DIST_CAP
-          crop_dist:       previewCropDist, // scaled proportionally to previewDist
-          // Framing rectangle. NOTE: as of this commit neither /render caller
-          // (ShopifyExportOverlay.tsx:493, editorBridge.ts:103) sends bounds,
-          // so this is undefined in production and Python takes the comp_dist
-          // fallback. Forwarding it here means the studio senders are a
-          // one-line change each, independently revertible.
-          ...(bounds ? { bounds } : {}),
-          width_in:        widthIn,
-          height_in:       heightIn,
-          dpi,
-          show_text:       showPosterText !== false,
-          full_bleed:      true,
-          fade_style:      fadeStyle ?? 'fullbleed',
-          include_credits: includeCredits !== false,
-          // Editor's Clean / Detailed pill — when true, Python skips the
-          // major-road custom_filter and renders residential / service /
-          // footway too. Defaults to the historical false when the studio
-          // (or a non-studio caller) omits the field.
-          minor_roads:     minorRoads === true,
-          // preview_max_px forwarded so Python can belt-and-suspenders scale
-          // the figure dimensions independently of the pixel cap above.
-          ...(typeof preview_max_px === 'number' ? { preview_max_px } : {}),
-        }, clientAbort.signal);
-      } else {
-        png = await renderPngInternal({
-          styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay,
-          minorRoads: minorRoads === true,
-          // styleJson on this route is the editor's map.getStyle() snapshot.
-          editorStyle: true,
-          ...(typeof mapWidth === 'number' && typeof mapHeight === 'number' ? { mapWidth, mapHeight } : {}),
-        });
-      }
-      // Last-chance check: if the proxy disconnected between Python finishing
-      // and us sending the bytes, drop the response and the PNG on the floor —
-      // no upstream is listening, and the studio retry-once has already
-      // started a fresh request.
+      const png = await renderPngInternal({
+        styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay,
+        minorRoads: minorRoads === true,
+        // styleJson on this route is the editor's map.getStyle() snapshot.
+        editorStyle: true,
+        ...(typeof mapWidth === 'number' && typeof mapHeight === 'number' ? { mapWidth, mapHeight } : {}),
+      });
+      // Last-chance check: if the proxy disconnected before we send the bytes,
+      // drop the response. The studio retry has already started a fresh request.
       if (clientGone) {
         console.warn(`[render] Render completed but client gone — discarding ${png.length} bytes`);
         return;
       }
       res.setHeader('Content-Type', 'image/png');
       // Don't cache previews — same URL, different inputs each time.
-      if (!printMode && !useOsm) res.setHeader('Cache-Control', 'public, max-age=3600');
+      if (!printMode) res.setHeader('Cache-Control', 'public, max-age=3600');
       res.end(png);
     } catch (err: any) {
       const elapsed = Math.round((Date.now()-renderStart)/1000);
@@ -1677,138 +1297,17 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
 });
 
 
-// ── Preview queue ─────────────────────────────────────────────────────────────
-// Separate from the main render queue so fulfillment jobs never block previews.
-// concurrency=2 allows two simultaneous fast 480px renders without starving CPU.
-const PREVIEW_TIMEOUT_MS = 35_000;  // increased: gives large cities (dist>20km) sufficient headroom
-// Maximum OSM dist for preview renders — limits matplotlib segment count.
-// 20 km covers the city centre and inner suburbs clearly at 480 px; area
-// scales as dist², so capping 45km→20km cuts ~80 % of road-segment draw
-// calls and brings large cities (DC, Moscow, Tokyo) well under the deadline.
-const PREVIEW_DIST_CAP   = 20_000;  // metres
-const previewQueue = new PQueue({ concurrency: 2 });
-
-// POST /preview — fast server-side matplotlib render for the print preview modal.
-//
-// Renders the OSM/matplotlib pipeline at 96 DPI, long edge capped to
-// preview_max_px=480, uploads to Vercel Blob, returns { url }.  Studio swaps
-// the MapLibre freeze-frame with this URL once it arrives (~3-7s seeded city).
-//
-// Returns 503 when the render exceeds 20 s — studio falls back to the MapLibre
-// snapshot.  Uses a separate previewQueue so /fulfill jobs cannot block previews.
-app.post('/preview', async (req: Request, res: Response): Promise<void> => {
+// POST /preview — retired with the Python OSM renderer.
+// The editor already has the MapLibre snapshot. This used to spawn matplotlib.
+app.post('/preview', (req: Request, res: Response): void => {
   if (!checkAuth(req, res)) return;
-
-  const {
-    center, zoom,
-    // Poster pixel dimensions — used to derive the figure aspect ratio.
-    // Studio sends actual poster px (e.g. 2400×3000); they are scaled down to
-    // preview_max_px so the final PNG is tiny and fast.
-    width  = 2400,
-    height = 3000,
-    displayCity, displayCountry,
-    showPosterText, fadeStyle, includeCredits,
-    osmTheme, osmDist, themeJson,
-    // Framing rectangle, forwarded to Python when the caller supplies it.
-    bounds,
-    minorRoads,
-    // Caller may override the long-edge cap; default 480 px.
-    preview_max_px: pmxParam = 480,
-  } = req.body;
-
-  if (!center || zoom == null) {
-    res.status(400).json({ error: 'Missing required fields: center, zoom' });
-    return;
-  }
-
-  const dpi = 96; // preview DPI — never used for fulfillment (hard rule: ≥300 DPI)
-  const pmx = (Number.isFinite(pmxParam) && pmxParam > 0) ? Math.round(pmxParam) : 480;
-
-  // Scale poster dimensions down to preview_max_px long edge (aspect-preserving).
-  const scaleF = pmx / Math.max(width, height);
-  const capW   = (scaleF < 1) ? Math.round(width  * scaleF) : width;
-  const capH   = (scaleF < 1) ? Math.round(height * scaleF) : height;
-  const widthIn  = capW / dpi;
-  const heightIn = capH / dpi;
-
-  // Same dist-compensation math as /render — see comments there for derivation.
-  const userOsmDist     = typeof osmDist === 'number' ? osmDist : 2000;
-  const aspectRatio     = Math.max(widthIn, heightIn) / Math.min(widthIn, heightIn);
-  const compensatedDist = Math.round(userOsmDist * 4 / aspectRatio);
-  const cropDistOverride = Math.round(userOsmDist / Math.sqrt(1 + aspectRatio * aspectRatio));
-
-  // Preview dist cap — keeps matplotlib segment count bounded for large cities.
-  // Area scales as dist², so 45km→20km cuts ~80 % of road-segment draw calls.
-  const distScale       = compensatedDist > PREVIEW_DIST_CAP ? PREVIEW_DIST_CAP / compensatedDist : 1;
-  const previewDist     = Math.min(compensatedDist, PREVIEW_DIST_CAP);
-  const previewCropDist = Math.round(cropDistOverride * distScale);
-
-  // Soft queue-depth guard — drop early rather than time out inside the queue.
-  if (previewQueue.size >= 4) {
-    console.warn(`[preview] Queue full (${previewQueue.size}) — rejecting`);
-    res.status(503).json({ error: 'Preview service busy', hint: 'fall back to MapLibre snapshot' });
-    return;
-  }
-
-  console.log(`[preview] Queued ${capW}×${capH}px @ ${dpi} DPI — queue size=${previewQueue.size}`);
-  await previewQueue.add(async () => {
-    const startMs = Date.now();
-    // Abort the Python child 1 s before the HTTP deadline so we can still write 503.
-    const abort      = new AbortController();
-    const abortTimer = setTimeout(() => {
-      console.warn('[preview] Aborting Python render (34 s deadline)');
-      abort.abort();
-    }, PREVIEW_TIMEOUT_MS - 1_000);
-
-    try {
-      const png = await renderOsmPython({
-        city:            '',
-        country:         '',
-        lat:             center[1],
-        lng:             center[0],
-        display_city:    displayCity    ?? '',
-        display_country: displayCountry ?? '',
-        theme_name:      osmTheme       ?? 'midnight_blue',
-        theme_json:      themeJson,
-        dist:            previewDist,     // capped to PREVIEW_DIST_CAP
-        crop_dist:       previewCropDist, // scaled proportionally to previewDist
-        ...(bounds ? { bounds } : {}),
-        width_in:        widthIn,
-        height_in:       heightIn,
-        dpi,
-        show_text:       showPosterText !== false,
-        full_bleed:      true,
-        fade_style:      fadeStyle ?? 'fullbleed',
-        include_credits: includeCredits !== false,
-        minor_roads:     minorRoads === true,
-        preview_max_px:  pmx,
-      }, abort.signal);
-
-      clearTimeout(abortTimer);
-      if (res.headersSent) return; // 503 already sent by a race-condition timeout
-
-      const elapsed = Math.round((Date.now() - startMs) / 1_000);
-      const hash    = Math.random().toString(36).slice(2, 10);
-      const blob    = await put(`preview-${Date.now()}-${hash}.png`, png, {
-        access: 'public', contentType: 'image/png',
-        ...(process.env.BLOB_READ_WRITE_TOKEN ? { token: process.env.BLOB_READ_WRITE_TOKEN } : {}),
-      });
-      console.log(`[preview] Done in ${elapsed}s — ${blob.url} (${capW}×${capH}px)`);
-      res.json({ url: blob.url });
-    } catch (err: any) {
-      clearTimeout(abortTimer);
-      if (res.headersSent) return;
-      if (err?.code === 'ABORTED') {
-        const elapsed = Math.round((Date.now() - startMs) / 1_000);
-        console.warn(`[preview] Timed out after ${elapsed}s — returning 503`);
-        res.status(503).json({ error: 'Preview render timed out', hint: 'fall back to MapLibre snapshot' });
-        return;
-      }
-      console.error('[preview] Error:', err?.message || err);
-      res.status(500).json({ error: 'Preview render failed' });
-    }
+  console.error('[preview] rejected: Python OSM preview renderer is retired');
+  res.status(410).json({
+    error: 'Python OSM preview renderer is retired. Use the MapLibre editor snapshot.',
+    code: 'osm-engine-retired',
   });
 });
+
 
 // POST /fulfill — catalogue SKUs from data/catalogue-skus.csv, with the
 // pre-catalogue metafield path kept for orders that still omit sku.
@@ -1844,9 +1343,9 @@ interface FulfillBody {
   gelatoProductUid?:   string;
   shopifyVariantId?:   number;
   // Staff-reprint override for the editor's road-detail mode. When present it
-  // outranks the snapshot's persisted minorRoads: true forces the Detailed
-  // (OSM-engine) print path, false forces the legacy tile path. Absent ⇒ the
-  // snapshot decides. Additive — existing callers are unaffected.
+  // outranks the snapshot's persisted minorRoads. true replays Detailed
+  // through MapLibre when the style has layers. false forces Clean. Absent
+  // means the snapshot decides. A missing style fails either way.
   detailedRoads?:      boolean;
 }
 
@@ -1893,9 +1392,10 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   let plan = await planFulfillment(planInput({ dimensionsArePrintArea }));
 
   // Catalogue canvas still needs the snapshot before we ack. Legacy orders
-  // download it after 202, which is what they do today. A dry run downloads
-  // only to read dimensionsArePrintArea and to fail a bad configUrl; it does
-  // not render pixels and does not call a vendor.
+  // download it after 202, which is what they do today — the ack stays fast
+  // so a slow blob fetch cannot hold the Shopify webhook open. A dry run
+  // downloads only to read dimensionsArePrintArea and to fail a bad configUrl;
+  // it does not render pixels and does not call a vendor.
   let preloadedCfg: MapvibeConfigSnapshot | null = null;
   if ((plan.kind === 'accept' || plan.kind === 'dry-run') && plan.mode === 'catalogue' && plan.needsRender && configUrl) {
     preloadedCfg = await downloadConfigSnapshot(configUrl);
@@ -1924,6 +1424,28 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   }
 
   const decision = plan;
+  // Catalogue already downloaded the snapshot. Reject a missing style or an
+  // explicit OSM engine before the 202, and email. Legacy orders still ack
+  // first; the async render below raises the same alert and does not call a
+  // vendor. Holding the legacy ack open for the blob fetch would risk a
+  // Shopify webhook timeout and a second dispatch.
+  if (preloadedCfg && decision.needsRender) {
+    const styleRoute = resolveFulfillRoute(preloadedCfg, RENDER_ENGINE, detailedRoads);
+    if (styleRoute.engine === 'rejected') {
+      notifyRejectedFulfillRoute(styleRoute, {
+        externalId,
+        city: preloadedCfg.displayCity || preloadedCfg.city || undefined,
+        country: preloadedCfg.displayCountry || preloadedCfg.country || undefined,
+      });
+      res.status(422).json({
+        error: styleRoute.message,
+        reason: styleRoute.failReason,
+        formerRoute: styleRoute.reason,
+        styleState: styleRoute.styleState,
+      });
+      return;
+    }
+  }
   if (decision.mode === 'catalogue') {
     const gate = decision.gate;
     if (gate.vendor === 'printful' && !PRINTFUL_KEY) {
@@ -1985,14 +1507,22 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
             const dimsOverride = (widthCmOverride && heightCmOverride)
               ? { widthCm: widthCmOverride, heightCm: heightCmOverride }
               : undefined;
-            finalPngUrl = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
+            const rendered = await renderConfigToBlobUrl(configUrl, dimsOverride, detailedRoads);
+            if (rendered.ok) {
+              finalPngUrl = rendered.url;
+            } else if (rendered.kind === 'rejected') {
+              notifyRejectedFulfillRoute(rendered.route, {
+                externalId,
+                city: rendered.city,
+                country: rendered.country,
+              });
+            } else {
+              console.error(`[fulfill] Config render FAILED for ${externalId}`);
+              notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl failed for ${configUrl}`);
+            }
           },
         ));
-        if (!finalPngUrl) {
-          console.error(`[fulfill] Config render FAILED for ${externalId}`);
-          notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
-          return;
-        }
+        if (!finalPngUrl) return;
       }
       vendor = decision.resolvedProvider;
       gelatoUid = decision.gelatoProductUid;
@@ -2006,20 +1536,28 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
         await renderQueue.add(async () => memoryWatch.track(
           `fulfill ${externalId} ${accepted.sku} ${accepted.widthCm}×${accepted.heightCm}cm`,
           async () => {
-            finalPngUrl = await renderConfigToBlobUrl(
+            const rendered = await renderConfigToBlobUrl(
               configUrl!,
               { widthCm: accepted.widthCm, heightCm: accepted.heightCm },
               detailedRoads,
               preloadedCfg,
               printWindow,
             );
+            if (rendered.ok) {
+              finalPngUrl = rendered.url;
+            } else if (rendered.kind === 'rejected') {
+              notifyRejectedFulfillRoute(rendered.route, {
+                externalId,
+                city: rendered.city,
+                country: rendered.country,
+              });
+            } else {
+              console.error(`[fulfill] Config render FAILED for ${externalId} (${accepted.sku})`);
+              notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl failed for ${configUrl}`);
+            }
           },
         ));
-        if (!finalPngUrl) {
-          console.error(`[fulfill] Config render FAILED for ${externalId} (${accepted.sku})`);
-          notifyFulfillFail(externalId, 'config-render', `renderConfigToBlobUrl returned null for ${configUrl}`);
-          return;
-        }
+        if (!finalPngUrl) return;
       }
       vendor = accepted.vendor;
       gelatoUid = accepted.gelatoProductUid;
@@ -2121,122 +1659,15 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 });
 
 
-// ── OSM graph pre-warm endpoint ───────────────────────────────────────────────
-// Called by the studio the moment a city is selected (fire-and-forget from the
-// browser). Triggers the OSMnx graph fetch + disk-cache write without doing a
-// full render, so by the time the user clicks "Preview" (~10-60 s later) the
-// graph is already cached → first preview renders in ~3 s instead of 15-60 s.
+// POST /warm — retired with the Python OSM graph cache.
 app.post('/warm', (req: Request, res: Response): void => {
   if (!checkAuth(req, res)) return;
-  const { lat, lon, dist = 5000 } = req.body as { lat?: number; lon?: number; dist?: number };
-  if (!lat || !lon) { res.status(400).json({ error: 'lat and lon required' }); return; }
-  // Respond immediately — don't block the caller
-  res.json({ ok: true });
-  // Background: run a 1×1 px render just to prime the OSMnx graph cache.
-  // The render output is discarded; only the on-disk graph cache write matters.
-  void renderOsmPython({
-    lat,
-    lng: lon,
-    display_city: '',
-    display_country: '',
-    width_in: 1,
-    height_in: 1,
-    dpi: 10,          // 10 px — minimal matplotlib figure, negligible CPU
-    dist: Math.min(Number(dist), 20_000),
-    show_text: false,
-    no_fade: true,
-    minor_roads: false,
-  }, AbortSignal.timeout(120_000)).then(
-    ()  => console.log(`[warm] OSM graph cached for ${lat},${lon} dist=${dist}`),
-    (e) => console.log(`[warm] OSM graph warmup ended for ${lat},${lon}: ${(e as Error).message}`),
-  );
+  console.error('[warm] rejected: Python OSM graph warm-up is retired');
+  res.status(410).json({
+    error: 'Python OSM graph warm-up is retired. MapLibre does not use the OSMnx cache.',
+    code: 'osm-engine-retired',
+  });
 });
 
-app.listen(PORT, () => console.log(`MapVibe Render Service v3.5.0 on port ${PORT}`));
-
-
-// ── Startup city seed ──────────────────────────────────────────────────────────
-// On boot, pre-warm the OSMnx graph cache for the top 300 cities (defined in
-// python/top_cities.json) using the same low-DPI warm render as /warm.
-// Each city fires at 2-second intervals so Overpass is never hammered.
-// Cities already in the R2 / disk cache will complete in ~2s each (fast path).
-// The first 50 cities warm in ~2 min; all 300 in ~10 min in the background.
-interface SeedCity { city: string; country: string; lat: number; lon: number; dist?: number; }
-function runStartupCitySeed(): void {
-  const seedPath = join(__dirname, '..', 'python', 'top_cities.json');
-  let cities: SeedCity[];
-  try {
-    cities = JSON.parse(readFileSync(seedPath, 'utf-8')) as SeedCity[];
-  } catch (e) {
-    console.warn('[seed] top_cities.json not found or invalid — skipping startup seed:', (e as Error).message);
-    return;
-  }
-  console.log(`[seed] Startup city seed: ${cities.length} cities queued at 10s intervals, 600s timeout per city`);
-  let idx = 0;
-  function warmNext(): void {
-    if (idx >= cities.length) {
-      console.log('[seed] Startup city seed complete');
-      return;
-    }
-    const c = cities[idx++];
-    void renderOsmPython({
-      lat:             c.lat,
-      lng:             c.lon,
-      display_city:    '',
-      display_country: '',
-      width_in:        1,
-      height_in:       1,
-      dpi:             10,
-      dist:            Math.min(c.dist ?? 8000, 20_000),
-      show_text:       false,
-      no_fade:         true,
-      minor_roads:     false,
-    }, AbortSignal.timeout(600_000)).then(
-      () => console.log(`[seed] ✓ ${c.city}, ${c.country} (${idx}/${cities.length})`),
-      (e: Error) => console.log(`[seed] ✗ ${c.city}: ${e.message}`),
-    ).finally(() => setTimeout(warmNext, 10_000));
-  }
-  // Delay first warm by 15s to let the service fully boot before hitting Overpass.
-  setTimeout(warmNext, 15_000);
-}
-
-// ── Startup PBF graph prebuild ───────────────────────────────────────────────
-// Spawns prebuild_graphs.py immediately at boot (no delay) to write R2 L2
-// graph pickles for PBF regions ≤ 200 MB.  Smallest regions first:
-//   DC (7 MB)          → warm in ~30 s
-//   London / Paris     → warm in ~2–3 min
-//   Boston / Denver /… → warm in ~3–5 min
-// This runs in parallel with runStartupCitySeed() (Overpass path) — PBF
-// extractions never touch Overpass so there is no rate-limit concern.
-// Without this, the sequential Overpass seed reaches DC at position ~51
-// (10 s × 51 = 8.5 min) — long after the first user request might land.
-function runPrebuildGraphs(): void {
-  const prebuildScript = join(__dirname, '..', 'python', 'prebuild_graphs.py');
-  const child = spawn(
-    MAPVIBE_PYTHON,
-    [prebuildScript, '--workers', '2', '--max-size-mb', '300'],
-    { stdio: 'inherit', detached: false },
-  );
-  child.on('close', (code: number | null) => {
-    console.log(`[prebuild] graphs done (exit ${code ?? '?'})`);
-  });
-  child.on('error', (err: Error) => {
-    console.warn(`[prebuild] spawn error: ${err.message}`);
-  });
-}
-
-// ── Warm-up gate ────────────────────────────────────────────────────────────
-// The city seed (OSMnx/Overpass) and PBF prebuild (pyrosm graph extraction)
-// exist ONLY to warm the OSMnx graph cache. The PMTiles path reads tiles
-// directly from R2 and needs no warm-up whatsoever — every tile is already
-// addressable. Running these under USE_PMTILES=true is pure waste AND a
-// liability: production 2026-06-29 showed both daemons saturating the
-// container at boot, starving real preview requests until they hit the 34 s
-// deadline and returned 503. Gate them off entirely when PMTiles is live.
-const USE_PMTILES = (process.env.USE_PMTILES ?? '').toLowerCase() === 'true';
-if (USE_PMTILES) {
-  console.log('[startup] USE_PMTILES=true — skipping OSMnx city seed + PBF prebuild (PMTiles needs no warm-up)');
-} else {
-  runStartupCitySeed();
-  runPrebuildGraphs();
-}
+const listenPort = typeof PORT === 'string' ? parseInt(PORT, 10) : PORT;
+app.listen(listenPort, '0.0.0.0', () => console.log(`MapVibe Render Service on 0.0.0.0:${listenPort}`));

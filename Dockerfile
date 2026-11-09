@@ -10,12 +10,9 @@ ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MESA_LOADER_DRIVER_OVERRIDE=swrast
 ENV DISPLAY=:99
 
-# BUG 2 fix — UTF-8 end-to-end so the Python process reads/writes the source
-# and emits logs as UTF-8 (kills log mojibake like 1.0Ã1.0in / Done â, and
-# guarantees the renderer never re-corrupts the degree/copyright glyphs).
+# UTF-8 end-to-end so logs and poster glyphs are not mojibake.
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
-ENV PYTHONUTF8=1
 
 # ubuntu:24.04: glibc 2.39 + ICU 74 + libjpeg-turbo8 — exact ABI match for maplibre-gl-native 6.4.1 prebuilt
 # xvfb: virtual X11 framebuffer display (needed by X11/GLX backend; no physical display or GPU required)
@@ -31,37 +28,17 @@ RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
     xvfb \
     libuv1 \
     fonts-liberation fonts-dejavu-core \
-    python3-pip python3-venv \
-    libgeos-dev libproj-dev libgdal-dev \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 
-# ── Python OSM renderer venv ──────────────────────────────────────────────────
-COPY python/requirements.txt ./python/requirements.txt
-RUN python3 -m venv /opt/mapvibe-py \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir --upgrade pip \
-  && /opt/mapvibe-py/bin/pip install --no-cache-dir -r python/requirements.txt
-ENV MAPVIBE_PYTHON=/opt/mapvibe-py/bin/python3
-
 COPY fonts/ ./fonts/
 COPY assets/ ./assets/
 
 # Poster type is the Roboto files in assets/fonts (Bold 700, Regular 400,
-# Light 300) plus Roboto-LICENSE. Both engines open those files.
+# Light 300) plus Roboto-LICENSE. node-canvas opens those files.
 
-# ── Python OSM renderer ───────────────────────────────────────────────────────
-COPY python/ ./python/
-
-# Lightweight import check — verifies venv is healthy without any network I/O.
-# A full Paris render was here before; replaced because pyrosm (now installed)
-# activates the PBF tier and triggers a 3.8 GB Geofabrik download at build time
-# when R2 credentials are not available.
-RUN ${MAPVIBE_PYTHON} -c "\
-import osmnx, matplotlib, geopandas, shapely, PIL, pyrosm, boto3; \
-print('Python OSM renderer: all imports OK')\
-"
 COPY data/ ./data/
 COPY src/ ./src/
 RUN npx tsc

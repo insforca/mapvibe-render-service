@@ -239,14 +239,6 @@ describe('print window', () => {
     expect(out).toEqual({ x0: 0, x1: 18, y0: 0, y1: 24 });
   });
 
-  it('python helper matches the TypeScript expansion and never places an order', () => {
-    const script = join(ROOT, 'python', 'print_window.py');
-    const run = spawnSync('python3', [script, '--self-test'], { encoding: 'utf8' });
-    expect(run.status).toBe(0);
-    expect(run.stdout).toContain('ok');
-    const source = readFileSync(script, 'utf8');
-    expect(source).not.toMatch(/printful\.com|gelatoapis\.com|api\.printful/);
-  });
 });
 
 describe('sku-validate.py', () => {
