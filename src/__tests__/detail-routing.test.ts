@@ -1,52 +1,43 @@
 import { describe, it, expect } from 'vitest';
 import {
-  editorThemePaletteWarnings,
   hasUsableMapStyle,
+  rejectImageRender,
   resolveFulfillRoute,
-  themeJsonFromEditorTheme,
+  styleStateOf,
 } from '../detail-routing.js';
 
 const STYLE = { version: 8, layers: [{ id: 'water', type: 'fill' }] };
 
 const BOUNDS = { west: -74.063, south: 40.3078, east: -73.9953, north: 40.3767 };
 
-describe('resolveFulfillRoute — engine selection', () => {
-  it('default tile path is byte-for-byte unchanged (styleJson config, no detail)', () => {
-    const r = resolveFulfillRoute({ styleJson: {}, bounds: BOUNDS }, undefined);
+describe('resolveFulfillRoute — MapLibre when the editor style is usable', () => {
+  it('Clean with a real style stays on the tile path', () => {
+    const r = resolveFulfillRoute({ styleJson: STYLE, bounds: BOUNDS }, undefined);
+    expect(r).toMatchObject({
+      engine: 'maplibre',
+      minorRoads: false,
+      reason: 'default-tile-path',
+      styleState: 'usable',
+    });
+    expect(r.engine === 'maplibre' ? r.warning : undefined).toBeUndefined();
+  });
+
+  it('does not let RENDER_ENGINE=osm steal a usable styleJson', () => {
+    const r = resolveFulfillRoute({ styleJson: STYLE, bounds: BOUNDS }, 'osm');
     expect(r.engine).toBe('maplibre');
-    expect(r.minorRoads).toBe(false);
-    expect(r.warning).toBeUndefined();
-  });
-
-  it('keeps the pre-existing cfg.engine=osm rule', () => {
-    const r = resolveFulfillRoute({ engine: 'osm' }, undefined);
-    expect(r.engine).toBe('osm');
-    expect(r.reason).toBe('cfg-engine-osm');
-  });
-
-  it('keeps the pre-existing RENDER_ENGINE=osm legacy-config rule', () => {
-    expect(resolveFulfillRoute({}, 'osm').engine).toBe('osm');
-    // …but never steals styleJson configs (the 2026-08-04 #1086 incident rule)
-    expect(resolveFulfillRoute({ styleJson: {} }, 'osm').engine).toBe('maplibre');
+    expect(r.reason).toBe('default-tile-path');
   });
 
   it('routes Detailed snapshots that carry a style through MapLibre', () => {
     const r = resolveFulfillRoute({ styleJson: STYLE, minorRoads: true, bounds: BOUNDS }, undefined);
     expect(r).toMatchObject({ engine: 'maplibre', minorRoads: true, reason: 'detailed-style-parity' });
-    expect(r.warning).toBeUndefined();
+    expect(r.engine === 'maplibre' ? r.warning : 'unexpected').toBeUndefined();
   });
 
-  it('Detailed with bounds but no style stays on the OSM engine', () => {
-    const r = resolveFulfillRoute({ styleJson: {}, minorRoads: true, bounds: BOUNDS }, undefined);
-    expect(r).toMatchObject({ engine: 'osm', minorRoads: true, reason: 'detailed-osm-no-style' });
-    expect(hasUsableMapStyle({})).toBe(false);
-    expect(hasUsableMapStyle(STYLE)).toBe(true);
-  });
-
-  it('Detailed without bounds stays on the tile path with a loud warning', () => {
-    const r = resolveFulfillRoute({ styleJson: {}, minorRoads: true }, undefined);
+  it('Detailed without bounds stays on the tile path with a loud warning when the style is usable', () => {
+    const r = resolveFulfillRoute({ styleJson: STYLE, minorRoads: true }, undefined);
     expect(r.engine).toBe('maplibre');
-    expect(r.warning).toMatch(/no bounds/);
+    expect(r.engine === 'maplibre' && r.warning).toMatch(/no bounds/);
   });
 
   it('detailedRoads=true on a styled snapshot replays that style as Detailed', () => {
@@ -54,125 +45,152 @@ describe('resolveFulfillRoute — engine selection', () => {
     expect(r).toMatchObject({ engine: 'maplibre', minorRoads: true, reason: 'detailed-override' });
   });
 
-  it('detailedRoads=true with no style still uses the OSM engine', () => {
-    const r = resolveFulfillRoute({ styleJson: {}, bounds: BOUNDS }, undefined, true);
-    expect(r).toMatchObject({ engine: 'osm', minorRoads: true, reason: 'detailed-override-no-style' });
-  });
-
-  it('detailedRoads=false override forces the tile path on a Detailed snapshot', () => {
-    const r = resolveFulfillRoute({ styleJson: {}, minorRoads: true, bounds: BOUNDS }, undefined, false);
-    expect(r.engine).toBe('maplibre');
-  });
-
-  it('override on cfg.engine=osm snapshots controls minor roads, not the engine', () => {
-    expect(resolveFulfillRoute({ engine: 'osm' }, undefined, true).minorRoads).toBe(true);
-    expect(resolveFulfillRoute({ engine: 'osm', minorRoads: true }, undefined, false).minorRoads).toBe(false);
+  it('detailedRoads=false forces the Clean tile path on a styled Detailed snapshot', () => {
+    const r = resolveFulfillRoute({ styleJson: STYLE, minorRoads: true, bounds: BOUNDS }, undefined, false);
+    expect(r).toMatchObject({ engine: 'maplibre', minorRoads: false, reason: 'default-tile-path' });
   });
 });
 
-describe('themeJsonFromEditorTheme — nested editor palette derivation', () => {
-  // Order #1086's actual nested theme (Pastel Symmetry / coral family).
-  const WENDY_THEME = {
-    name: 'Pastel Symmetry',
-    map: {
-      land: '#FFF4F8',
-      water: '#B8D8EC',
-      parks: '#E8F0D8',
-      rail: '#F9A8D4',
-      roads: {
-        major: '#D4708A',
-        minor_high: '#E090A8',
-        minor_mid: '#EAA8BC',
-        minor_low: '#F0C0D0',
-      },
-    },
-    ui: { bg: '#FFF4F8', text: '#5C2040' },
-  };
-
-  it('derives the full engine palette from order #1086 theme', () => {
-    const tj = themeJsonFromEditorTheme(WENDY_THEME);
-    expect(tj).toMatchObject({
-      bg: '#FFF4F8',
-      text: '#5C2040',
-      water: '#B8D8EC',
-      parks: '#E8F0D8',
-      road_motorway: '#D4708A',
-      road_primary: '#E090A8',
-      // Secondary is painted with minor_high, the same colour as primary.
-      road_secondary: '#E090A8',
-      road_tertiary: '#EAA8BC',
-      road_residential: '#F0C0D0',
-      rail: '#F9A8D4',
+describe('resolveFulfillRoute — loud failure, no Python map', () => {
+  it('rejects explicit engine=osm even when a style is present', () => {
+    const r = resolveFulfillRoute({ engine: 'osm', styleJson: STYLE, bounds: BOUNDS }, undefined);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'osm-engine-retired',
+      reason: 'cfg-engine-osm',
+      styleState: 'usable',
     });
-    expect(tj?.water).toBe('#B8D8EC');
-    expect(tj?.road_secondary).not.toBe('#EAA8BC');
+    expect(r.engine === 'rejected' && r.message).toMatch(/retired/);
+    expect(JSON.stringify(r)).not.toContain('water');
   });
 
-  it('does not replace a missing water colour with land', () => {
-    const theme = {
-      name: 'Broken Water',
-      map: {
-        land: '#FFF4F8',
-        parks: '#E8F0D8',
-        roads: { major: '#D4708A', minor_high: '#E090A8' },
-      },
-      ui: { text: '#5C2040' },
-    };
-    const tj = themeJsonFromEditorTheme(theme);
-    expect(tj?.water).toBeUndefined();
-    expect(tj?.bg).toBe('#FFF4F8');
-    expect(tj?.road_secondary).toBe('#E090A8');
-    expect(editorThemePaletteWarnings(theme)).toEqual([
-      "theme 'Broken Water': map.water is missing — not substituting land",
-    ]);
-  });
-
-  it('forwards waterway, buildings, aeroway, and the casing colour when present', () => {
-    const tj = themeJsonFromEditorTheme({
-      ...WENDY_THEME,
-      map: {
-        ...WENDY_THEME.map,
-        waterway: '#99CCDD',
-        buildings: '#F0C8D8',
-        aeroway: '#E8F0D8',
-        roads: { ...WENDY_THEME.map.roads, outline: '#CCCCCC' },
-      },
+  it('rejects engine=osm with no style and records the style state', () => {
+    const missing = resolveFulfillRoute({ engine: 'osm' }, undefined);
+    expect(missing).toMatchObject({
+      engine: 'rejected',
+      failReason: 'osm-engine-retired',
+      reason: 'cfg-engine-osm',
+      styleState: 'missing',
     });
-    expect(tj).toMatchObject({
-      waterway: '#99CCDD',
-      buildings: '#F0C8D8',
-      aeroway: '#E8F0D8',
-      road_outline: '#CCCCCC',
+    const empty = resolveFulfillRoute({ engine: 'osm', styleJson: { layers: [] } }, undefined, true);
+    expect(empty).toMatchObject({
+      engine: 'rejected',
+      failReason: 'osm-engine-retired',
+      reason: 'cfg-engine-osm',
+      styleState: 'empty',
+      minorRoads: true,
     });
   });
 
-  it('falls back per-field when road tiers are missing', () => {
-    const tj = themeJsonFromEditorTheme({
-      map: { land: '#111', roads: { major: '#eee' } },
-      ui: { text: '#fff' },
+  it('rejects RENDER_ENGINE=osm legacy configs that have no styleJson', () => {
+    const r = resolveFulfillRoute({}, 'osm');
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'env-osm-legacy-config',
+      styleState: 'missing',
     });
-    expect(tj).toMatchObject({
-      road_primary: '#eee',
-      road_secondary: '#eee',
-      road_residential: '#eee',
-      rail: '#eee',
-    });
-    expect(tj?.water).toBeUndefined();
-    expect(editorThemePaletteWarnings({
-      name: 'Major Only',
-      map: { land: '#111', roads: { major: '#eee' } },
-      ui: { text: '#fff' },
-    })).toEqual([
-      "theme 'Major Only': map.water is missing — not substituting land",
-      "theme 'Major Only': roads.minor_high is missing — secondary uses major, not minor_mid",
-    ]);
   });
 
-  it('returns undefined for malformed or absent themes', () => {
-    expect(themeJsonFromEditorTheme(undefined)).toBeUndefined();
-    expect(themeJsonFromEditorTheme(null)).toBeUndefined();
-    expect(themeJsonFromEditorTheme('coral')).toBeUndefined();
-    expect(themeJsonFromEditorTheme({ map: { land: '#111' } })).toBeUndefined();
-    expect(themeJsonFromEditorTheme({ map: { roads: {} }, ui: { text: '#fff' } })).toBeUndefined();
+  it('Detailed with bounds but no style is missing-style, former route detailed-osm-no-style', () => {
+    const r = resolveFulfillRoute({ styleJson: {}, minorRoads: true, bounds: BOUNDS }, undefined);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'detailed-osm-no-style',
+      styleState: 'empty',
+      minorRoads: false,
+    });
+    expect(hasUsableMapStyle({})).toBe(false);
+    expect(hasUsableMapStyle({ layers: [] })).toBe(false);
+    expect(hasUsableMapStyle(STYLE)).toBe(true);
+    expect(styleStateOf(null)).toBe('missing');
+    expect(styleStateOf('coral')).toBe('unusable');
+  });
+
+  it('detailedRoads=true with no style names the override route', () => {
+    const r = resolveFulfillRoute({ styleJson: {}, bounds: BOUNDS }, undefined, true);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'detailed-override-no-style',
+      styleState: 'empty',
+    });
+  });
+
+  it('Detailed without bounds and without a style fails instead of warning', () => {
+    const r = resolveFulfillRoute({ minorRoads: true }, undefined);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'detailed-without-bounds',
+      styleState: 'missing',
+    });
+  });
+
+  it('a Clean snapshot with an empty style fails; the former route is the tile path', () => {
+    const r = resolveFulfillRoute({ styleJson: {}, bounds: BOUNDS }, undefined);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'default-tile-path',
+      styleState: 'empty',
+    });
+  });
+
+  it('an empty style under RENDER_ENGINE=osm is not the legacy env route (styleJson is present)', () => {
+    const r = resolveFulfillRoute({ styleJson: {} }, 'osm');
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'default-tile-path',
+      styleState: 'empty',
+    });
+  });
+
+  it('env osm plus Detailed bounds and a missing style keeps the legacy env route', () => {
+    const r = resolveFulfillRoute({ minorRoads: true, bounds: BOUNDS }, 'osm');
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'env-osm-legacy-config',
+      styleState: 'missing',
+    });
+  });
+
+  it('detailedRoads=false cannot print an empty style', () => {
+    const r = resolveFulfillRoute({ styleJson: {}, minorRoads: true, bounds: BOUNDS }, undefined, false);
+    expect(r).toMatchObject({
+      engine: 'rejected',
+      failReason: 'missing-style',
+      reason: 'default-tile-path',
+    });
+  });
+});
+
+describe('rejectImageRender — /render does not spawn Python and does not email', () => {
+  it('rejects engine=osm before considering the style', () => {
+    const r = rejectImageRender({ engine: 'osm', styleJson: STYLE });
+    expect(r).toMatchObject({
+      status: 400,
+      failReason: 'osm-engine-retired',
+      styleState: 'usable',
+    });
+    expect(r?.error).toMatch(/retired/);
+  });
+
+  it('rejects a missing or empty styleJson', () => {
+    expect(rejectImageRender({ styleJson: undefined })).toMatchObject({
+      status: 400,
+      failReason: 'missing-style',
+      styleState: 'missing',
+    });
+    expect(rejectImageRender({ styleJson: {} })?.styleState).toBe('empty');
+    expect(rejectImageRender({ styleJson: { layers: [] } })?.error).toMatch(/empty/);
+  });
+
+  it('accepts a usable style and ignores the fact that no engine field was sent', () => {
+    expect(rejectImageRender({ styleJson: STYLE })).toBeNull();
+    expect(rejectImageRender({ engine: 'maplibre', styleJson: STYLE })).toBeNull();
   });
 });

@@ -20,6 +20,8 @@ Body:
 ```
 Response: `image/png`. Max single-axis 14,400 px; tiled internally above.
 
+`styleJson` must be a MapLibre style with at least one layer. `engine: "osm"`, a missing `styleJson`, or a style with no layers returns **400** and does not render. There is no Python/OSM fallback, and this endpoint does not send the failure email (`/render` is also used for image tests). `osmTheme`, `osmDist`, and `themeJson` are ignored. `RENDER_ENGINE` is not an engine switch.
+
 ### `POST /fulfill`
 
 Auth: same as `/render`.
@@ -52,7 +54,9 @@ Optional:
 - `dimensionsArePrintArea` — also read from the snapshot. When true, canvas bounds are already the print sheet and the wrap is not applied again. The file is still rendered at the catalogue print-area centimetres. When the flag is absent, bounds are the visible face and the wrap is applied once. The service previously ignored this flag and always expanded.
 - `lineItems` — `{ "sku": "MVS-P-1824" }`. One distinct SKU. Two distinct SKUs is 422.
 - `dryRun` / `tags` — see above.
-- `detailedRoads` — staff reprint override for the editor road-detail mode.
+- `detailedRoads` — staff reprint override for the editor road-detail mode. Clean and Detailed both replay the editor `styleJson` through MapLibre. A snapshot with no usable style, or `engine: "osm"`, fails instead of drawing the old Python map.
+
+`POST /preview` and `POST /warm` return **410**. They only existed to spawn the Python renderer.
 
 ### `GET /health`
 
@@ -105,6 +109,9 @@ Legacy forms are not in the table. While `LEGACY_SKU_PASSTHROUGH` is on they use
 | `CATALOGUE_ENABLE_OPTIONAL` | No | `"true"` also routes the disabled premium rows |
 | `LEGACY_SKU_PASSTHROUGH` | No | Default on. The literal `false` makes a missing SKU or a legacy form return 422 instead of the metafield path. |
 | `ALERT_WEBHOOK_URL`     | No      | Optional Slack/Discord/Sentry-Webhook URL. When set, `/fulfill` terminal failures POST a `{ text, event }` JSON payload there in addition to the `[FULFILL-FAIL]` log line. Best-effort; webhook errors are swallowed. |
+| `ALERT_EMAIL`           | No      | Destination for the same failures via Resend (set this to Ivan's address). Best-effort: a missing address still fails the order and still logs `[FULFILL-FAIL]`. |
+| `RESEND_API_KEY`        | With `ALERT_EMAIL` | Resend API key. Already the production email path; no new variable. |
+| `ALERT_FROM_EMAIL`      | No      | Sender. Defaults to `alerts@mapvibestudio.com`. |
 | `BLOB_READ_WRITE_TOKEN` | If using `configUrl` path | Vercel Blob token for uploads |
 | `MAPTILER_API_KEY`      | No      | Tile fallback when style references MapTiler |
 | `MAX_CONCURRENT`        | No      | Concurrent renders (default 4) |
@@ -126,7 +133,9 @@ Reasons:
 - `catalogue-unavailable` — the CSV could not be loaded and the SKU is not a legacy passthrough (500)
 - `routing-lookup-error` — legacy path, Shopify metafield lookup failed, strict mode (422)
 - `routing-unresolved` — legacy path, no `pod_partner` metafield and the label is not canvas (422)
-- `config-render` — config snapshot failed to download (502, before 202) or the render returned null after 202
+- `config-render` — config snapshot failed to download (502, before 202) or the MapLibre render returned no PNG after 202
+- `missing-style` — the snapshot has no usable `styleJson` (missing, or no layers). The order is not printed. Catalogue orders, which already downloaded the snapshot, return **422** before the 202 and email. Legacy orders (no `sku`, the live webhook shape) still ack **202** so the Shopify webhook is not held open, then fail in the async path with the same alert and do not call Gelato or Printful. Detail includes `styleState` (`missing` or `empty`), `city` when the snapshot has one, and `formerRoute` (the Python route that used to run, such as `detailed-osm-no-style` or `env-osm-legacy-config`)
+- `osm-engine-retired` — the snapshot set `engine` to `osm`. Not printed, even when a style is present. Same 422-vs-async split as `missing-style`
 - `missing-gelato-uid` — Gelato was selected but no product UID was available
 - `gelato-api` — Gelato v4 returned non-2xx
 - `gelato-uncaught` — exception thrown inside the Gelato fetch
@@ -147,6 +156,6 @@ The same `[FULFILL-FAIL]` tag is used by `mapvibe-studio`'s `shopify-order-webho
 
 Production deploys come from Railway's GitHub integration, with **Wait for CI** on. A push to `main` is built and deployed by Railway after the GitHub Actions checks on that commit succeed (`test` and `npm audit`). Railway auto-detects the Dockerfile. The container healthcheck targets `/health`.
 
-Service variables, including `USE_PMTILES`, are configured on the Railway service and stay there across deploys.
+Service variables are configured on the Railway service and stay there across deploys. MapLibre prints from OpenFreeMap tiles (`tiles.openfreemap.org`), not from the Python PMTiles/PBF cache. `USE_PMTILES` is no longer read; leaving it set is harmless. `RENDER_ENGINE=osm` is not an engine switch. It only labels the old route when a snapshot has no `styleJson` (`env-osm-legacy-config`). A usable style is still MapLibre. `RESEND_API_KEY` and `ALERT_EMAIL` must already be set for Ivan to get the failure email; the order still fails if they are absent.
 
 Do not add an Actions workflow that runs `railway up` on push to `main`. A failing job on the same commit makes Railway skip its native deployment of that commit.

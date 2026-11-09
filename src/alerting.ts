@@ -35,7 +35,9 @@ export type FulfillFailReason =
   | 'sku-unmapped'           // SKU is not in the catalogue; line was not forwarded
   | 'sku-disabled'           // SKU is in the catalogue but switched off (optional premium)
   | 'sku-unrenderable'       // catalogue size cannot be rendered single-pass, or canvas has no config
-  | 'catalogue-unavailable'; // catalogue file failed to load
+  | 'catalogue-unavailable'  // catalogue file failed to load
+  | 'missing-style'          // snapshot has no styleJson layers; Python/OSM is not a fallback
+  | 'osm-engine-retired';    // request asked for the retired Python/OSM renderer
 
 // ── Resend client — module-level singleton ────────────────────────────────────
 const RESEND_API_KEY   = process.env.RESEND_API_KEY    ?? '';

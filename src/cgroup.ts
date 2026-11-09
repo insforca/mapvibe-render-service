@@ -2,17 +2,12 @@
  *
  * WHY THIS EXISTS (2026-09-02):
  *
- * `process.memoryUsage()` measures the CALLING process only. The OSM render
- * path does its work in a spawned Python child (`spawn(MAPVIBE_PYTHON, …)`),
- * where the 144.5 MP matplotlib canvas is actually allocated. So the in-process
- * instrument reported ~103 MB for a full print-size 70×100 render — a true
- * measurement of the wrong process, and blind to the allocation that would
- * actually OOM the container.
+ * `process.memoryUsage()` measures the CALLING process only. MapLibre's native
+ * GL buffers and a large print canvas are not fully visible there, and the
+ * kernel OOM killer compares the cgroup total against the limit.
  *
- * cgroup accounting covers EVERY process in the container — Node and the Python
- * child together — which is also exactly what the kernel OOM killer compares
- * against the limit. That makes it both the ceiling source and the only way to
- * see the child's footprint.
+ * cgroup accounting covers every process in the container, which is what the
+ * OOM killer sees. That makes it both the ceiling source and the footprint.
  *
  * DESIGN NOTES, each learned rather than assumed:
  *

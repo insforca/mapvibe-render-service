@@ -137,7 +137,7 @@ export class MemoryWatch {
     endRssBytes: number | null;
     startedAt: number;
     durationMs: number | null;
-    /** Container-level baseline/peak/end — covers the Python child too. */
+    /** Container-level baseline/peak/end — includes native MapLibre allocations. */
     baselineContainerBytes: number | null;
     peakContainerBytes: number | null;
     endContainerBytes: number | null;
@@ -192,8 +192,8 @@ export class MemoryWatch {
 
   /**
    * Read container usage FRESH and fold it into the sampled high-water mark.
-   * This is the number that covers the Python render child, which
-   * process.memoryUsage() cannot see. Silent on failure and skipped entirely
+   * This is the container total, which process.memoryUsage() cannot see
+   * (native GL buffers live outside the V8 heap). Silent on failure and skipped entirely
    * when no cgroup usage file is readable — instrumentation must never break a
    * render, and must never invent a number it could not read.
    */
@@ -272,9 +272,9 @@ export class MemoryWatch {
             `(delta held ${toMb(end.rssBytes - r.baselineRssBytes)} MB, ` +
             `${r.durationMs} ms, ${this.intervalMs} ms sampling)`,
         );
-        // Container line is the load-bearing one for the OSM path: the render
-        // allocates in a Python child that the in-process numbers above cannot
-        // see. Printed separately so the two are never confused.
+        // Container line is the load-bearing one: native MapLibre buffers are
+        // outside the V8 heap the in-process numbers above report. Printed
+        // separately so the two are never confused.
         if (this.cgroup.usageAvailable) {
           const kernelPeak = this.cgroup.kernelPeakAvailable ? readKernelPeak().bytes : null;
           const peakContainer = maxOrNull(r.peakContainerBytes, kernelPeak);
@@ -379,8 +379,8 @@ export class MemoryWatch {
           }
         : null,
       /**
-       * Container accounting — the only view that covers the Python render
-       * child. Every number carries its source so a reader never has to guess
+       * Container accounting — the view that includes native allocations.
+       * Every number carries its source so a reader never has to guess
        * which file it came from, and `null` means "could not read", never 0.
        */
       container: {
