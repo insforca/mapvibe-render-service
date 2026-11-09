@@ -901,6 +901,80 @@ def _pmtiles_tier_width(hw: str) -> float:
 
 # ââ Gradient fade âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
+def _apply_editor_fade(ax, color: str, fade_style: str, height_px: float, zorder: int = 10):
+    """Bottom (and, for fade_style 'text', top) wash matching applyFades.
+
+    Drawn in axes data coordinates so it sits under the poster type (zorder 11).
+    """
+    from poster_text import (
+        BOTTOM_FADE_HEIGHT,
+        TEXT_GRADIENT_HEIGHT,
+        TEXT_GRADIENT_STOPS,
+        TEXT_SOLID_HEIGHT,
+        TEXT_TOP_HEIGHT,
+        TEXT_TOP_STOPS,
+        bottom_fade_alpha,
+        fade_kind,
+        fade_stop_alpha,
+    )
+
+    kind = fade_kind(fade_style)
+    if kind == 'none':
+        return
+    rgb = mcolors.to_rgb(color)
+    y0, y1 = ax.get_ylim()
+    span = y1 - y0
+    x0, x1 = ax.get_xlim()
+
+    def paint(alphas_bottom_to_top, y_lo, y_hi):
+        rows = len(alphas_bottom_to_top)
+        if rows < 1 or y_lo == y_hi:
+            return
+        img = np.zeros((rows, 2, 4), dtype=float)
+        img[:, :, 0] = rgb[0]
+        img[:, :, 1] = rgb[1]
+        img[:, :, 2] = rgb[2]
+        img[:, :, 3] = np.asarray(alphas_bottom_to_top, dtype=float)[:, None]
+        ax.imshow(
+            img,
+            extent=[x0, x1, y_lo, y_hi],
+            aspect='auto',
+            origin='lower',
+            interpolation='bilinear',
+            zorder=zorder,
+        )
+
+    def column(n, sample):
+        n = max(2, int(n))
+        return [sample(i / (n - 1)) for i in range(n)]
+
+    if kind == 'text':
+        top_h = span * TEXT_TOP_HEIGHT
+        top_rows = max(2, int(round(abs(height_px) * TEXT_TOP_HEIGHT)))
+        # Row 0 sits at the bottom of the top band (clear); the last row is the sheet top.
+        top_alphas = column(top_rows, lambda u: fade_stop_alpha(TEXT_TOP_STOPS, 1.0 - u))
+        paint(top_alphas, y1 - top_h, y1)
+
+        solid_h = span * TEXT_SOLID_HEIGHT
+        grad_h = span * TEXT_GRADIENT_HEIGHT
+        grad_rows = max(2, int(round(abs(height_px) * TEXT_GRADIENT_HEIGHT)))
+        # TEXT_GRADIENT_STOPS: 0 at the top of the gradient, 1 at its bottom.
+        grad_alphas = column(grad_rows, lambda u: fade_stop_alpha(TEXT_GRADIENT_STOPS, 1.0 - u))
+        paint(grad_alphas, y0 + solid_h, y0 + solid_h + grad_h)
+        solid_rows = max(2, int(round(abs(height_px) * TEXT_SOLID_HEIGHT)))
+        paint([1.0] * solid_rows, y0, y0 + solid_h)
+        return
+
+    band = span * BOTTOM_FADE_HEIGHT
+    rows = max(2, int(round(abs(height_px) * BOTTOM_FADE_HEIGHT)))
+    # u=0 is the bottom edge of the sheet.
+    alphas = column(
+        rows,
+        lambda u: bottom_fade_alpha(1.0 - BOTTOM_FADE_HEIGHT * u),
+    )
+    paint(alphas, y0, y0 + band)
+
+
 def create_gradient_fade(ax, color: str, location: str = 'bottom', zorder: int = 10):
     vals = np.linspace(0, 1, 256).reshape(-1, 1)
     gradient = np.hstack((vals, vals))
@@ -1340,6 +1414,12 @@ def render(params: dict) -> bytes:
     show_text       = bool(params.get('show_text', True))
     full_bleed      = bool(params.get('full_bleed', True))
     no_fade         = bool(params.get('no_fade', True))
+    # fade_style wins over no_fade. fullbleed/default = editor bottom 14%.
+    fade_style      = params.get('fade_style', None)
+    include_credits = params.get('include_credits', True)
+    if include_credits is None:
+        include_credits = True
+    include_credits = bool(include_credits)
     minor_roads     = bool(params.get('minor_roads', False))
     # `preset` supersedes `minor_roads` per PRESETS-SPEC.md. Server accepts
     # both for one release as a backwards-compat shim; preset wins when both
@@ -2043,10 +2123,16 @@ def render(params: dict) -> bytes:
         ax.set_xlim(crop_xlim)
         ax.set_ylim(crop_ylim)
 
-    # ââ 9. Gradient fades (only if not full-bleed / no_fade) âââââââââââââââââ
-    if not no_fade:
-        create_gradient_fade(ax, theme['gradient_color'], location='bottom', zorder=10)
-        create_gradient_fade(ax, theme['gradient_color'], location='top', zorder=10)
+    # ââ 9. Gradient fade ââââââââââââââââââââââââââââââââââââââââââ
+    # Same curves as the Clean/Detailed canvas (applyFades). fade_style from
+    # the request wins. The old top+bottom vignette remains only for a caller
+    # that still sets no_fade false and sends no fade_style.
+    fade_color = theme.get('gradient_color') or theme.get('bg') or '#F3EFE6'
+    if fade_style is not None:
+        _apply_editor_fade(ax, fade_color, fade_style, height_in * dpi)
+    elif not no_fade:
+        create_gradient_fade(ax, fade_color, location='bottom', zorder=10)
+        create_gradient_fade(ax, fade_color, location='top', zorder=10)
 
     # ââ 10. Typography âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
     if show_text:
@@ -2055,13 +2141,12 @@ def render(params: dict) -> bytes:
         # Same strip as mapvibe.css .mvs-poster-* and src/poster-text.ts:
         # 1.15em line boxes, editor margins, content-box rule. No halo.
         from PIL import ImageFont
-        from poster_text import layout_poster_strip
+        from poster_text import attribution_color, credit_layout, layout_poster_strip
 
         short_in = min(width_in, height_in)
         city_pt = 0.0694 * short_in * 72.0
         country_pt = 0.0255 * short_in * 72.0
         coords_pt = 0.0162 * short_in * 72.0
-        credit_pt = (30.0 / 3600.0) * short_in * 72.0
         width_pt = width_in * 72.0
         height_pt = height_in * 72.0
 
@@ -2156,9 +2241,18 @@ def render(params: dict) -> bytes:
                 color=theme['text'], linewidth=laid['rule_linewidth'],
                 solid_capstyle='butt', zorder=11)
 
-        ax.text(0.98, 0.02, '\u00a9 OpenStreetMap contributors',
-                transform=ax.transAxes, color=theme['text'], alpha=0.5,
+        # Same two lines and anchors as drawPosterText. y is the glyph bottom.
+        credit = credit_layout(width_pt, height_pt)
+        credit_y = credit['inset'] / height_pt
+        credit_pt = credit['size']
+        credit_color = attribution_color(theme.get('bg') or fade_color)
+        ax.text(credit['right'] / width_pt, credit_y, '\u00a9 OpenStreetMap contributors',
+                transform=ax.transAxes, color=credit_color, alpha=credit['alpha'],
                 ha='right', va='bottom', fontproperties=fp('light', credit_pt), zorder=11)
+        if include_credits:
+            ax.text(credit['left'] / width_pt, credit_y, 'created with mapvibestudio.com',
+                    transform=ax.transAxes, color=credit_color, alpha=credit['alpha'],
+                    ha='left', va='bottom', fontproperties=fp('light', credit_pt), zorder=11)
 
     # ââ 11. Save to buffer âââââââââââââââââââââââââââââââââââââââââââââââââââ
     buf = io.BytesIO()

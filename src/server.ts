@@ -529,10 +529,16 @@ interface RenderParams {
    */
   visibleFraction?: { w: number; h: number };
   /**
-   * Editor Clean / Detailed toggle. false (Clean, the MapLibre path) applies
-   * the trunk/primary opacity curves. true leaves the style-file curve.
+   * Editor Clean / Detailed toggle. Detailed (`true`) leaves every opacity
+   * curve alone. Clean leaves them alone too when `editorStyle` is set.
    */
   minorRoads?: boolean;
+  /**
+   * The styleJson is the editor's `map.getStyle()` snapshot (or a stored
+   * copy of one). Trunk/primary opacity is left as the snapshot painted it.
+   * Omit this only for a style that never went through the editor.
+   */
+  editorStyle?: boolean;
   /**
    * Internal map container in pixels (map.getContainer() before the CSS
    * 1/5.5 shrink). Absent on current snapshots; derived from bounds + zoom.
@@ -616,10 +622,12 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
 
   let rawRgba: Buffer;
   try {
-    // Clean (arteries) gets the editor's setPaintProperty opacity curves.
     // Line widths are not multiplied: the style already stores the overzoom boost.
+    // An editor snapshot keeps its own trunk/primary opacity. The Clean curve
+    // is installed only when the request did not carry an editor style.
     map.load(preparePrintStyle(styleJson as { layers?: Array<{ id?: string; type?: string; paint?: Record<string, unknown> }> }, {
       minorRoads: params.minorRoads === true,
+      editorStyle: params.editorStyle === true,
     }));
 
     rawRgba = await new Promise<Buffer>((resolve, reject) => {
@@ -860,13 +868,21 @@ interface OsmRenderParams {
   show_text?:      boolean;
   full_bleed?:     boolean;
   no_fade?:        boolean;
+  /**
+   * Editor fade name. `fullbleed` / `default` draw the bottom 14% ease-in.
+   * `none` draws nothing. `text` is the legacy top-and-bottom wash.
+   * When set, this wins over `no_fade`.
+   */
+  fade_style?:     string;
+  /** Left credit. The OSM copyright line is drawn either way when text is on. */
+  include_credits?: boolean;
   minor_roads?:    boolean;
   preview_max_px?: number;     // cap long edge of matplotlib figure; Python scales width_in/height_in
 }
 
 /**
  * Render a city map poster using the Python/OSMnx pipeline (maptoposter).
- * Full bleed, no fade, minor roads hidden — museum-grade output at target DPI.
+ * Full bleed. Fade follows `fade_style` (editor bottom ease-in unless `none`).
  *
  * DPI contract:
  *   • Standard sizes  → 400 DPI (caller must pass actualDpi)
@@ -1238,7 +1254,8 @@ async function renderConfigToBlobUrl(
       dpi:             actualDpi,
       show_text:       cfg.showPosterText  !== false,
       full_bleed:      true,
-      no_fade:         true,
+      fade_style:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
+      include_credits: cfg.includeCredits !== false,
       // Road-detail mode resolved by resolveFulfillRoute(): the snapshot's
       // persisted toggle, unless a FulfillBody.detailedRoads override is
       // present. Orders without the field keep the historical behaviour.
@@ -1273,9 +1290,10 @@ async function renderConfigToBlobUrl(
     // Snapshot flag, not the route flag. detailed-without-bounds stays on
     // this path with route.minorRoads false, but the editor was in
     // neighbourhood mode and its opacity curve must be left alone.
-    // Styled Detailed (including the override) passes true so the Clean
-    // arteries curves are not written over the neighbourhood curve.
+    // The stored styleJson is the editor snapshot either way, so trunk/primary
+    // opacity is not rewritten with the Clean curve.
     minorRoads: useDetailedParity ? true : cfg.minorRoads === true,
+    editorStyle: true,
     ...(typeof cfg.mapWidth === 'number' && typeof cfg.mapHeight === 'number'
       ? { mapWidth: cfg.mapWidth, mapHeight: cfg.mapHeight }
       : {}),
@@ -1609,7 +1627,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
           dpi,
           show_text:       showPosterText !== false,
           full_bleed:      true,
-          no_fade:         true,
+          fade_style:      fadeStyle ?? 'fullbleed',
+          include_credits: includeCredits !== false,
           // Editor's Clean / Detailed pill — when true, Python skips the
           // major-road custom_filter and renders residential / service /
           // footway too. Defaults to the historical false when the studio
@@ -1623,6 +1642,8 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
         png = await renderPngInternal({
           styleJson, center, zoom, bounds, bearing, pitch, width, height, printMode, overlay,
           minorRoads: minorRoads === true,
+          // styleJson on this route is the editor's map.getStyle() snapshot.
+          editorStyle: true,
           ...(typeof mapWidth === 'number' && typeof mapHeight === 'number' ? { mapWidth, mapHeight } : {}),
         });
       }
@@ -1686,7 +1707,7 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
     width  = 2400,
     height = 3000,
     displayCity, displayCountry,
-    showPosterText,
+    showPosterText, fadeStyle, includeCredits,
     osmTheme, osmDist, themeJson,
     // Framing rectangle, forwarded to Python when the caller supplies it.
     bounds,
@@ -1757,7 +1778,8 @@ app.post('/preview', async (req: Request, res: Response): Promise<void> => {
         dpi,
         show_text:       showPosterText !== false,
         full_bleed:      true,
-        no_fade:         true,
+        fade_style:      fadeStyle ?? 'fullbleed',
+        include_credits: includeCredits !== false,
         minor_roads:     minorRoads === true,
         preview_max_px:  pmx,
       }, abort.signal);
