@@ -45,7 +45,9 @@ Why: such orders can be paid with no map design and get rejected by the webhook.
 
 **The Amazon framing affiliate link is also used for the oversized premium tier**, which has no vendor frames.
 
-Why: the Amazon affiliate needs three sales by about 2026-12-02.
+Why: buyers of the oversized sizes will likely want to frame them, so Ivan expects the best affiliate commission there.
+
+Note: the Amazon affiliate needs three sales by about 2026-12-02, otherwise a new code is needed.
 
 ## 2026-10-24
 
