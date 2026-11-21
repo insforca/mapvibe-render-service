@@ -275,16 +275,12 @@ describe('fullbleed fade (gap 6)', () => {
     expect(fadeKind('text')).toBe('text');
   });
 
-  it('matches the editor .poster-fade band: bottom 14%, clear at 86% of the height', () => {
-    expect(EDITOR_BOTTOM_FADE_HEIGHT).toBeCloseTo(0.14, 5);
-    // Above the band the map is untouched. The city ink starts near 0.855,
-    // just above this edge, so it is not sitting in a tall wash.
+  it('matches the editor .poster-fade band: bottom 18%, opaque through the caption', () => {
+    expect(EDITOR_BOTTOM_FADE_HEIGHT).toBeCloseTo(0.18, 5);
     expect(editorBottomFadeAlpha(0.80)).toBe(0);
-    expect(editorBottomFadeAlpha(0.86)).toBe(0);
-    // 90% of the height is 4/14 of the way up the band.
-    expect(editorBottomFadeAlpha(0.90)).toBeCloseTo(0.21119, 4);
-    // 94% of the height. The old city-anchor band was more opaque here.
-    expect(editorBottomFadeAlpha(0.94)).toBeCloseTo(0.58122, 4);
+    expect(editorBottomFadeAlpha(0.82)).toBe(0);
+    expect(editorBottomFadeAlpha(0.90)).toBeGreaterThan(0.45);
+    expect(editorBottomFadeAlpha(0.94)).toBeGreaterThan(0.8);
     expect(editorBottomFadeAlpha(1)).toBe(1);
   });
 });

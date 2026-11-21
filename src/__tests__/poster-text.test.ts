@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  EDITOR_POSTER_SHORT_PX,
   fmtCoords,
   layoutPosterText,
   type GlyphBox,
@@ -132,7 +131,7 @@ function editorLayout(width: number, height: number, textLayout = 'centered') {
 }
 
 describe('editor poster strip', () => {
-  it('matches the desktop Lisbon line boxes, ink, rule, and city tracking', () => {
+  it('matches the compact Lisbon line boxes, ink, rule, and city tracking', () => {
     // 18×24, the aspect the editor DOM was measured on. Fractions are of height
     // except the rule width and the city shift, which are of width.
     const laid = editorLayout(5400, 7200);
@@ -141,31 +140,42 @@ describe('editor poster strip', () => {
     const near = (actual: number, expected: number, tol: number, label: string) => {
       expect(Math.abs(actual - expected), `${label}: ${actual.toFixed(4)} vs ${expected}`).toBeLessThanOrEqual(tol);
     };
-    near(laid.stripTop / h, 0.8366, 0.002, 'strip top');
-    near(laid.city.boxTop / h, 0.8459, 0.002, 'city box top');
-    near((laid.city.boxTop + laid.city.boxHeight) / h, 0.9057, 0.002, 'city box bottom');
-    near((laid.city.y - laid.city.ascent) / h, 0.855, 0.002, 'city ink top');
-    near((laid.city.y + laid.city.descent) / h, 0.893, 0.002, 'city ink bottom');
     const ruleTop = laid.divider.y - laid.divider.halfStroke;
-    near(ruleTop / h, 0.910, 0.002, 'rule');
     const cityInkBottom = laid.city.y + laid.city.descent;
-    near((ruleTop - cityInkBottom) / h, 0.0171, 0.002, 'city-to-rule gap');
-    near((laid.country.y - laid.country.ascent) / h, 0.922, 0.002, 'country ink top');
-    near((laid.country.y + laid.country.descent) / h, 0.935, 0.002, 'country ink bottom');
-    near((laid.coords.y - laid.coords.ascent) / h, 0.953, 0.002, 'coords ink top');
-    near((laid.coords.y + laid.coords.descent) / h, 0.963, 0.002, 'coords ink bottom');
-    const css = Math.min(w, h) / EDITOR_POSTER_SHORT_PX;
-    near(laid.divider.width / w, 0.20 * (w - 2 * 18 * css) / w, 0.0001, 'rule width');
-    near(laid.divider.width / w, 0.185, 0.001, 'rule is 18.5% of the poster');
-    // Trailing 0.45em letter-spacing pulls the centred city left by 0.225em (~1.5% of width).
-    near((w / 2 - laid.city.x) / w, 0.0156, 0.001, 'city tracking shift');
-    expect(laid.city.x).toBeCloseTo(w / 2 - 0.225 * laid.city.size, 4);
+    const fractions = {
+      strip: laid.stripTop / h,
+      cityBoxTop: laid.city.boxTop / h,
+      cityBoxBottom: (laid.city.boxTop + laid.city.boxHeight) / h,
+      cityInkTop: (laid.city.y - laid.city.ascent) / h,
+      cityInkBottom: cityInkBottom / h,
+      rule: ruleTop / h,
+      gap: (ruleTop - cityInkBottom) / h,
+      countryInkTop: (laid.country.y - laid.country.ascent) / h,
+      countryInkBottom: (laid.country.y + laid.country.descent) / h,
+      coordsInkTop: (laid.coords.y - laid.coords.ascent) / h,
+      coordsInkBottom: (laid.coords.y + laid.coords.descent) / h,
+    };
+    near(fractions.strip, 0.8988, 0.002, 'strip top');
+    near(fractions.cityBoxTop, 0.9078, 0.002, 'city box top');
+    near(fractions.cityBoxBottom, 0.9515, 0.002, 'city box bottom');
+    near(fractions.cityInkTop, 0.9139, 0.002, 'city ink top');
+    near(fractions.cityInkBottom, 0.9439, 0.002, 'city ink bottom');
+    near(fractions.rule, 0.9545, 0.002, 'rule');
+    near(fractions.gap, 0.0106, 0.002, 'city-to-rule gap');
+    near(fractions.countryInkTop, 0.9613, 0.002, 'country ink top');
+    near(fractions.countryInkBottom, 0.9718, 0.002, 'country ink bottom');
+    near(fractions.coordsInkTop, 0.9789, 0.002, 'coords ink top');
+    near(fractions.coordsInkBottom, 0.9856, 0.002, 'coords ink bottom');
+    near(laid.divider.width / w, 0.12 * (1 - 2 * 0.055), 0.0001, 'rule width');
+    // Trailing 0.18em letter-spacing pulls the centred city left by 0.09em.
+    near((w / 2 - laid.city.x) / w, (0.09 * laid.city.size) / w, 0.001, 'city tracking shift');
+    expect(laid.city.x).toBeCloseTo(w / 2 - 0.09 * laid.city.size, 4);
   });
 
   it('keeps the same fractions on the measured editor poster and clears the credit', () => {
     const laid = editorLayout(482.390625, 643.1875);
-    expect(laid.stripTop / 643.1875).toBeCloseTo(0.8366, 3);
-    expect(laid.city.boxTop / 643.1875).toBeCloseTo(0.8459, 3);
+    expect(laid.stripTop / 643.1875).toBeCloseTo(0.8988, 3);
+    expect(laid.city.boxTop / 643.1875).toBeCloseTo(0.9078, 3);
     const creditTop = laid.credit.y - 1.04 * laid.credit.size;
     expect(creditTop).toBeGreaterThan(laid.coords.y + laid.coords.descent);
     expect(laid.credit.y).toBeLessThanOrEqual(643.1875);
@@ -188,22 +198,21 @@ describe('poster text vertical rhythm', () => {
   it('scales type with the poster instead of holding a 0.45 floor', () => {
     const preview = layout(900, 1200, 'LISBON', 'PORTUGAL');
     expect(preview.ds).toBeCloseTo(900 / 3600, 6);
-    expect(preview.city.size).toBeCloseTo(0.0694 * 900, 4);
-    expect(preview.city.spacing).toBe(0.45);
-    expect(preview.country.spacing).toBe(0);
-    expect(preview.coords.spacing).toBe(0);
-    expect(preview.country.size).toBeCloseTo(0.0255 * 900, 4);
-    expect(preview.coords.size).toBeCloseTo(0.0162 * 900, 4);
+    expect(preview.city.size).toBeCloseTo(0.054 * 900, 4);
+    expect(preview.city.spacing).toBe(0.18);
+    expect(preview.country.spacing).toBe(0.16);
+    expect(preview.coords.spacing).toBe(0.08);
+    expect(preview.country.size).toBeCloseTo(0.019 * 900, 4);
+    expect(preview.coords.size).toBeCloseTo(0.012 * 900, 4);
     const print = layout(7200, 9600, 'LISBON', 'PORTUGAL');
     expect(print.ds).toBeCloseTo(2, 6);
-    expect(print.city.size).toBeCloseTo(0.0694 * 7200, 4);
+    expect(print.city.size).toBeCloseTo(0.054 * 7200, 4);
   });
 
-  it('stacks the strip under the measured city, rule at 20% of width', () => {
+  it('stacks the strip under the measured city, rule at 12% of the content box', () => {
     for (const [name, w, h] of SHEETS) {
       const laid = layout(w, h, 'LISBON', 'PORTUGAL');
-      const css = Math.min(w, h) / EDITOR_POSTER_SHORT_PX;
-      expect(laid.divider.width, name).toBeCloseTo(0.20 * (w - 2 * 18 * css), 4);
+      expect(laid.divider.width, name).toBeCloseTo(0.12 * (w - 2 * 0.055 * w), 4);
       const cityBottom = laid.city.y + laid.city.descent;
       const ruleTop = laid.divider.y - laid.divider.halfStroke;
       const ruleBottom = laid.divider.y + laid.divider.halfStroke;

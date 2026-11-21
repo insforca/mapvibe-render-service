@@ -64,18 +64,18 @@ export function fadeKind(fs: string | undefined | null): FadeKind {
  * bottom slice; the stops below are fractions of that slice, not of the sheet.
  * `linear-gradient(to top, …)` so stop 0 is the bottom edge.
  */
-export const EDITOR_BOTTOM_FADE_HEIGHT = 0.14;
+export const EDITOR_BOTTOM_FADE_HEIGHT = 0.18;
 
+/** Same stops as mapvibe-studio CAPTION_FADE_STOPS. t = 0 is the bottom edge. */
 export const EDITOR_BOTTOM_FADE_STOPS: ReadonlyArray<readonly [number, number]> = [
   [0, 1],
-  [0.12, 0.94],
-  [0.26, 0.8],
-  [0.4, 0.62],
-  [0.54, 0.43],
-  [0.66, 0.27],
-  [0.78, 0.14],
-  [0.88, 0.055],
-  [0.95, 0.014],
+  [0.1, 0.98],
+  [0.22, 0.94],
+  [0.36, 0.84],
+  [0.48, 0.68],
+  [0.6, 0.46],
+  [0.74, 0.24],
+  [0.88, 0.08],
   [1, 0],
 ];
 
