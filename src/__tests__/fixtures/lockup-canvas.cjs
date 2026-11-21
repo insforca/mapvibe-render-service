@@ -50,8 +50,9 @@ const density = [300, 400].map(weight => {
   return alpha;
 });
 const draws = {};
-for (const id of [undefined, 'roboto', 'space-plex', 'picker-over-space-plex']) {
+for (const id of [undefined, 'roboto', 'space-plex', 'picker-over-space-plex', 'blank-picker']) {
   const picker = id === 'picker-over-space-plex';
+  const blank = id === 'blank-picker';
   const calls = [];
   const capture = new Proxy(ctx, {
     get(target, key) {
@@ -62,7 +63,7 @@ for (const id of [undefined, 'roboto', 'space-plex', 'picker-over-space-plex']) 
     set(target, key, value) { target[key] = value; return true; },
   });
   drawPosterText(capture, 900, 1200, {}, 40.7128, -74.006, 'NEW YORK',
-    'UNITED STATES', picker ? 'Lato' : '', true, true, 'centered', picker ? 'space-plex' : id);
+    'UNITED STATES', picker ? 'Lato' : blank ? '   ' : '', true, true, 'centered', (picker || blank) ? 'space-plex' : id);
   draws[id ?? 'absent'] = calls;
 }
 console.log(JSON.stringify({ widths, fingerprints, density, draws }));

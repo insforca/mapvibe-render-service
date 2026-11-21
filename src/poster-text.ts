@@ -393,13 +393,15 @@ export function drawPosterText(
   // A picker font chosen by the customer always wins: it keeps the legacy
   // layout and fallbacks, so print matches what the editor showed. The
   // lockup id only replaces the default (Roboto) when no picker font is set.
-  const selectedLockup: LockupFont = fontFamily ? 'roboto' : resolveLockupFont(lockupFont);
+  // A blank or whitespace-only fontFamily means "no picker font".
+  const picker = (fontFamily || '').trim();
+  const selectedLockup: LockupFont = picker ? 'roboto' : resolveLockupFont(lockupFont);
   const spacePlex = selectedLockup === 'space-plex';
-  const titleFamily = spacePlex ? '"Space Grotesk"' : fontFamily
-    ? '"' + fontFamily + '",Roboto,sans-serif'
+  const titleFamily = spacePlex ? '"Space Grotesk"' : picker
+    ? '"' + picker + '",Roboto,sans-serif'
     : 'Roboto';
-  const lightFamily = spacePlex ? '"IBM Plex Mono Light"' : fontFamily
-    ? '"' + fontFamily + '","Roboto Light",Roboto,sans-serif'
+  const lightFamily = spacePlex ? '"IBM Plex Mono Light"' : picker
+    ? '"' + picker + '","Roboto Light",Roboto,sans-serif'
     : '"Roboto Light",Roboto,sans-serif';
 
   const coordsFamily = spacePlex ? '"IBM Plex Mono"' : titleFamily;

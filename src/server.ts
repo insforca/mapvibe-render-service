@@ -1021,7 +1021,7 @@ async function renderConfigToBlobUrl(
     overlay: {
       displayCity:    cfg.displayCity    ?? '',
       displayCountry: cfg.displayCountry ?? '',
-      fontFamily:     cfg.fontFamily     ?? '',
+      fontFamily:     (cfg.fontFamily ?? '').trim(),
       lockupFont:     resolveLockupFont(cfg.lockupFont),
       showPosterText: cfg.showPosterText !== false,
       fadeStyle:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
@@ -1171,7 +1171,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
     (displayCity || displayCountry || showPosterText !== false) ? {
       displayCity:    displayCity    ?? '',
       displayCountry: displayCountry ?? '',
-      fontFamily:     fontFamily     ?? '',
+      fontFamily:     String(fontFamily ?? '').trim(),
       lockupFont:     resolveLockupFont(lockupFont),
       showPosterText: showPosterText !== false,
       fadeStyle:      fadeStyle      ?? 'default',

@@ -87,6 +87,8 @@ describe('versioned poster lockup', () => {
       const picked = result.draws['picker-over-space-plex'];
       expect(picked[0].font).toContain('"Lato",Roboto');
       expect(picked.some((d: any) => /Space Grotesk|Plex/.test(d.font))).toBe(false);
+      // Whitespace is not a picker font: the lockup default applies.
+      expect(result.draws['blank-picker']).toEqual(result.draws['space-plex']);
       const draws = result.draws['space-plex'];
       expect(draws[0].font).toBe('700 62.46px "Space Grotesk"');
       expect(draws.find((d: any) => d.text === 'UNITED STATES').font).toBe('300 22.95px "IBM Plex Mono Light"');
