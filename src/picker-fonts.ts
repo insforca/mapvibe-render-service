@@ -1,32 +1,34 @@
-/** Offline picker catalogue. See assets/fonts/picker/SOURCES.md for provenance and omissions. */
+/** Offline picker catalogue. See assets/fonts/picker/SOURCES.md for provenance. */
 const catalogue = [
-  ['Montserrat', 'Montserrat', [300, 400, 700]],
-  ['Playfair Display', 'PlayfairDisplay', [400, 700]],
-  ['Oswald', 'Oswald', [300, 400, 700]],
-  ['Source Sans Pro', 'SourceSansPro', [300, 400, 700]],
-  ['Raleway', 'Raleway', [300, 400, 700]],
-  ['Lato', 'Lato', [300, 400, 700]],
-  ['Merriweather', 'Merriweather', [300, 400, 700]],
-  ['Bebas neue', 'BebasNeue', [400]],
+  ['Montserrat', 'Montserrat', [300, 400, 700], 'ttf'],
+  ['Playfair Display', 'PlayfairDisplay', [400, 700], 'ttf'],
+  ['Oswald', 'Oswald', [300, 400, 700], 'ttf'],
+  ['Source Sans Pro', 'SourceSansPro', [300, 400, 700], 'ttf'],
+  ['Raleway', 'Raleway', [300, 400, 700], 'ttf'],
+  ['Lato', 'Lato', [300, 400, 700], 'ttf'],
+  ['Merriweather', 'Merriweather', [300, 400, 700], 'ttf'],
+  ['Noto Sans JP', 'NotoSansJP', [300, 400, 700], 'otf'],
+  ['Bebas neue', 'BebasNeue', [400], 'ttf'],
 ] as const;
 
-export const PICKER_FONTS = catalogue.map(([value, stem, weights]) => ({
+export const PICKER_FONTS = catalogue.map(([value, stem, weights, extension]) => ({
   value,
-  faces: weights.map(weight => ({
-    family: `MapVibe Picker ${stem} ${weight}`,
-    weight: String(weight),
-    staticFile: `picker/${stem}-${weight === 300 ? 'Light' : weight === 700 ? 'Bold' : 'Regular'}.ttf`,
-    variableFile: `picker/${stem}-${weight === 300 ? 'Light' : weight === 700 ? 'Bold' : 'Regular'}.ttf`,
-  })),
+  faces: weights.map(weight => {
+    const file = `picker/${stem}-${weight === 300 ? 'Light' : weight === 700 ? 'Bold' : 'Regular'}.${extension}`;
+    return {
+      family: `MapVibe Picker ${stem} ${weight}`,
+      weight: String(weight),
+      staticFile: file,
+      variableFile: file,
+    };
+  }),
 }));
 
 export function resolvePickerFont(value: string) {
   const name = (value || '').trim();
   const font = PICKER_FONTS.find(f => f.value.toLowerCase() === name.toLowerCase());
   if (!font && name && name.toLowerCase() !== 'roboto') {
-    console.warn(name.toLowerCase() === 'noto sans jp'
-      ? '[fonts] Noto Sans JP is blocked pending a static TTF source; falling back to Roboto'
-      : '[fonts] Unknown picker family; falling back to Roboto');
+    console.warn('[fonts] Unknown picker family; falling back to Roboto');
   }
   return font;
 }

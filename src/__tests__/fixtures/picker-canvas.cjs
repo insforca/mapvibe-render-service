@@ -24,11 +24,17 @@ for (const { family, weight, staticFile } of BUNDLED_FONTS) {
 
 const { PICKER_FONTS, pickerFamily } = loadTs(path.resolve('src/picker-fonts.ts'));
 const ctx = createCanvas(1200, 200).getContext('2d');
-const sample = 'Hamburgefonts0123456789';
+const latinSample = 'Hamburgefonts0123456789';
 const fingerprints = PICKER_FONTS.flatMap(font => font.faces.map(face => {
+ const sample = latinSample + (face.staticFile.endsWith('.otf') ? '\u6771\u4eac\u65e5\u672c\u8a9e\u304b\u306a\u30ab\u30ca' : '');
  ctx.font = face.weight + ' 100px "' + face.family + '"';
  const advances = [...sample].map(ch => ctx.measureText(ch).width);
- return { file: face.staticFile, family: face.family, weight: face.weight, advances };
+ ctx.clearRect(0, 0, 1200, 200);
+ ctx.fillText(face.staticFile.endsWith('.otf') ? '\u6771\u4eac\u65e5\u672c\u8a9e\u304b\u306a\u30ab\u30ca' : latinSample, 0, 120);
+ const pixels = ctx.getImageData(0, 0, 1200, 200).data;
+ let density = 0;
+ for (let i = 3; i < pixels.length; i += 4) density += pixels[i] / 255;
+ return { sample, density, file: face.staticFile, family: face.family, weight: face.weight, advances };
 }));
 const draws = {};
 for (const font of [...PICKER_FONTS.map(f => f.value), 'bEbAs NeUe', 'Unknown Font']) {

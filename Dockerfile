@@ -38,8 +38,8 @@ COPY assets/ ./assets/
 
 # Poster type is bundled in assets/fonts: legacy Roboto plus Space Grotesk
 # Bold, IBM Plex Mono Light/Regular and the supported picker faces, with licences
-# and pinned SOURCES.md. Noto Sans JP remains blocked; see picker/SOURCES.md.
-# node-canvas opens the original TTF files directly.
+# and pinned SOURCES.md, including static CFF OTF Noto Sans JP 300/400/700.
+# node-canvas opens the original TTF/OTF files via Pango and Fontconfig.
 
 COPY data/ ./data/
 COPY src/ ./src/

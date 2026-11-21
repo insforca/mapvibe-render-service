@@ -43,11 +43,12 @@ The new baseline factors are 0.921em (city) and 0.950em (country/coordinates),
 using hhea metrics and explicit 1.15em line boxes. Legacy Roboto retains
 its historical 0.916796875em baseline for existing-order parity.
 
-Follow-up: bundling all nine picker fonts needs pinned files for every
-used weight/style, licence and source/hash records, startup registrations
-(separate Light aliases where needed), matching editor assets, and offline
-coverage/parity tests. `ensureFont` still downloads other picker families
-from Google Fonts at runtime; that behavior is unchanged here.
+All nine picker families are bundled offline with per-weight aliases, pinned
+source hashes and OFL licences in `assets/fonts/picker/SOURCES.md`. Noto Sans JP
+uses official static CFF OTFs (300/400/700); the other picker faces use static
+TTFs. All faces register at startup for single and tiled renders; unknown values
+warn and use Roboto. Picker overrides also take precedence over `space-plex`.
+Matching editor assets and browser parity remain separate work.
 
 `styleJson` must be a MapLibre style with at least one layer. `engine: "osm"`, a missing `styleJson`, or a style with no layers returns **400** and does not render. There is no Python/OSM fallback, and this endpoint does not send the failure email (`/render` is also used for image tests). `osmTheme`, `osmDist`, and `themeJson` are ignored. `RENDER_ENGINE` is not an engine switch.
 

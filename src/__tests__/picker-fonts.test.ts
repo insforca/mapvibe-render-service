@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PICKER_FONTS, pickerFamily, resolvePickerFont } from '../picker-fonts.js';
 import manifest from '../../assets/fonts/picker/manifest.json';
 
-// Unkerned advance fingerprints derived independently from each original TTF.
+// Unkerned advance fingerprints derived independently from each original SFNT (TTF or CFF OTF).
 function fontTables(b: Buffer) {
   const t: Record<string, number> = {};
   for (let i = 0; i < b.readUInt16BE(4); i++) {
@@ -46,25 +46,30 @@ function advances(b: Buffer, sample: string) {
 
 describe('pinned offline picker faces', () => {
   it('pins source bytes and licences and contains only real static weights', () => {
-    expect(manifest.filter(f => f.file.endsWith('.ttf'))).toHaveLength(21);
+    expect(manifest.filter(f => /\.(ttf|otf)$/.test(f.file))).toHaveLength(24);
+    expect(manifest.filter(f => f.file.endsWith('.otf'))).toHaveLength(3);
     for (const f of manifest) {
       const b = readFileSync(resolve('assets/fonts/picker', f.file));
       expect(b.length, f.file).toBe(f.bytes);
       expect(createHash('sha256').update(b).digest('hex'), f.file).toBe(f.sha256);
-      expect(f.url).toMatch(/google\/fonts\/[a-f0-9]{40}\//);
-      if (!f.file.endsWith('.ttf')) continue;
+      expect(f.url).toMatch(/(?:google\/fonts|notofonts\/noto-cjk)\/[a-f0-9]{40}\//);
+      if (!/\.(ttf|otf)$/.test(f.file)) continue;
       const t = fontTables(b);
       expect(t.fvar, f.file).toBeUndefined();
+      if (f.file.endsWith('.otf')) {
+        expect(b.toString('ascii', 0, 4)).toBe('OTTO');
+        expect(t['CFF '], f.file).toBeGreaterThan(0);
+        expect(t.glyf, f.file).toBeUndefined();
+      }
       const face = PICKER_FONTS.flatMap(f => f.faces).find(face => face.staticFile === 'picker/' + f.file)!;
       expect(b.readUInt16BE(t['OS/2'] + 4), f.file).toBe(Number(face.weight));
     }
   });
-  it('matches picker values case-insensitively and warns for unknown/blocked values', () => {
+  it('matches picker values case-insensitively and warns for unknown values', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     for (const font of PICKER_FONTS) expect(resolvePickerFont(' ' + font.value.toUpperCase() + ' ')).toBe(font);
-    expect(resolvePickerFont('Noto Sans JP')).toBeUndefined();
     expect(resolvePickerFont('Unknown Font')).toBeUndefined();
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
   });
   it('selects every real face by its advance fingerprint and uses the right family for every role', () => {
@@ -78,11 +83,14 @@ describe('pinned offline picker faces', () => {
         env.PANGOCAIRO_BACKEND = 'fc'; env.FONTCONFIG_FILE = config;
       }
       const result = JSON.parse(execFileSync(process.execPath, [resolve('src/__tests__/fixtures/picker-canvas.cjs')], { env, encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'pipe'] }));
-      expect(result.fingerprints).toHaveLength(21);
+      expect(result.fingerprints).toHaveLength(24);
       for (const f of result.fingerprints) {
-        const expected = advances(readFileSync(resolve('assets/fonts', f.file)), 'Hamburgefonts0123456789');
+        const expected = advances(readFileSync(resolve('assets/fonts', f.file)), f.sample);
         f.advances.forEach((w: number, i: number) => expect(Math.abs(w - expected[i]), `${f.family} glyph ${i}`).toBeLessThan(0.02));
       }
+      const notoDensity = result.fingerprints.filter((f: any) => f.file.endsWith('.otf'));
+      expect(notoDensity.find((f: any) => f.weight === '700').density).toBeGreaterThan(
+        notoDensity.find((f: any) => f.weight === '300').density * 1.4);
       for (const font of PICKER_FONTS) {
         const fingerprints = result.fingerprints.filter((f: any) => font.faces.some(face => face.staticFile === f.file));
         for (let i = 0; i < fingerprints.length; i++) {
