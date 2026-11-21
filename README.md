@@ -20,6 +20,35 @@ Body:
 ```
 Response: `image/png`. Max single-axis 14,400 px; tiled internally above.
 
+Optional poster field (also persisted at the top level of design config snapshots):
+`lockupFont: "space-plex" | "roboto"`. New designs should explicitly save
+`"space-plex"`: Space Grotesk Bold 700 city, IBM Plex Mono Light 300 country,
+IBM Plex Mono Regular 400 coordinates and credits, served from bundled TTFs.
+Missing fields remain Roboto for existing-order parity; unknown values warn and
+fall back to Roboto. The legacy `fontFamily` picker override still works on the
+Roboto path; an explicit `space-plex` selects the fixed families above.
+The render service cannot infer whether an unversioned request is a new design;
+the studio must persist the id when it creates new designs.
+
+Typography parity: the 900px font sheet records `NEW YORK` at 306.4287px
+in browser canvas versus 305.4277px in Pango. Pango kerns across spaces
+(`W `: −0.375px, ` Y`: −0.625px); measuring separate words reproduces the
+browser canvas advance within 0.5px. The sheet's DOM inline width minus
+eight trailing-inclusive spacing gaps gives 305.4409px, matching Pango.
+No artificial 1px correction is applied. Country advance matches within
+0.006px. Offline tests retain the browser measurements from
+`scripts/font-sheet/out/metrics.json` in a small fixture and check actual
+canvas advances, file hashes, and distinct Plex Light/Regular raster density.
+The new baseline factors are 0.921em (city) and 0.950em (country/coordinates),
+using hhea metrics and explicit 1.15em line boxes. Legacy Roboto retains
+its historical 0.916796875em baseline for existing-order parity.
+
+Follow-up: bundling all nine picker fonts needs pinned files for every
+used weight/style, licence and source/hash records, startup registrations
+(separate Light aliases where needed), matching editor assets, and offline
+coverage/parity tests. `ensureFont` still downloads other picker families
+from Google Fonts at runtime; that behavior is unchanged here.
+
 `styleJson` must be a MapLibre style with at least one layer. `engine: "osm"`, a missing `styleJson`, or a style with no layers returns **400** and does not render. There is no Python/OSM fallback, and this endpoint does not send the failure email (`/render` is also used for image tests). `osmTheme`, `osmDist`, and `themeJson` are ignored. `RENDER_ENGINE` is not an engine switch.
 
 ### `POST /fulfill`
