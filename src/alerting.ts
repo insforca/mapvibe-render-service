@@ -24,6 +24,7 @@ import { createHash }  from 'crypto';
 import { Resend }       from 'resend';
 
 export type FulfillFailReason =
+  | 'dispatch-held'          // vendor dispatch paused; requires an upstream/manual re-trigger
   | 'config-render'
   | 'missing-gelato-uid'
   | 'gelato-api'
@@ -62,6 +63,22 @@ export function notifyFulfillFail(
   reason:     FulfillFailReason,
   detail:     unknown,
 ): void {
+  sendFulfillAlert(externalId, reason, detail);
+}
+
+/** Only identifiers and fixed instructions: never pass an order payload here. */
+export function notifyFulfillHeld(orderId: string, lineItem: string): void {
+  sendFulfillAlert(orderId, 'dispatch-held',
+    'Order was NOT sent to the vendor. Re-trigger this order line after FULFILL_DRY_RUN is set back to false.',
+    lineItem);
+}
+
+function sendFulfillAlert(
+  externalId: string,
+  reason: FulfillFailReason,
+  detail: unknown,
+  lineItem?: string,
+): void {
   const truncated = String(
     detail instanceof Error
       ? detail.message
@@ -70,7 +87,10 @@ export function notifyFulfillFail(
         : JSON.stringify(detail),
   ).slice(0, 400);
 
-  const event = { externalId, reason, detail: truncated, at: new Date().toISOString() };
+  const event = { externalId, ...(lineItem !== undefined ? { lineItem } : {}), reason, detail: truncated, at: new Date().toISOString() };
+  const subject = reason === 'dispatch-held'
+    ? `[dispatch-held] Order ${externalId}, line ${lineItem}: NOT sent to vendor; re-trigger after FULFILL_DRY_RUN=false`
+    : `[FULFILL-FAIL] Order ${externalId} – ${reason}`;
   console.error(`[FULFILL-FAIL] ${JSON.stringify(event)}`);
 
   const ALERT_WEBHOOK_URL = process.env.ALERT_WEBHOOK_URL ?? '';
@@ -84,7 +104,8 @@ export function notifyFulfillFail(
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
-            text: `[FULFILL-FAIL] externalId=${externalId} reason=${reason} detail=${truncated}`,
+            text: reason === 'dispatch-held' ? `${subject}: ${truncated}`
+              : `[FULFILL-FAIL] externalId=${externalId} reason=${reason} detail=${truncated}`,
             event,
           }),
           signal: AbortSignal.timeout(3_000),
@@ -105,7 +126,7 @@ export function notifyFulfillFail(
           {
             from:    `MapVibe Alerts <${ALERT_FROM_EMAIL}>`,
             to:      [ALERT_EMAIL],
-            subject: `[FULFILL-FAIL] Order ${externalId} – ${reason}`,
+            subject,
             html: `
               <p style="font-family:sans-serif;color:#333">
                 A fulfillment failure was detected on <strong>MapVibe Studio</strong>.
@@ -113,6 +134,7 @@ export function notifyFulfillFail(
               <table style="font-family:sans-serif;border-collapse:collapse;width:100%;max-width:560px">
                 <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600;width:30%">Order ID</td>
                     <td style="padding:6px 12px">${externalId}</td></tr>
+                ${lineItem !== undefined ? `<tr><td>Line item ID</td><td>${lineItem}</td></tr>` : ''}
                 <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Reason</td>
                     <td style="padding:6px 12px">${reason}</td></tr>
                 <tr><td style="padding:6px 12px;background:#f5f5f5;font-weight:600">Detail</td>
@@ -125,7 +147,7 @@ export function notifyFulfillFail(
               </p>
             `,
           },
-          { idempotencyKey: idempotencyKey(externalId, reason) },
+          { idempotencyKey: idempotencyKey(lineItem === undefined ? externalId : JSON.stringify([externalId, lineItem]), reason) },
         );
       } catch {
         // Email sending is best-effort; non-fatal.

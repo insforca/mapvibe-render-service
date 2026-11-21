@@ -53,7 +53,8 @@ import {
 } from './request-id.js';
 import { fulfillPrintful } from './printful.js';
 import { fulfillGelato } from './gelato.js';
-import { assertDispatchAllowed, DispatchHeldError, warnIfDispatchHeld } from './vendor-dispatch.js';
+import { warnIfDispatchHeld } from './vendor-dispatch.js';
+import { rejectHeldFulfillment } from './fulfill-dispatch.js';
 import {
   rejectImageRender,
   resolveFulfillRoute,
@@ -1380,18 +1381,11 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   }
 
   const decision = plan;
-  try {
-    assertDispatchAllowed({
-      vendor: decision.mode === 'catalogue' ? decision.gate.vendor : decision.resolvedProvider,
-      orderId: externalId,
-      lineItem: decision.mode === 'catalogue' ? decision.gate.sku : String(variantId ?? 'unspecified'),
-    });
-  } catch (err) {
-    if (!(err instanceof DispatchHeldError)) throw err;
-    // No durable fulfillment queue exists here. Non-2xx keeps this retryable upstream.
-    res.status(503).json({ ...err.result, success: false, accepted: false, externalId });
-    return;
-  }
+  if (rejectHeldFulfillment({
+    vendor: decision.mode === 'catalogue' ? decision.gate.vendor : decision.resolvedProvider,
+    orderId: externalId,
+    lineItem: decision.mode === 'catalogue' ? decision.gate.sku : String(variantId ?? 'unspecified'),
+  }, res)) return;
   // Catalogue already downloaded the snapshot. Reject a missing style or an
   // explicit OSM engine before the 202, and email. Legacy orders still ack
   // first; the async render below raises the same alert and does not call a

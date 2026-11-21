@@ -17,7 +17,7 @@ vi.mock('resend', () => ({
   }),
 }));
 
-import { notifyFulfillFail } from '../alerting.js';
+import { notifyFulfillFail, notifyFulfillHeld } from '../alerting.js';
 
 describe('notifyFulfillFail', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -124,5 +124,31 @@ describe('notifyFulfillFail', () => {
     const parsed = JSON.parse(logged.replace('[FULFILL-FAIL] ', ''));
     expect(parsed.detail.length).toBe(400);
     spy.mockRestore();
+  });
+
+  it('sends identifier-only held alerts through both transports, with a key per order line', async () => {
+    process.env.ALERT_WEBHOOK_URL = 'https://hooks.example.com/test';
+    process.env.ALERT_EMAIL = 'alerts@example.test';
+    process.env.RESEND_API_KEY = 'offline-test';
+    notifyFulfillHeld('order-1', 'line-1');
+    notifyFulfillHeld('order-1', 'line-2');
+    notifyFulfillHeld('order-1', 'line-1');
+    await vi.runAllTimersAsync();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(mockEmailsSend).toHaveBeenCalledTimes(3);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.event).toEqual({
+      externalId: 'order-1', lineItem: 'line-1', reason: 'dispatch-held',
+      detail: 'Order was NOT sent to the vendor. Re-trigger this order line after FULFILL_DRY_RUN is set back to false.',
+      at: expect.any(String),
+    });
+    const mail = mockEmailsSend.mock.calls[0][0];
+    expect(mail.subject).toBe('[dispatch-held] Order order-1, line line-1: NOT sent to vendor; re-trigger after FULFILL_DRY_RUN=false');
+    expect(body.text).toContain(mail.subject);
+    expect(mail.html).toContain(body.event.detail);
+    expect(mail.html).toContain('line-1');
+    const keys = mockEmailsSend.mock.calls.map(call => call[1].idempotencyKey);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[0]).toBe(keys[2]);
   });
 });

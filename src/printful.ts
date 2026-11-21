@@ -114,8 +114,8 @@ export async function resolveCatalogPlacement(
 
 // ── Existing-order discovery + suffix-retry externalId resolution ─────────
 
-export async function findExistingPrintfulOrder(externalId: string, lineItem = 'unspecified'): Promise<PrintfulOrderMatch | null> {
-  const context: DispatchContext = { vendor: 'printful', orderId: externalId, lineItem };
+export async function findExistingPrintfulOrder(externalId: string, lineItem = 'unspecified', orderId = externalId): Promise<PrintfulOrderMatch | null> {
+  const context: DispatchContext = { vendor: 'printful', orderId, lineItem };
   try {
     const res = await vendorFetch(
       context,
@@ -144,7 +144,8 @@ export async function findExistingPrintfulOrder(externalId: string, lineItem = '
 export async function resolveExternalId(baseId: string, lineItem = 'unspecified'): Promise<string | null> {
   let candidate = baseId;
   for (let attempt = 0; attempt < 10; attempt++) {
-    const existing = await findExistingPrintfulOrder(candidate, lineItem);
+    // Alert against the original order, even while probing a suffixed vendor ID.
+    const existing = await findExistingPrintfulOrder(candidate, lineItem, baseId);
     if (!existing) return candidate;
     if (!existing.isTerminal) {
       console.log(`[fulfill] Active Printful order ${existing.id} (${existing.status}) already exists for ${candidate} — skipping`);

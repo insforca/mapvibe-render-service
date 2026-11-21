@@ -7,8 +7,14 @@ import {
   resolveCatalogPlacement, resolveExternalId, tryUpdateExistingOrder,
 } from '../printful.js';
 import { DispatchHeldError, warnIfDispatchHeld } from '../vendor-dispatch.js';
+import { rejectHeldFulfillment } from '../fulfill-dispatch.js';
+import type { Response as ExpressResponse } from 'express';
 
-vi.mock('../alerting.js', () => ({ notifyFulfillFail: vi.fn() }));
+// Exercise the actual alert path with only its transport replaced.
+const { sendEmail } = vi.hoisted(() => ({ sendEmail: vi.fn().mockResolvedValue({}) }));
+vi.mock('resend', () => ({ Resend: vi.fn().mockImplementation(function () {
+  return { emails: { send: sendEmail } };
+}) }));
 const headers = { Authorization: 'Bearer offline-test' };
 const context = { vendor: 'printful' as const, orderId: 'order-1', lineItem: '999' };
 const held = { status: 'held', shipped: false, retryable: true };
@@ -40,6 +46,11 @@ const scenarios: { name: string; steps: Step[]; confirm?: boolean }[] = [
 ];
 
 beforeEach(() => {
+  sendEmail.mockClear();
+  vi.stubEnv('ALERT_WEBHOOK_URL', '');
+  vi.stubEnv('ALERT_EMAIL', 'alerts@example.test');
+  vi.stubEnv('RESEND_API_KEY', 'offline-test');
+  vi.stubEnv('ALERT_FROM_EMAIL', 'sender@example.test');
   vi.stubEnv('FULFILL_DRY_RUN', 'false');
   vi.stubEnv('GELATO_API_KEY', 'offline-test');
   _clearCatalogCacheForTests();
@@ -65,6 +76,9 @@ describe('all public vendor entry paths are held', () => {
     expect(await fulfillGelato('order-1', address, 'uid', 1, 'PRIVATE LABEL', 'https://blob.test/file.png'))
       .toEqual(held);
     expect(adapter).not.toHaveBeenCalled();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(sendEmail.mock.calls[0][0].subject).toContain('dispatch-held');
+    expect(JSON.stringify(sendEmail.mock.calls)).not.toContain('PRIVATE');
     expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain('PRIVATE');
   });
 
@@ -74,10 +88,12 @@ describe('all public vendor entry paths are held', () => {
     vi.stubEnv('FULFILL_DRY_RUN', 'TRUE');
     expect(await fulfillGelato('order-1', recipient, 'uid', 1, 'PRIVATE LABEL', 'https://blob.test/file.png')).toEqual(held);
     expect(adapter).not.toHaveBeenCalled();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('[DRY-RUN] held'));
     expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain('PRIVATE');
     vi.stubEnv('FULFILL_DRY_RUN', 'false');
     expect(await fulfillGelato('order-1', recipient, 'uid', 1, 'label', 'https://blob.test/file.png')).toEqual({ status: 'submitted' });
+    expect(sendEmail).toHaveBeenCalledTimes(1); // Resume adds no held alert.
     expect(JSON.parse(String((adapter.mock.calls[0] as unknown as [string, RequestInit])[1].body)).orderType).toBe('order');
   });
 
@@ -108,6 +124,7 @@ for (const scenario of scenarios) {
         : scenario.name.startsWith('failed') ? 'skipped' : 'submitted';
       expect(await run(scenario.confirm)).toEqual({ status: expected });
       expect(adapter).toHaveBeenCalledTimes(scenario.steps.length);
+      expect(sendEmail.mock.calls.filter(([mail]) => mail.subject.includes('dispatch-held'))).toHaveLength(0);
     });
     // Pause before EACH HTTP boundary, including after an earlier request completed.
     it.each(scenario.steps.map((step, index) => [index, step.path] as const))(
@@ -124,6 +141,9 @@ for (const scenario of scenarios) {
         vi.stubGlobal('fetch', adapter);
         expect(await run(scenario.confirm)).toEqual(held);
         expect(adapter).toHaveBeenCalledTimes(stopBefore);
+        expect(sendEmail).toHaveBeenCalledTimes(1);
+        expect(sendEmail.mock.calls[0][0].subject).toContain('Order order-1, line 999');
+        expect(JSON.stringify(sendEmail.mock.calls)).not.toContain('PRIVATE');
         expect(JSON.stringify(vi.mocked(console.warn).mock.calls.filter(c => String(c[0]).includes('[DRY-RUN]')))).not.toContain('PRIVATE');
       },
     );
@@ -166,6 +186,27 @@ it('warns at startup only while dispatch is held', () => {
   expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('[WARN]'));
 });
 
+it.each([true, false])('sync ingress pause=%s alerts once with 503 or continues without alert', (paused) => {
+  vi.stubEnv('FULFILL_DRY_RUN', String(paused));
+  const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
+  expect(rejectHeldFulfillment(context, res as unknown as ExpressResponse)).toBe(paused);
+  expect(sendEmail).toHaveBeenCalledTimes(paused ? 1 : 0);
+  expect(fetch).not.toHaveBeenCalled();
+  if (paused) {
+    expect(res.status).toHaveBeenCalledExactlyOnceWith(503);
+    expect(res.json).toHaveBeenCalledExactlyOnceWith({ ...held, success: false, accepted: false, externalId: 'order-1' });
+  } else {
+    expect(res.status).not.toHaveBeenCalled();
+  }
+});
+
+it('does not alert for an unpaused Gelato dispatch', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{"id":"test"}')));
+  expect(await fulfillGelato('order-1', recipient, 'uid', 1, 'PRIVATE LABEL', 'https://blob.test/file.png'))
+    .toEqual({ status: 'submitted' });
+  expect(sendEmail).not.toHaveBeenCalled();
+});
+
 it('keeps vendor HTTP confined to the shared boundary and rejects held ingress before 202', () => {
   for (const name of ['gelato.ts', 'printful.ts']) {
     const source = readFileSync(join(__dirname, '..', name), 'utf8');
@@ -175,8 +216,9 @@ it('keeps vendor HTTP confined to the shared boundary and rejects held ingress b
   const server = readFileSync(join(__dirname, '..', 'server.ts'), 'utf8');
   expect(server).not.toMatch(/PRINTFUL_API_V[12]|GELATO_API_V4|api\.printful\.com|gelatoapis\.com/);
   const route = server.slice(server.indexOf("app.post('/fulfill'"));
-  expect(route.indexOf('assertDispatchAllowed(')).toBeLessThan(route.indexOf('res.status(202)'));
-  expect(route).toContain('res.status(503).json({ ...err.result, success: false, accepted: false, externalId })');
+  expect(route.indexOf('rejectHeldFulfillment(')).toBeGreaterThanOrEqual(0);
+  expect(route.indexOf('rejectHeldFulfillment(')).toBeLessThan(route.indexOf('res.status(202)'));
+  expect(route).toContain('}, res)) return;');
   expect(server).toContain('warnIfDispatchHeld();');
   expect(new DispatchHeldError().result).toEqual(held);
 });

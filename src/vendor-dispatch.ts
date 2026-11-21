@@ -1,4 +1,6 @@
 /** The single dispatch boundary for ALL Gelato and Printful HTTP requests. */
+import { notifyFulfillHeld } from './alerting.js';
+
 export interface DispatchContext {
   vendor: 'gelato' | 'printful';
   orderId: string;
@@ -31,6 +33,9 @@ export function warnIfDispatchHeld(): void {
 export function assertDispatchAllowed(context: DispatchContext): void {
   if (!isFulfillDryRun()) return;
   console.warn(`[DRY-RUN] held ${JSON.stringify(context)}`);
+  // The first held boundary throws out of the whole line's flow. Alert here
+  // once, including ingress and standalone callers, never once per planned call.
+  notifyFulfillHeld(context.orderId, context.lineItem);
   throw new DispatchHeldError();
 }
 
