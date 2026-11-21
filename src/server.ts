@@ -51,22 +51,10 @@ import {
   requestIdMiddleware,
   getRequestId,
 } from './request-id.js';
-import {
-  PRINTFUL_API_V1,
-  PRINTFUL_API_V2,
-  PRINTFUL_TERMINAL_STATUSES,
-  type PrintfulOrderMatch,
-  getPrintfulHeaders,
-  resolveCatalogPlacement,
-  findExistingPrintfulOrder,
-  resolveExternalId,
-  tryUpdateExistingOrder,
-} from './printful.js';
-import {
-  GELATO_API_V4,
-  recipientToGelatoAddress,
-  fulfillGelato,
-} from './gelato.js';
+import { fulfillPrintful } from './printful.js';
+import { fulfillGelato } from './gelato.js';
+import { warnIfDispatchHeld } from './vendor-dispatch.js';
+import { rejectHeldFulfillment } from './fulfill-dispatch.js';
 import {
   rejectImageRender,
   resolveFulfillRoute,
@@ -1094,6 +1082,8 @@ app.get('/health', (req: Request, res: Response) => {
   commit: identity.commit,
   build: identity.build,
   capabilities: identity.capabilities,
+  dryRun: identity.dryRun,
+  printfulAutoConfirm: identity.printfulAutoConfirm,
   engine:  'maplibre',
   queue: {
     size:           renderQueue.size,
@@ -1391,6 +1381,11 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
   }
 
   const decision = plan;
+  if (rejectHeldFulfillment({
+    vendor: decision.mode === 'catalogue' ? decision.gate.vendor : decision.resolvedProvider,
+    orderId: externalId,
+    lineItem: decision.mode === 'catalogue' ? decision.gate.sku : String(variantId ?? 'unspecified'),
+  }, res)) return;
   // Catalogue already downloaded the snapshot. Reject a missing style or an
   // explicit OSM engine before the 202, and email. Legacy orders still ack
   // first; the async render below raises the same alert and does not call a
@@ -1551,77 +1546,7 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
     };
     if (PRINTFUL_STORE_ID) pfHeaders['X-PF-Store-Id'] = PRINTFUL_STORE_ID;
 
-    // If a draft/pending Printful order already exists, update it with the new PNG
-    // instead of silently skipping (handles re-trigger after partial failures).
-    const wasUpdated = await tryUpdateExistingOrder(externalId, finalPngUrl!, orderedVariantId, quantity, label, autoConfirm, pfHeaders, gift);
-    if (wasUpdated) return;
-
-    const resolvedId = await resolveExternalId(externalId);
-    if (!resolvedId) return;  // locked active order — skip
-    const effectiveExternalId = resolvedId;
-
-  const giftMessage = gift?.message
-      ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
-      : null;
-  // v2 API: placements[].layers[] format required — Printful v2 rejects files[] with 400.
-  // resolveCatalogPlacement() discovers placement/technique via catalog endpoints (cached),
-  // falling back to { placement: 'default', technique: 'PRINTING' } if catalog auth fails.
-  const { placement: v2Placement, technique: v2Technique } =
-    await resolveCatalogPlacement(orderedVariantId, pfHeaders);
-  const v2Payload = {
-      external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
-      ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
-      items: [{ source: 'catalog', catalog_variant_id: orderedVariantId, quantity,
-                name: `MapVibe — ${label}`,
-                placements: [{ placement: v2Placement, technique: v2Technique,
-                               layers: [{ type: 'file', url: finalPngUrl }] }] }],
-    };
-
-    try {
-      let pfRes = await fetch(`${PRINTFUL_API_V2}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v2Payload) });
-      let pfData: any = await pfRes.json();
-      let apiVersion = 'v2';
-
-      if (!pfRes.ok) {
-        console.warn(`[fulfill] v2 failed for ${externalId} (HTTP ${pfRes.status}) — v2 body: ${JSON.stringify(pfData)} — trying v1 fallback`);
-        const v1Payload = {
-          external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
-          ...(giftMessage ? { gift: { subject: 'A gift for you', message: giftMessage } } : {}),
-          items: [{ variant_id: orderedVariantId, quantity,
-                    name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
-        };
-        pfRes = await fetch(`${PRINTFUL_API_V1}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v1Payload) });
-        pfData = await pfRes.json();
-        apiVersion = 'v1-fallback';
-      }
-
-      if (pfRes.ok) {
-        const orderId = pfData.result?.id ?? pfData.data?.id;
-        console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${effectiveExternalId} (base: ${externalId})`);
-        return;
-      }
-
-      const errMsg: string = (pfData.result ?? pfData.error?.message ?? pfData.code ?? '') + '';
-      const isDuplicate = errMsg.toLowerCase().includes('external_id')
-        || errMsg.toLowerCase().includes('already exists')
-        || errMsg.toLowerCase().includes('duplicate');
-
-      if (isDuplicate) {
-        const existingAfterRace = await findExistingPrintfulOrder(externalId);
-        if (existingAfterRace) {
-          console.log(`[fulfill] Race dedup resolved: Printful order ${existingAfterRace} for ${externalId}`);
-          return;
-        }
-        console.error(`[fulfill] Race dedup failed for ${externalId}:`, pfData);
-        return;
-      }
-
-      console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
-      notifyFulfillFail(externalId, 'printful-api', pfData);
-    } catch (err: any) {
-      console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
-      notifyFulfillFail(externalId, 'printful-uncaught', err);
-    }
+    await fulfillPrintful(externalId, recipient, orderedVariantId, quantity, label, finalPngUrl!, autoConfirm, pfHeaders, gift);
   })();
 });
 
@@ -1636,5 +1561,6 @@ app.post('/warm', (req: Request, res: Response): void => {
   });
 });
 
+warnIfDispatchHeld();
 const listenPort = typeof PORT === 'string' ? parseInt(PORT, 10) : PORT;
 app.listen(listenPort, '0.0.0.0', () => console.log(`MapVibe Render Service on 0.0.0.0:${listenPort}`));

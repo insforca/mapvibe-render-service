@@ -10,6 +10,7 @@
  *   GELATO_API_KEY    — X-API-KEY header
  *   GELATO_STORE_ID   — scopes the order (default: known mapvibe store)
  */
+import { assertDispatchAllowed, vendorFetch, DispatchHeldError, type HeldResult } from './vendor-dispatch.js';
 import { notifyFulfillFail } from './alerting.js';
 
 export const GELATO_API_V4 = 'https://order.gelatoapis.com/v4';
@@ -46,8 +47,7 @@ export function recipientToGelatoAddress(
 /**
  * Submit a single Gelato v4 order. Fire-and-forget shape — terminal
  * failures emit `[FULFILL-FAIL]` via notifyFulfillFail (see alerting.ts).
- * Returns void on purpose; the caller already ACKed the inbound /fulfill
- * with 202 before reaching here.
+ * Returns an explicit held result when dispatch is paused, never submission success.
  */
 export async function fulfillGelato(
   externalId:   string,
@@ -56,28 +56,27 @@ export async function fulfillGelato(
   quantity:     number,
   label:        string,
   finalPngUrl:  string,
-  // Default reads FULFILL_DRY_RUN lazily at call time (same env-read-at-call
-  // pattern as GELATO_API_KEY above), so the flag can be toggled per-deploy
-  // without any caller change. Callers may also pass it explicitly.
-  dryRun:       boolean = (process.env.FULFILL_DRY_RUN ?? '').toLowerCase() === 'true',
-): Promise<void> {
+): Promise<HeldResult | { status: 'submitted' | 'failed' }> {
+  try {
+    assertDispatchAllowed({ vendor: 'gelato', orderId: externalId, lineItem: productUid });
+  } catch (err) {
+    if (err instanceof DispatchHeldError) return err.result;
+    throw err;
+  }
   const GELATO_KEY      = process.env.GELATO_API_KEY  ?? '';
   const GELATO_STORE_ID = process.env.GELATO_STORE_ID ?? 'e611e2bb-567a-42af-8e95-66e1ef54d156';
 
   if (!GELATO_KEY) {
     console.error(`[fulfill/gelato] GELATO_API_KEY not configured — order ${externalId} not submitted`);
     notifyFulfillFail(externalId, 'gelato-api', 'GELATO_API_KEY not configured');
-    return;
+    return { status: 'failed' };
   }
   const headers: Record<string, string> = {
     'X-API-KEY':    GELATO_KEY,
     'Content-Type': 'application/json',
   };
-  // dryRun ⇒ Gelato native draft: the order is created and fully renderable in
-  // the Gelato dashboard but is NEVER charged, produced, or shipped unless a
-  // human manually confirms it there. Default ('order') is unchanged.
   const payload = {
-    orderType:           dryRun ? 'draft' : 'order',
+    orderType:           'order',
     orderReferenceId:    externalId,
     customerReferenceId: externalId,
     currency:            'USD',
@@ -90,16 +89,19 @@ export async function fulfillGelato(
     preventDuplicate: true,
   };
   try {
-    const res  = await fetch(`${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
+    const res  = await vendorFetch({ vendor: 'gelato', orderId: externalId, lineItem: productUid }, `${GELATO_API_V4}/orders`, { method: 'POST', headers, body: JSON.stringify(payload) });
     const data: any = await res.json().catch(() => ({}));
     if (res.ok) {
-      console.log(`[fulfill/gelato] ${dryRun ? 'DRAFT (dry-run) order' : 'Order'} created: ${data.id ?? '?'} (${label}) for ${externalId}`);
+      console.log(`[fulfill/gelato] Order created: ${data.id ?? '?'} (${label}) for ${externalId}`);
+      return { status: 'submitted' };
     } else {
       console.error(`[fulfill/gelato] FAILED for ${externalId} HTTP ${res.status} — ${JSON.stringify(data).slice(0, 400)}`);
       notifyFulfillFail(externalId, 'gelato-api', { http: res.status, body: data });
     }
   } catch (err: any) {
+    if (err instanceof DispatchHeldError) return err.result;
     console.error(`[fulfill/gelato] Error for ${externalId}: ${err?.message ?? err}`);
     notifyFulfillFail(externalId, 'gelato-uncaught', err);
   }
+  return { status: 'failed' };
 }
