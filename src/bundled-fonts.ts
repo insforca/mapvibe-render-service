@@ -1,3 +1,4 @@
+import { PICKER_FONTS } from './picker-fonts.js';
 /** Exact family aliases shared by startup registration and offline canvas tests. */
 export const BUNDLED_FONTS = [
     // Plex Light already has a distinct name-table family; no byte edits needed.
@@ -7,4 +8,5 @@ export const BUNDLED_FONTS = [
     { family: 'Roboto Light', weight: '300', staticFile: 'Roboto-Light.ttf',    variableFile: 'Roboto-Light.ttf' },
     { family: 'Roboto',       weight: '400', staticFile: 'Roboto-Regular.ttf',  variableFile: 'Roboto-Regular.ttf' },
     { family: 'Roboto',       weight: '700', staticFile: 'Roboto-Bold.ttf',     variableFile: 'Roboto-Bold.ttf' },
+    ...PICKER_FONTS.flatMap(font => font.faces),
   ];

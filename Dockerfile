@@ -37,7 +37,8 @@ COPY fonts/ ./fonts/
 COPY assets/ ./assets/
 
 # Poster type is bundled in assets/fonts: legacy Roboto plus Space Grotesk
-# Bold and IBM Plex Mono Light/Regular, with licences and pinned SOURCES.md.
+# Bold, IBM Plex Mono Light/Regular and the supported picker faces, with licences
+# and pinned SOURCES.md. Noto Sans JP remains blocked; see picker/SOURCES.md.
 # node-canvas opens the original TTF files directly.
 
 COPY data/ ./data/

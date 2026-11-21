@@ -1,0 +1,176 @@
+[
+  {
+    "file": "Montserrat-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/montserrat/Montserrat-Bold.ttf",
+    "bytes": 261588,
+    "sha256": "c4c8cb572a5a2c43d78b3701f4b2349684e6ca4d1557e469af6065b1e099c26c"
+  },
+  {
+    "file": "Montserrat-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/montserrat/Montserrat-Light.ttf",
+    "bytes": 259416,
+    "sha256": "9b87925d061b1affb66417717731ad781f7d7678fb089b49f14bd922c2338559"
+  },
+  {
+    "file": "Montserrat-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/montserrat/Montserrat-Regular.ttf",
+    "bytes": 263192,
+    "sha256": "81ebc3916b524007b756d91d9df13c7673ec401161f2cad161662d08dcf1cc72"
+  },
+  {
+    "file": "montserrat-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/montserrat/OFL.txt",
+    "bytes": 4392,
+    "sha256": "41f82bb4d24b304f30f7136bc47abdd083782e4265c984160f5649d1e78ea49c"
+  },
+  {
+    "file": "playfairdisplay-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/playfairdisplay/OFL.txt",
+    "bytes": 4450,
+    "sha256": "f5b03ea0b27c7f5afb9702771ee57679ae8ba6b471b6ba9e62d985d3256f1929"
+  },
+  {
+    "file": "PlayfairDisplay-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/playfairdisplay/static/PlayfairDisplay-Bold.ttf",
+    "bytes": 213592,
+    "sha256": "37fcc00a7503976693088bed271e64ce34fca5119181da9acf5b74bd59da8c7e"
+  },
+  {
+    "file": "PlayfairDisplay-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/playfairdisplay/static/PlayfairDisplay-Regular.ttf",
+    "bytes": 210208,
+    "sha256": "844b4c3b02e307318abb61d8ebd55bfb8e19304515075fd8af06af099480191e"
+  },
+  {
+    "file": "oswald-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/oswald/OFL.txt",
+    "bytes": 4482,
+    "sha256": "ae05f8781a5ef38380ef3efe8cad86783610b6a780c6c278d7472f95310fccee"
+  },
+  {
+    "file": "Oswald-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/oswald/static/Oswald-Bold.ttf",
+    "bytes": 94272,
+    "sha256": "0cde70ba3b3398ab0bc19be74c7517442ef711846d33f286d7932fef9784e2d8"
+  },
+  {
+    "file": "Oswald-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/oswald/static/Oswald-Light.ttf",
+    "bytes": 91664,
+    "sha256": "292165793dab020fbe32fc3741d912b7fdc23e13c19c45451ea591f7ddfc7732"
+  },
+  {
+    "file": "Oswald-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/oswald/static/Oswald-Regular.ttf",
+    "bytes": 93132,
+    "sha256": "43b55a174fb3f5a1e6218a5385f647d2eace04776ab58673f4a439381930006e"
+  },
+  {
+    "file": "sourcesanspro-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/sourcesanspro/OFL.txt",
+    "bytes": 4514,
+    "sha256": "fce9f9e2fb268507a89fceea0b3eccc044f39fc3492968a04fd9e04df5ae95fa"
+  },
+  {
+    "file": "SourceSansPro-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/sourcesanspro/SourceSansPro-Bold.ttf",
+    "bytes": 290916,
+    "sha256": "da4f442e66843990825ed4757e27ad3442cad83f9844cc503e8ece85e00f77f2"
+  },
+  {
+    "file": "SourceSansPro-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/sourcesanspro/SourceSansPro-Light.ttf",
+    "bytes": 292680,
+    "sha256": "5705ecafdaa64d8af74d0c03f89272a65cfee9f7e62b55016a8dcbe4a69b6f86"
+  },
+  {
+    "file": "SourceSansPro-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/sourcesanspro/SourceSansPro-Regular.ttf",
+    "bytes": 293516,
+    "sha256": "71d10a86b4c54a5a9c0c8b467e53ac67d79edb96c956e4e9f65a7074dfb9992a"
+  },
+  {
+    "file": "raleway-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/raleway/OFL.txt",
+    "bytes": 4497,
+    "sha256": "7e946cf1171784d1015279e7dc35f827957a6b5d1f1f659ae0c98e5f5e37ed9b"
+  },
+  {
+    "file": "Raleway-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/raleway/static/Raleway-Bold.ttf",
+    "bytes": 137952,
+    "sha256": "6894481ab1c298e9c66f23455ecf05ccb25393d719a6b2d63428358c0409d2d0"
+  },
+  {
+    "file": "Raleway-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/raleway/static/Raleway-Light.ttf",
+    "bytes": 132244,
+    "sha256": "02fdd3ead5a2927391ec2dfc2dcd3ab5b6fc6d33698e24c43b46cdcb88870c70"
+  },
+  {
+    "file": "Raleway-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/raleway/static/Raleway-Regular.ttf",
+    "bytes": 132000,
+    "sha256": "cb70f8815eecd850263d54fa59286377b1d7362bec612e981155a00039d8b513"
+  },
+  {
+    "file": "Lato-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/lato/Lato-Bold.ttf",
+    "bytes": 656544,
+    "sha256": "8a0aace75d33794eece4b28187bfc1df0bbd2888b5d8a56e01788c8d65d16be1"
+  },
+  {
+    "file": "Lato-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/lato/Lato-Light.ttf",
+    "bytes": 643884,
+    "sha256": "cf2a774503baf418d584f49967bd160e1e03f087c13b25602f28024ec7788f08"
+  },
+  {
+    "file": "Lato-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/lato/Lato-Regular.ttf",
+    "bytes": 656568,
+    "sha256": "d636e4683231f931eda222d588e944d082bfd3bdba02f928bee461c0f185b251"
+  },
+  {
+    "file": "lato-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/lato/OFL.txt",
+    "bytes": 4407,
+    "sha256": "74ba064d03f1f1c4a952da936c3eb71866c34404916734de3cae73b34357e59e"
+  },
+  {
+    "file": "Merriweather-Bold.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/merriweather/Merriweather-Bold.ttf",
+    "bytes": 149112,
+    "sha256": "55139769a87085bff777f68e3ecf92450c21a04c5ddd1e9e9528960ba4088c9f"
+  },
+  {
+    "file": "Merriweather-Light.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/merriweather/Merriweather-Light.ttf",
+    "bytes": 155192,
+    "sha256": "d3ecc46bab128ed073ad9189bd7efdd2df455d8942ec056f14129bf35bcea7e5"
+  },
+  {
+    "file": "Merriweather-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/merriweather/Merriweather-Regular.ttf",
+    "bytes": 156096,
+    "sha256": "bc38fe756b3e259248183fc0b75ad81b02774f3ca68e5e544e925827b0186d40"
+  },
+  {
+    "file": "merriweather-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/merriweather/OFL.txt",
+    "bytes": 4437,
+    "sha256": "a7ba785ad99b6eae0444ab89910e512d4af9865937fddbcb5c72c4f59f55d6ad"
+  },
+  {
+    "file": "BebasNeue-Regular.ttf",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/bebasneue/BebasNeue-Regular.ttf",
+    "bytes": 61400,
+    "sha256": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73"
+  },
+  {
+    "file": "bebasneue-OFL.txt",
+    "url": "https://raw.githubusercontent.com/google/fonts/ebaa6a7aab9b700da4e30a4682687acdf427eae7/ofl/bebasneue/OFL.txt",
+    "bytes": 4337,
+    "sha256": "72082f6cb4d04be2ecf7cc7d9e1e7d73787f0af8a5a278a47cade70c16b78341"
+  }
+]
