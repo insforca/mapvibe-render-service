@@ -2,6 +2,8 @@
 
 Headless map rendering service for MapVibe Studio print export. Also dispatches Print-on-Demand fulfillment to Printful or Gelato.
 
+Living notes: [docs/HANDOFF.md](docs/HANDOFF.md) (current state) and [docs/DECISIONS.md](docs/DECISIONS.md) (owner decisions).
+
 ## Endpoints
 
 ### `POST /render`
