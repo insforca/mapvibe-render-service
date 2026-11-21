@@ -4,7 +4,7 @@
  * Printful API client surface: catalog placement lookup, existing-order
  * discovery + dedup-via-suffix, in-place update of draft/pending orders.
  * Extracted from server.ts so the v2/v1 fallback logic and the
- * suffix-retry algorithm can be unit-tested without loading the
+ * suffix-retry algorithm and order submission can be unit-tested without loading the
  * MapLibre/canvas/sharp native deps.
  *
  * Env vars (read lazily inside functions, not at module load, so vitest
@@ -12,6 +12,9 @@
  *   PRINTFUL_API_KEY   — Bearer token
  *   PRINTFUL_STORE_ID  — scopes API calls (default: 17897492)
  */
+
+import { vendorFetch, DispatchHeldError, type DispatchContext, type HeldResult } from './vendor-dispatch.js';
+import { notifyFulfillFail } from './alerting.js';
 
 export const PRINTFUL_API_V2 = 'https://api.printful.com/v2';
 export const PRINTFUL_API_V1 = 'https://api.printful.com';
@@ -55,13 +58,15 @@ export function _clearCatalogCacheForTests(): void {
 export async function resolveCatalogPlacement(
   catalogVariantId: number,
   pfHeaders: Record<string, string>,
+  context: DispatchContext = { vendor: 'printful', orderId: 'catalog', lineItem: String(catalogVariantId) },
 ): Promise<{ placement: string; technique: string }> {
   if (catalogPlacementCache.has(catalogVariantId)) {
     return catalogPlacementCache.get(catalogVariantId)!;
   }
   const fallback = { placement: 'default', technique: 'PRINTING' };
   try {
-    const varRes = await fetch(
+    const varRes = await vendorFetch(
+      context,
       `${PRINTFUL_API_V2}/catalog-variants/${catalogVariantId}`,
       { headers: pfHeaders },
     );
@@ -77,7 +82,8 @@ export async function resolveCatalogPlacement(
       return fallback;
     }
 
-    const prodRes = await fetch(
+    const prodRes = await vendorFetch(
+      context,
       `${PRINTFUL_API_V2}/catalog-products/${productId}`,
       { headers: pfHeaders },
     );
@@ -99,6 +105,7 @@ export async function resolveCatalogPlacement(
     catalogPlacementCache.set(catalogVariantId, result);
     return result;
   } catch (err: any) {
+    if (err instanceof DispatchHeldError) throw err;
     console.warn(`[catalog] lookup error for variant ${catalogVariantId}: ${err?.message ?? err} — using fallback`);
     catalogPlacementCache.set(catalogVariantId, fallback);
     return fallback;
@@ -107,9 +114,11 @@ export async function resolveCatalogPlacement(
 
 // ── Existing-order discovery + suffix-retry externalId resolution ─────────
 
-export async function findExistingPrintfulOrder(externalId: string): Promise<PrintfulOrderMatch | null> {
+export async function findExistingPrintfulOrder(externalId: string, lineItem = 'unspecified'): Promise<PrintfulOrderMatch | null> {
+  const context: DispatchContext = { vendor: 'printful', orderId: externalId, lineItem };
   try {
-    const res = await fetch(
+    const res = await vendorFetch(
+      context,
       `${PRINTFUL_API_V1}/orders?external_id=${encodeURIComponent(externalId)}`,
       { headers: getPrintfulHeaders() },
     );
@@ -120,7 +129,8 @@ export async function findExistingPrintfulOrder(externalId: string): Promise<Pri
     if (!match) return null;
     const status = (match.status ?? '').toLowerCase();
     return { id: String(match.id), status, isTerminal: PRINTFUL_TERMINAL_STATUSES.has(status) };
-  } catch {
+  } catch (err) {
+    if (err instanceof DispatchHeldError) throw err;
     return null;
   }
 }
@@ -131,10 +141,10 @@ export async function findExistingPrintfulOrder(externalId: string): Promise<Pri
  *  - candidate ID has a TERMINAL order (cancelled/archived) → auto-append `-rN`
  *  - up to 10 suffix attempts; returns null if no free ID found
  */
-export async function resolveExternalId(baseId: string): Promise<string | null> {
+export async function resolveExternalId(baseId: string, lineItem = 'unspecified'): Promise<string | null> {
   let candidate = baseId;
   for (let attempt = 0; attempt < 10; attempt++) {
-    const existing = await findExistingPrintfulOrder(candidate);
+    const existing = await findExistingPrintfulOrder(candidate, lineItem);
     if (!existing) return candidate;
     if (!existing.isTerminal) {
       console.log(`[fulfill] Active Printful order ${existing.id} (${existing.status}) already exists for ${candidate} — skipping`);
@@ -154,6 +164,7 @@ export async function resolveExternalId(baseId: string): Promise<string | null> 
  * Attempt to update an existing Printful draft/pending order with a new PNG.
  * Returns true if the order was updated (caller should skip creation).
  * Returns false if no updatable order exists (caller should create fresh).
+ * Throws DispatchHeldError while paused; callers MUST NOT convert it to false.
  *
  * Failure modes:
  *  - No existing order found → false (caller creates)
@@ -170,8 +181,9 @@ export async function tryUpdateExistingOrder(
   autoConfirm: boolean,
   pfHeaders: Record<string, string>,
   gift?: { message: string; para?: string },
+  context: DispatchContext = { vendor: 'printful', orderId: baseId, lineItem: String(variantId) },
 ): Promise<boolean> {
-  const existing = await findExistingPrintfulOrder(baseId);
+  const existing = await findExistingPrintfulOrder(baseId, context.lineItem);
   if (!existing) return false;
   if (existing.status !== 'draft' && existing.status !== 'pending') return false;
 
@@ -185,7 +197,7 @@ export async function tryUpdateExistingOrder(
   if (giftMessage) updatePayload.gift = { subject: 'A gift for you', message: giftMessage };
 
   try {
-    const updateRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
+    const updateRes = await vendorFetch(context, `${PRINTFUL_API_V1}/orders/${existing.id}`, {
       method: 'PUT', headers: pfHeaders, body: JSON.stringify(updatePayload),
     });
     if (!updateRes.ok) {
@@ -197,7 +209,7 @@ export async function tryUpdateExistingOrder(
       if (existing.status === 'pending' || existing.status === 'draft') {
         console.log(`[fulfill] Attempting to cancel pending order ${existing.id} to allow re-creation`);
         try {
-          const cancelRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}`, {
+          const cancelRes = await vendorFetch(context, `${PRINTFUL_API_V1}/orders/${existing.id}`, {
             method: 'DELETE', headers: pfHeaders,
           });
           if (cancelRes.ok) {
@@ -207,6 +219,7 @@ export async function tryUpdateExistingOrder(
             console.warn(`[fulfill] Could not cancel pending order ${existing.id}:`, cancelErr);
           }
         } catch (cancelErr: any) {
+          if (cancelErr instanceof DispatchHeldError) throw cancelErr;
           console.warn(`[fulfill] Cancel attempt threw for ${existing.id}:`, cancelErr);
         }
       }
@@ -215,7 +228,7 @@ export async function tryUpdateExistingOrder(
     console.log(`[fulfill] Order ${existing.id} (${existing.status}) updated with new PNG: ${finalPngUrl}`);
 
     if (autoConfirm && existing.status === 'draft') {
-      const confirmRes = await fetch(`${PRINTFUL_API_V1}/orders/${existing.id}/confirm`, {
+      const confirmRes = await vendorFetch(context, `${PRINTFUL_API_V1}/orders/${existing.id}/confirm`, {
         method: 'POST', headers: pfHeaders,
       });
       if (confirmRes.ok) {
@@ -227,7 +240,101 @@ export async function tryUpdateExistingOrder(
     }
     return true;
   } catch (err: any) {
+    if (err instanceof DispatchHeldError) throw err;
     console.error(`[fulfill] Error updating order ${existing.id}:`, err);
     return false;
+  }
+}
+
+/** Shared by /fulfill and any manual/retry caller. Held is never submission success. */
+export async function fulfillPrintful(
+  externalId: string,
+  recipient: any,
+  orderedVariantId: number,
+  quantity: number,
+  label: string,
+  finalPngUrl: string,
+  autoConfirm: boolean,
+  pfHeaders: Record<string, string>,
+  gift?: { message: string; para?: string },
+): Promise<HeldResult | { status: 'submitted' | 'updated' | 'skipped' | 'failed' }> {
+  const context: DispatchContext = { vendor: 'printful', orderId: externalId, lineItem: String(orderedVariantId) };
+  try {
+    // If a draft/pending Printful order already exists, update it with the new PNG
+    // instead of silently skipping (handles re-trigger after partial failures).
+    const wasUpdated = await tryUpdateExistingOrder(externalId, finalPngUrl, orderedVariantId, quantity, label, autoConfirm, pfHeaders, gift, context);
+    if (wasUpdated) return { status: 'updated' };
+
+    const resolvedId = await resolveExternalId(externalId, context.lineItem);
+    if (!resolvedId) return { status: 'skipped' };  // locked active order — skip
+    const effectiveExternalId = resolvedId;
+
+    const giftMessage = gift?.message
+      ? (gift.para ? `To ${gift.para}: ${gift.message}` : gift.message)
+      : null;
+    // v2 API: placements[].layers[] format required — Printful v2 rejects files[] with 400.
+    // resolveCatalogPlacement() discovers placement/technique via catalog endpoints (cached),
+    // falling back to { placement: 'default', technique: 'PRINTING' } if catalog auth fails.
+    const { placement: v2Placement, technique: v2Technique } =
+      await resolveCatalogPlacement(orderedVariantId, pfHeaders, context);
+    const v2Payload = {
+      external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
+      ...(giftMessage ? { packing_slip: { message: giftMessage } } : {}),
+      items: [{ source: 'catalog', catalog_variant_id: orderedVariantId, quantity,
+                name: `MapVibe — ${label}`,
+                placements: [{ placement: v2Placement, technique: v2Technique,
+                               layers: [{ type: 'file', url: finalPngUrl }] }] }],
+    };
+
+    try {
+      let pfRes = await vendorFetch(context, `${PRINTFUL_API_V2}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v2Payload) });
+      let pfData: any = await pfRes.json();
+      let apiVersion = 'v2';
+
+      if (!pfRes.ok) {
+        console.warn(`[fulfill] v2 failed for ${externalId} (HTTP ${pfRes.status}) — v2 body: ${JSON.stringify(pfData)} — trying v1 fallback`);
+        const v1Payload = {
+          external_id: effectiveExternalId, shipping: 'STANDARD', recipient, confirm: autoConfirm,
+          ...(giftMessage ? { gift: { subject: 'A gift for you', message: giftMessage } } : {}),
+          items: [{ variant_id: orderedVariantId, quantity,
+                    name: `MapVibe — ${label}`, files: [{ type: 'default', url: finalPngUrl }] }],
+        };
+        pfRes = await vendorFetch(context, `${PRINTFUL_API_V1}/orders`, { method: 'POST', headers: pfHeaders, body: JSON.stringify(v1Payload) });
+        pfData = await pfRes.json();
+        apiVersion = 'v1-fallback';
+      }
+
+      if (pfRes.ok) {
+        const orderId = pfData.result?.id ?? pfData.data?.id;
+        console.log(`[fulfill] Printful order created (${apiVersion}): ${orderId} for ${effectiveExternalId} (base: ${externalId})`);
+        return { status: 'submitted' };
+      }
+
+      const errMsg: string = (pfData.result ?? pfData.error?.message ?? pfData.code ?? '') + '';
+      const isDuplicate = errMsg.toLowerCase().includes('external_id')
+        || errMsg.toLowerCase().includes('already exists')
+        || errMsg.toLowerCase().includes('duplicate');
+
+      if (isDuplicate) {
+        const existingAfterRace = await findExistingPrintfulOrder(externalId, context.lineItem);
+        if (existingAfterRace) {
+          console.log(`[fulfill] Race dedup resolved: Printful order ${existingAfterRace} for ${externalId}`);
+          return { status: 'submitted' };
+        }
+        console.error(`[fulfill] Race dedup failed for ${externalId}:`, pfData);
+        return { status: 'failed' };
+      }
+
+      console.error(`[fulfill] Printful error for ${externalId}:`, pfData);
+      notifyFulfillFail(externalId, 'printful-api', pfData);
+    } catch (err: any) {
+      if (err instanceof DispatchHeldError) throw err;
+      console.error(`[fulfill] Uncaught error for ${externalId}:`, err);
+      notifyFulfillFail(externalId, 'printful-uncaught', err);
+    }
+    return { status: 'failed' };
+  } catch (err) {
+    if (err instanceof DispatchHeldError) return err.result;
+    throw err;
   }
 }

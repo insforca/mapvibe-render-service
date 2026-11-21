@@ -1,3 +1,4 @@
+import { isFulfillDryRun } from './vendor-dispatch.js';
 /**
  * Public identity for GET /health. The studio webhook reads `capabilities`
  * to decide whether this build accepts `dryRun` and an explicit catalogue SKU.
@@ -13,6 +14,8 @@ const COMMIT_ENV_KEYS = ['RAILWAY_GIT_COMMIT_SHA', 'GIT_COMMIT', 'SOURCE_VERSION
 const SHA = /^[0-9a-f]{7,40}$/i;
 
 export interface HealthIdentity {
+  dryRun: boolean;
+  printfulAutoConfirm: boolean;
   version: string;
   /** Full or abbreviated git SHA, or null when the platform did not provide one. */
   commit: string | null;
@@ -24,6 +27,8 @@ export interface HealthIdentity {
 export function healthIdentity(env: NodeJS.ProcessEnv = process.env): HealthIdentity {
   const commit = readCommit(env);
   return {
+    dryRun: isFulfillDryRun(env),
+    printfulAutoConfirm: env.PRINTFUL_AUTO_CONFIRM === 'true',
     version: SERVICE_VERSION,
     commit,
     build: commit ? `${SERVICE_VERSION}@${commit}` : SERVICE_VERSION,

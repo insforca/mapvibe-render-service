@@ -60,7 +60,7 @@ Optional:
 
 ### `GET /health`
 
-Public. Returns `{ "status": "ok", "version": "3.6.0", "commit": "<git sha or null>", "build": "3.6.0" or "3.6.0@<sha>", "capabilities": ["dryRun", "catalogueSku"], "queue": {...}, "uptime": ... }`. No API key. The studio webhook treats this build as dry-run capable when `capabilities` contains both `dryRun` and `catalogueSku`. `commit` is only a hex git SHA (`RAILWAY_GIT_COMMIT_SHA`, else `GIT_COMMIT` or `SOURCE_VERSION`); anything else is omitted.
+Public. Returns `{ "status": "ok", "version": "3.6.0", "commit": "<git sha or null>", "build": "3.6.0" or "3.6.0@<sha>", "capabilities": ["dryRun", "catalogueSku"], "dryRun": false, "printfulAutoConfirm": false, "queue": {...}, "uptime": ... }`. No API key. The studio webhook treats this build as dry-run capable when `capabilities` contains both `dryRun` and `catalogueSku`. `commit` is only a hex git SHA (`RAILWAY_GIT_COMMIT_SHA`, else `GIT_COMMIT` or `SOURCE_VERSION`); anything else is omitted.
 
 ## Vendor routing (catalogue table)
 
@@ -83,7 +83,11 @@ Legacy forms are not in the table. While `LEGACY_SKU_PASSTHROUGH` is on they use
 
 `dimensionsArePrintArea` was ignored before this change, and canvas rows always expanded the editor bounds from the visible size (18×24 / 24×36) to the print area (21×27 / 27×39). The editor sets the flag when the snapshot bounds are already that print sheet. The service now skips the second expansion when the flag is on the body or the snapshot. A full poster PNG was not rendered; the geometry test checks one expansion versus two.
 
-`FULFILL_DRY_RUN` still only changes Gelato `orderType` to `draft` on a real vendor call. A request `dryRun` never gets that far. `PRINTFUL_AUTO_CONFIRM` is unchanged.
+`FULFILL_DRY_RUN=true` pauses **all Gelato and Printful HTTP calls**, including catalog/discovery GETs, creation, update, cancellation, confirmation, suffix retries, and v1 fallback. It is read from the running process environment immediately before every vendor request, rather than cached at startup. This no longer creates Gelato drafts. With dispatch allowed, Gelato creates real orders and `PRINTFUL_AUTO_CONFIRM` still only selects Printful confirm versus draft (the per-request `confirm` override still takes precedence). A request `dryRun` retains its routing-preview behavior.
+
+When the pause is already active, an otherwise accepted `/fulfill` returns **503** with `status: "held"`, `shipped: false`, `retryable: true`, `success: false`, and `accepted: false`. No rendering or vendor dispatch follows. A pause during an already accepted request stops the next vendor call; clients return a held result and logs contain `[DRY-RUN] held` with order and line-item identifiers only. Startup logs a WARN while paused. `/health` exposes the current `dryRun` and `printfulAutoConfirm` booleans publicly.
+
+There is **no durable fulfillment job store or automatic resume queue** in this service: accepted fulfillment runs in memory after the 202. A hold does not delete existing vendor orders or local assets. Retain the upstream order/line request and replay it after clearing the pause; a 503 makes the hold visible to the caller but does not guarantee that the upstream system retries. Work paused after a 202 also requires upstream/manual replay. Updating the running process environment is reflected on the next call; changing a hosting-platform variable may still restart the process according to that platform's behavior.
 
 ### Already not fulfilled, before this change
 
@@ -104,7 +108,7 @@ Legacy forms are not in the table. While `LEGACY_SKU_PASSTHROUGH` is on they use
 | `PRINTFUL_AUTO_CONFIRM` | No      | `"true"` to auto-confirm orders |
 | `GELATO_API_KEY`        | If routing to Gelato | Gelato API token |
 | `GELATO_STORE_ID`       | No      | Gelato store ID (defaults to known value) |
-| `FULFILL_DRY_RUN`       | No      | `"true"` sends Gelato `orderType: "draft"` (never charged). Default is a real Gelato order. Printful is unaffected. |
+| `FULFILL_DRY_RUN`       | No      | `"true"` (case-insensitive) holds every Gelato and Printful HTTP call. Default false. Held work requires upstream retry/replay; see above. |
 | `CATALOGUE_DESIGN`      | No      | Design letter matched against `in_designs` (default `B`) |
 | `CATALOGUE_ENABLE_OPTIONAL` | No | `"true"` also routes the disabled premium rows |
 | `LEGACY_SKU_PASSTHROUGH` | No | Default on. The literal `false` makes a missing SKU or a legacy form return 422 instead of the metafield path. |
