@@ -36,8 +36,9 @@ RUN npm ci
 COPY fonts/ ./fonts/
 COPY assets/ ./assets/
 
-# Poster type is the Roboto files in assets/fonts (Bold 700, Regular 400,
-# Light 300) plus Roboto-LICENSE. node-canvas opens those files.
+# Poster type is bundled in assets/fonts: legacy Roboto plus Space Grotesk
+# Bold and IBM Plex Mono Light/Regular, with licences and pinned SOURCES.md.
+# node-canvas opens the original TTF files directly.
 
 COPY data/ ./data/
 COPY src/ ./src/

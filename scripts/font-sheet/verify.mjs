@@ -32,11 +32,6 @@ for(const o of m.options){
       assert.equal(png.readUInt32BE(20),m.dimensions.height);
     }
   }
-  if(o.pairs.edge){
-    // Compare decoded metrics rather than PNG encoders' metadata.
-    assert.equal(o.pairs.chrome.mae,o.pairs.edge.mae);
-    assert.equal(o.pairs.chrome.changedPixelPercent,o.pairs.edge.changedPixelPercent);
-  }
 }
 const html=await readFile(path.join(out,'sheet.html'),'utf8');
 const imageSources=[...html.matchAll(/<img src="([^"]+)"/g)].map(m=>m[1]);

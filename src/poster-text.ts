@@ -13,9 +13,10 @@
  * Adjacent vertical margins collapse, so the 3px under the country and
  * the 1em above the coordinates become max(3px, 1em). Each line's box is
  * CSS line-height 1.15, with the alphabetic baseline where Chrome puts it
- * for Roboto: half-leading around the hhea content box (ascender 1900,
- * descender 500, unitsPerEm 2048). Centred letter-spacing keeps a trailing
- * gap, so the city ink sits 0.225em left of the content-box centre.
+ * for the selected lockup (see LOCKUP_METRICS). Roboto preserves the
+ * historical baseline; space-plex uses the bundled faces' hhea metrics.
+ * Centred letter-spacing keeps a trailing gap, so the city ink sits
+ * 0.225em left of the content-box centre.
  *
  * The 6/18/14/3/4/1px lengths are the desktop editor's CSS pixels on a
  * 482.390625px-wide poster (18×24 at the measured preview). They scale
@@ -33,12 +34,37 @@ export const TEXT_DIMENSION_REFERENCE_PX = 3600;
 export const EDGE_MARGIN = 0.02;
 /** Short side of the desktop poster the editor DOM was measured on. */
 export const EDITOR_POSTER_SHORT_PX = 482.390625;
-/** line-height used by the editor's Roboto strip. Normal is the font's 1.17; the preview boxes are 1.15. */
+export type LockupFont = 'space-plex' | 'roboto';
+/** New-design producers must persist this id; absent snapshots remain legacy. */
+export const DEFAULT_LOCKUP_FONT: LockupFont = 'space-plex';
+
+export function resolveLockupFont(value?: unknown): LockupFont {
+  if (value === 'space-plex' || value === 'roboto') return value;
+  if (value !== undefined) console.warn('[fonts] Unknown lockupFont; falling back to roboto');
+  return 'roboto';
+}
+
+/** Explicit editor CSS line-height, shared by both lockups (not font "normal"). */
 export const CSS_LINE_HEIGHT = 1.15;
-const ROBOTO_HHEA_ASCENT = 1900 / 2048;
-const ROBOTO_HHEA_LINE = (1900 + 500) / 2048;
-/** Alphabetic baseline, in em, down from the top of a 1.15em line box. */
-export const CSS_BASELINE_EM = ROBOTO_HHEA_ASCENT + (CSS_LINE_HEIGHT - ROBOTO_HHEA_LINE) / 2;
+function faceMetrics(ascent: number, descent: number, unitsPerEm: number) {
+  const normalLineEm = (ascent + descent) / unitsPerEm;
+  const halfLeadingEm = (CSS_LINE_HEIGHT - normalLineEm) / 2;
+  return { lineHeight: CSS_LINE_HEIGHT, normalLineEm, halfLeadingEm,
+    baselineEm: ascent / unitsPerEm + halfLeadingEm };
+}
+/** Studio mirror: hhea ascent / positive descent / head.unitsPerEm.
+ * Space Grotesk Bold 984/292/1000 => baseline .921;
+ * Plex Mono Light and Regular 1025/275/1000 => .950.
+ * Keep explicit 1.15 line boxes; negative half-leading is intentional.
+ * Legacy Roboto freezes the previous 1900/500/2048 layout => .916796875.
+ * Those historical constants are NOT the bundled Roboto's actual hhea
+ * (2146/555/2048). Correcting them would move existing orders' baselines.
+ */
+export const LOCKUP_METRICS = {
+  roboto: { city: faceMetrics(1900, 500, 2048), country: faceMetrics(1900, 500, 2048), coords: faceMetrics(1900, 500, 2048) },
+  'space-plex': { city: faceMetrics(984, 292, 1000), country: faceMetrics(1025, 275, 1000), coords: faceMetrics(1025, 275, 1000) },
+};
+export const CSS_BASELINE_EM = LOCKUP_METRICS.roboto.city.baselineEm;
 
 const CITY_MIN = 110;
 const CITY_CQMIN = 0.0694;
@@ -154,9 +180,11 @@ export function layoutPosterText(input: {
   country: string;
   coords: string;
   textLayout?: string;
+  lockupFont?: LockupFont;
   glyph: GlyphMeasure;
 }): PosterTextLayout {
   const { width, height, glyph } = input;
+  const metrics = LOCKUP_METRICS[input.lockupFont ?? 'roboto'];
   const city = input.city || '';
   const country = input.country || '';
   const coords = input.coords || '';
@@ -188,10 +216,10 @@ export function layoutPosterText(input: {
   // stays inside its box instead of pushing the next line down.
   interface FlowBlock { box: number; marginTop: number; marginBottom: number }
   const blocks: FlowBlock[] = [];
-  if (city) blocks.push({ box: cityFit.size * CSS_LINE_HEIGHT, marginTop: 0, marginBottom: px(CITY_MARGIN_BOTTOM_PX) });
+  if (city) blocks.push({ box: cityFit.size * metrics.city.lineHeight, marginTop: 0, marginBottom: px(CITY_MARGIN_BOTTOM_PX) });
   blocks.push({ box: border, marginTop: 0, marginBottom: px(RULE_MARGIN_BOTTOM_PX) });
-  if (country) blocks.push({ box: countryFit.size * CSS_LINE_HEIGHT, marginTop: 0, marginBottom: px(COUNTRY_MARGIN_BOTTOM_PX) });
-  if (coords) blocks.push({ box: coordsFit.size * CSS_LINE_HEIGHT, marginTop: coordsFit.size, marginBottom: coordsFit.size });
+  if (country) blocks.push({ box: countryFit.size * metrics.country.lineHeight, marginTop: 0, marginBottom: px(COUNTRY_MARGIN_BOTTOM_PX) });
+  if (coords) blocks.push({ box: coordsFit.size * metrics.coords.lineHeight, marginTop: coordsFit.size, marginBottom: coordsFit.size });
 
   const placed: Array<{ top: number; bottom: number }> = [];
   let cursor = 0;
@@ -220,8 +248,8 @@ export function layoutPosterText(input: {
   const ruleBox = take();
   const countryBox = country ? take() : { top: 0, bottom: 0 };
   const coordsBox = coords ? take() : { top: 0, bottom: 0 };
-  const baselineY = (box: { top: number }, size: number, text: string) =>
-    origin + box.top + (text ? CSS_BASELINE_EM * size : 0);
+  const baselineY = (box: { top: number }, size: number, text: string, role: 'city' | 'country' | 'coords') =>
+    origin + box.top + (text ? metrics[role].baselineEm * size : 0);
 
   // Trailing letter-spacing is part of the centred inline box, so the ink
   // sits half a spacing to the left. Left-aligned editorial text starts at
@@ -250,7 +278,8 @@ export function layoutPosterText(input: {
     boxHeight: text ? box.bottom - box.top : 0,
   });
 
-  // The editor has no credit line. Ours is Roboto Light in the bottom
+  // The editor has no credit line. Ours uses Roboto Light (legacy) or
+  // Plex Mono Regular (space-plex) in the bottom
   // padding, under the coordinates, and does not move the strip.
   const creditSize = ATTRIBUTION_BASE * ds;
   const bottomInset = px(CREDIT_EDGE_PX);
@@ -258,15 +287,15 @@ export function layoutPosterText(input: {
   return {
     ds,
     align,
-    city: line(city, baselineY(cityBox, cityFit.size, city), cityX, cityFit, CITY_SPACING, cityBox),
+    city: line(city, baselineY(cityBox, cityFit.size, city, 'city'), cityX, cityFit, CITY_SPACING, cityBox),
     divider: {
       x: anchorX,
       y: origin + (ruleBox.top + ruleBox.bottom) / 2,
       width: dividerWidth,
       halfStroke,
     },
-    country: line(country, baselineY(countryBox, countryFit.size, country), anchorX, countryFit, COUNTRY_SPACING, countryBox),
-    coords: line(coords, baselineY(coordsBox, coordsFit.size, coords), anchorX, coordsFit, COORDS_SPACING, coordsBox),
+    country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), anchorX, countryFit, COUNTRY_SPACING, countryBox),
+    coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), anchorX, coordsFit, COORDS_SPACING, coordsBox),
     stripTop,
     credit: {
       size: creditSize,
@@ -352,6 +381,7 @@ export function drawPosterText(
   showText: boolean,
   credits: boolean,
   textLayout: string,
+  lockupFont?: LockupFont,
 ): void {
   const land = (theme && theme.map && theme.map.land) || '#808080';
   const rgb = parseHex(land);
@@ -360,12 +390,21 @@ export function drawPosterText(
   const attrColor = luma < 0.52 ? '#f5faff' : '#0e1822';
   // Roboto Light is registered under its own family. node-canvas collapses
   // Light and Regular when both files keep the name-table family "Roboto".
-  const titleFamily = fontFamily
+  // A picker font chosen by the customer always wins: it keeps the legacy
+  // layout and fallbacks, so print matches what the editor showed. The
+  // lockup id only replaces the default (Roboto) when no picker font is set.
+  const selectedLockup: LockupFont = fontFamily ? 'roboto' : resolveLockupFont(lockupFont);
+  const spacePlex = selectedLockup === 'space-plex';
+  const titleFamily = spacePlex ? '"Space Grotesk"' : fontFamily
     ? '"' + fontFamily + '",Roboto,sans-serif'
     : 'Roboto';
-  const lightFamily = fontFamily
+  const lightFamily = spacePlex ? '"IBM Plex Mono Light"' : fontFamily
     ? '"' + fontFamily + '","Roboto Light",Roboto,sans-serif'
     : '"Roboto Light",Roboto,sans-serif';
+
+  const coordsFamily = spacePlex ? '"IBM Plex Mono"' : titleFamily;
+  const creditFamily = spacePlex ? coordsFamily : lightFamily;
+  const creditWeight = spacePlex ? '400' : '300';
 
   let laid: PosterTextLayout | undefined;
   if (showText) {
@@ -376,12 +415,13 @@ export function drawPosterText(
       country: (country || '').toUpperCase(),
       coords: fmtCoords(lat, lon),
       textLayout,
+      lockupFont: selectedLockup,
       glyph: (role, text, fontPx) => {
         const font = role === 'city'
           ? '700 ' + fontPx + 'px ' + titleFamily
           : role === 'country'
             ? '300 ' + fontPx + 'px ' + lightFamily
-            : '400 ' + fontPx + 'px ' + titleFamily;
+            : '400 ' + fontPx + 'px ' + coordsFamily;
         return measureCanvasGlyph(ctx, font, text);
       },
     });
@@ -410,7 +450,7 @@ export function drawPosterText(
     drawSpaced(ctx, laid.country.text, laid.country.x, laid.country.y, laid.country.spacing, laid.country.size, laid.align);
 
     ctx.globalAlpha = 0.7;
-    ctx.font = '400 ' + laid.coords.size + 'px ' + titleFamily;
+    ctx.font = '400 ' + laid.coords.size + 'px ' + coordsFamily;
     drawSpaced(ctx, laid.coords.text, laid.coords.x, laid.coords.y, laid.coords.spacing, laid.coords.size, laid.align);
     ctx.globalAlpha = 1;
   }
@@ -425,7 +465,7 @@ export function drawPosterText(
   ctx.globalAlpha = 0.9;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
-  ctx.font = '300 ' + creditSize + 'px ' + lightFamily;
+  ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
   ctx.fillText('\u00a9 OpenStreetMap contributors', creditRight, creditY);
   ctx.globalAlpha = 1;
   if (credits) {
@@ -433,7 +473,7 @@ export function drawPosterText(
     ctx.globalAlpha = 0.9;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
-    ctx.font = '300 ' + creditSize + 'px ' + lightFamily;
+    ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
     ctx.fillText('created with mapvibestudio.com', creditLeft, creditY);
     ctx.globalAlpha = 1;
   }

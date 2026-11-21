@@ -1,0 +1,80 @@
+{
+  "source": "scripts/font-sheet/out/metrics.json (existing browser run; no browsers launched by tests)",
+  "dimensions": {
+    "width": 900,
+    "height": 1200
+  },
+  "browserVersions": {
+    "chrome": "157.0.8103.79",
+    "edge": "158.0.4370.33"
+  },
+  "browser": {
+    "city": {
+      "advance": 306.4287109375,
+      "cssInline": 530.296875,
+      "drawn": 502.18987500000003,
+      "size": 62.46,
+      "spanTop": 1011.734375,
+      "lineBoxTop": 1015.734375
+    },
+    "country": {
+      "advance": 179.00985717773438,
+      "cssInline": 179.015625,
+      "drawn": 179.015625,
+      "size": 22.95,
+      "spanTop": 1099.59375,
+      "lineBoxTop": 1101.59375
+    },
+    "coords": {
+      "advance": 201.20367431640625,
+      "cssInline": 201.21875,
+      "drawn": 201.21875,
+      "size": 14.58,
+      "spanTop": 1140.5625,
+      "lineBoxTop": 1142.5625
+    }
+  },
+  "print": {
+    "city": {
+      "advance": 305.427734375,
+      "drawn": 502.176734375,
+      "cssInline": 530.283734375
+    },
+    "country": {
+      "advance": 179.00390625,
+      "drawn": 179.00390625,
+      "cssInline": 179.00390625
+    },
+    "coords": {
+      "advance": 201.1826171875,
+      "drawn": 201.1826171875,
+      "cssInline": 201.1826171875
+    }
+  },
+  "fingerprints": [
+    {
+      "file": "SpaceGrotesk-Bold.ttf",
+      "sample": "HHHHHH000000",
+      "size": 100,
+      "variation": {},
+      "expected": 782.4,
+      "actual": 782.396484375
+    },
+    {
+      "file": "IBMPlexMono-Light.ttf",
+      "sample": "HHHHHH000000",
+      "size": 100,
+      "variation": {},
+      "expected": 720,
+      "actual": 720
+    },
+    {
+      "file": "IBMPlexMono-Regular.ttf",
+      "sample": "HHHHHH000000",
+      "size": 100,
+      "variation": {},
+      "expected": 720,
+      "actual": 720
+    }
+  ]
+}

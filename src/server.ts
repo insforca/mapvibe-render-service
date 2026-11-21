@@ -39,7 +39,8 @@ import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
 import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
-import { applyFades, drawPosterText } from './poster-text.js';
+import { BUNDLED_FONTS } from './bundled-fonts.js';
+import { applyFades, drawPosterText, resolveLockupFont, type LockupFont } from './poster-text.js';
 import {
   preparePrintStyle,
   resolvePrintCamera,
@@ -411,27 +412,18 @@ async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
 
 /** Register the editor poster faces bundled in ./assets/fonts/.
  *
- *  The editor's poster block is Roboto: city 700, coordinates 400, country
+ *  Legacy poster blocks use Roboto: city 700, coordinates 400, country
  *  and the credit line 300. node-canvas matches faces by the name table, and
  *  Light and Regular both ship as family "Roboto", so a weight-300 request
  *  lands on Regular. Roboto-Light.ttf is renamed to family "Roboto Light"
  *  (glyphs unchanged; Apache-2.0) and registered under that family.
+ *  space-plex uses Space Grotesk 700, Plex Light 300 and Plex Regular 400.
+ *  Plex Light ships with its own family already, so both weights stay distinct.
  */
 function registerBundledFonts(): void {
   const FONTS_DIR = join(__dirname, '..', 'assets', 'fonts');
 
-  const bundled: Array<{
-    family: string;
-    weight: string;
-    staticFile: string;
-    variableFile: string;
-  }> = [
-    { family: 'Roboto Light', weight: '300', staticFile: 'Roboto-Light.ttf',    variableFile: 'Roboto-Light.ttf' },
-    { family: 'Roboto',       weight: '400', staticFile: 'Roboto-Regular.ttf',  variableFile: 'Roboto-Regular.ttf' },
-    { family: 'Roboto',       weight: '700', staticFile: 'Roboto-Bold.ttf',     variableFile: 'Roboto-Bold.ttf' },
-  ];
-
-  for (const { family, weight, staticFile, variableFile } of bundled) {
+  for (const { family, weight, staticFile, variableFile } of BUNDLED_FONTS) {
     const fontKey = `${family}:${weight}`;
     if (registeredFonts.has(fontKey)) continue;
 
@@ -469,6 +461,7 @@ interface OverlayParams {
   displayCity:    string;
   displayCountry: string;
   fontFamily:     string;
+  lockupFont?:    LockupFont;
   showPosterText: boolean;
   fadeStyle:      string;
   includeCredits: boolean;
@@ -651,6 +644,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
       overlay.showPosterText !== false,
       overlay.includeCredits !== false,
       overlay.textLayout     || 'centered',
+      overlay.lockupFont,
     );
   }
 
@@ -770,6 +764,7 @@ async function renderTiledPng(
       overlay.showPosterText !== false,
       overlay.includeCredits !== false,
       overlay.textLayout     ?? 'centered',
+      overlay.lockupFont,
     );
   }
 
@@ -794,6 +789,7 @@ interface MapvibeConfigSnapshot {
   displayCity:    string;
   displayCountry: string;
   fontFamily:     string;
+  lockupFont?:    LockupFont;
   showPosterText: boolean;
   fadeStyle:      string;
   includeCredits: boolean;
@@ -1026,6 +1022,7 @@ async function renderConfigToBlobUrl(
       displayCity:    cfg.displayCity    ?? '',
       displayCountry: cfg.displayCountry ?? '',
       fontFamily:     cfg.fontFamily     ?? '',
+      lockupFont:     resolveLockupFont(cfg.lockupFont),
       showPosterText: cfg.showPosterText !== false,
       fadeStyle:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
       includeCredits: cfg.includeCredits !== false,
@@ -1135,7 +1132,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   const {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
     mapWidth, mapHeight,
-    displayCity, displayCountry, fontFamily, showPosterText, fadeStyle, includeCredits, textLayout, theme,
+    displayCity, displayCountry, fontFamily, lockupFont, showPosterText, fadeStyle, includeCredits, textLayout, theme,
     // engine 'osm' is a hard error. osmTheme / osmDist / themeJson are ignored.
     // previewMode marks an editor preview tile; it does not select a renderer.
     engine, previewMode,
@@ -1175,6 +1172,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       displayCity:    displayCity    ?? '',
       displayCountry: displayCountry ?? '',
       fontFamily:     fontFamily     ?? '',
+      lockupFont:     resolveLockupFont(lockupFont),
       showPosterText: showPosterText !== false,
       fadeStyle:      fadeStyle      ?? 'default',
       includeCredits: includeCredits !== false,
