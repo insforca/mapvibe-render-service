@@ -23,7 +23,7 @@
  */
 import express, { Request, Response } from 'express';
 import { timingSafeEqual, createHmac } from 'crypto';
-import { mkdirSync, existsSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { put } from '@vercel/blob';
 import sharp from 'sharp';
@@ -40,6 +40,7 @@ import { memoryWatch } from './memory-watch.js';
 import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
 import { BUNDLED_FONTS } from './bundled-fonts.js';
+import { resolvePickerFont } from './picker-fonts.js';
 import { applyFades, drawPosterText, resolveLockupFont, type LockupFont } from './poster-text.js';
 import {
   preparePrintStyle,
@@ -333,7 +334,6 @@ function checkAuth(req: Request, res: Response): boolean {
 // Tile / asset allowlist + SSRF helpers extracted to ./url-allowlist.ts
 
 // ── Font cache ───────────────────────────────────────────────────────────────
-const FONT_CACHE_DIR = '/tmp/mapvibe-fonts';
 const registeredFonts = new Set<string>();
 
 /** Register system fallback fonts at startup so poster text renders without network calls. */
@@ -362,52 +362,11 @@ function registerSystemFonts(): void {
   }
 }
 
-/** Download a Google Font TTF and register it with node-canvas. Cached in /tmp. */
-async function ensureFont(fontFamily: string, weight?: string): Promise<void> {
-  if (!fontFamily || registeredFonts.has(fontFamily)) return;
-  mkdirSync(FONT_CACHE_DIR, { recursive: true });
-  const fontPath = join(FONT_CACHE_DIR, `${fontFamily.replace(/\s+/g, '_')}.ttf`);
-  try {
-    let ttfBuf: Buffer | null = null;
-  if (existsSync(fontPath)) {
-    const raw = readFileSync(fontPath);
-    // Validate TTF magic: 00 01 00 00 | 'true' (0x74727565) | 'OTTO' (0x4F54544F)
-    const validFont = raw.length > 4 && (
-      (raw[0] === 0x00 && raw[1] === 0x01) ||
-      (raw[0] === 0x74 && raw[1] === 0x72) ||
-      (raw[0] === 0x4F && raw[1] === 0x54)
-    );
-    if (validFont) {
-      ttfBuf = raw;
-    } else {
-      console.warn(`[ensureFont] Bad magic in cached ${fontPath} — purging and re-fetching`);
-      try { unlinkSync(fontPath); } catch {}
-    }
-  }
-    if (!ttfBuf) {
-      // Fetch CSS from Google Fonts requesting TTF (older UA)
-      const cssUrl = `https://fonts.googleapis.com/css?family=${encodeURIComponent(fontFamily)}:300,400,700`;
-      const cssRes = await fetch(cssUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)' },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!cssRes.ok) throw new Error(`Google Fonts CSS ${cssRes.status}`);
-      const css = await cssRes.text();
-      // Match any Google Fonts URL (modern kit= URLs no longer end with .ttf/.woff extension)
-  const match = css.match(/src:\s*url\(([^)]+fonts\.gstatic\.com[^)]+)\)\s*format\(['\"](?:truetype|woff|opentype)['\"]\)/i)
-             || css.match(/src:\s*url\((https?:\/\/[^)]+\.(?:ttf|woff))\)/i);
-      if (!match) throw new Error('No TTF URL in Google Fonts CSS');
-      const fontRes = await fetch(match[1], { signal: AbortSignal.timeout(15_000) });
-      if (!fontRes.ok) throw new Error(`Font download ${fontRes.status}`);
-      ttfBuf = Buffer.from(await fontRes.arrayBuffer());
-      writeFileSync(fontPath, ttfBuf);
-    }
-    registerFont(fontPath, { family: fontFamily, ...(weight ? { weight } : {}) });
-    registeredFonts.add(fontFamily);
-    console.log(`[fonts] Registered ${fontFamily} from Google Fonts`);
-  } catch (err) {
-    console.warn(`[fonts] ${fontFamily} unavailable, falling back to system font:`, err);
-  }
+/** Startup registers every supported face, including those used only post-stitch.
+ * Unknown values deliberately retain the legacy Roboto fallback. No font HTTP.
+ */
+async function ensureFont(fontFamily: string): Promise<void> {
+  resolvePickerFont(fontFamily);
 }
 
 /** Register the editor poster faces bundled in ./assets/fonts/.
@@ -433,17 +392,16 @@ function registerBundledFonts(): void {
     const sourceLabel  = pathToUse === staticPath ? `${staticFile} (static)` : `${variableFile} (variable)`;
 
     if (!pathToUse) {
-      console.warn(`[fonts] Neither ${staticFile} nor ${variableFile} found in ${FONTS_DIR}`);
-      continue;
+      throw new Error(`[fonts] Missing bundled face: ${staticFile}`);
     }
 
     try {
       registerFont(pathToUse, { family, weight });
       registeredFonts.add(fontKey);
-      registeredFonts.add(family); // plain family name — ensureFont() lookup key
+      registeredFonts.add(family);
       console.log(`[fonts] Bundled font registered: ${family} wt=${weight} from ${sourceLabel}`);
     } catch (err) {
-      console.warn(`[fonts] Could not register ${family} wt=${weight} from ${sourceLabel}:`, err);
+      throw new Error(`[fonts] Could not register ${family} wt=${weight} from ${sourceLabel}: ${String(err)}`);
     }
   }
 }

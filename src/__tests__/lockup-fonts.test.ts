@@ -85,7 +85,7 @@ describe('versioned poster lockup', () => {
       expect(result.draws.absent[0].font).toContain('Roboto');
       // A customer's picker font wins over the lockup default, with the legacy fallbacks.
       const picked = result.draws['picker-over-space-plex'];
-      expect(picked[0].font).toContain('"Lato",Roboto');
+      expect(picked[0].font).toContain('"MapVibe Picker Lato 700",Roboto');
       expect(picked.some((d: any) => /Space Grotesk|Plex/.test(d.font))).toBe(false);
       // Whitespace is not a picker font: the lockup default applies.
       expect(result.draws['blank-picker']).toEqual(result.draws['space-plex']);

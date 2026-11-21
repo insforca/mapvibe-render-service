@@ -1,3 +1,4 @@
+import { resolvePickerFont, pickerFamily } from './picker-fonts.js';
 /**
  * Clean-engine poster typography.
  *
@@ -394,17 +395,16 @@ export function drawPosterText(
   // layout and fallbacks, so print matches what the editor showed. The
   // lockup id only replaces the default (Roboto) when no picker font is set.
   // A blank or whitespace-only fontFamily means "no picker font".
-  const picker = (fontFamily || '').trim();
-  const selectedLockup: LockupFont = picker ? 'roboto' : resolveLockupFont(lockupFont);
+  const pickerValue = (fontFamily || '').trim();
+  const picker = resolvePickerFont(pickerValue);
+  const selectedLockup: LockupFont = pickerValue ? 'roboto' : resolveLockupFont(lockupFont);
   const spacePlex = selectedLockup === 'space-plex';
   const titleFamily = spacePlex ? '"Space Grotesk"' : picker
-    ? '"' + picker + '",Roboto,sans-serif'
-    : 'Roboto';
+    ? pickerFamily(picker, 700) + ',Roboto,sans-serif' : 'Roboto';
   const lightFamily = spacePlex ? '"IBM Plex Mono Light"' : picker
-    ? '"' + picker + '","Roboto Light",Roboto,sans-serif'
-    : '"Roboto Light",Roboto,sans-serif';
-
-  const coordsFamily = spacePlex ? '"IBM Plex Mono"' : titleFamily;
+    ? pickerFamily(picker, 300) + ',"Roboto Light",Roboto,sans-serif' : '"Roboto Light",Roboto,sans-serif';
+  const coordsFamily = spacePlex ? '"IBM Plex Mono"' : picker
+    ? pickerFamily(picker, 400) + ',Roboto,sans-serif' : 'Roboto';
   const creditFamily = spacePlex ? coordsFamily : lightFamily;
   const creditWeight = spacePlex ? '400' : '300';
 
