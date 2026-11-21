@@ -21,5 +21,8 @@ jobs:
       - name: Install dependencies (no scripts — skip native build)
         run: npm install --ignore-scripts
 
+      - name: Fetch the prebuilt canvas binary (font tests draw with real faces)
+        run: npm rebuild canvas
+
       - name: Run unit tests
         run: npm test
