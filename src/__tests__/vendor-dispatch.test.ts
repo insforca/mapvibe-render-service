@@ -52,6 +52,22 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('all public vendor entry paths are held', () => {
+  it('rechecks Gelato immediately before HTTP if the flag changes during payload construction', async () => {
+    const adapter = vi.fn();
+    vi.stubGlobal('fetch', adapter);
+    const address = {
+      get name() {
+        vi.stubEnv('FULFILL_DRY_RUN', 'true');
+        return 'PRIVATE NAME';
+      },
+      address1: 'PRIVATE ADDRESS',
+    };
+    expect(await fulfillGelato('order-1', address, 'uid', 1, 'PRIVATE LABEL', 'https://blob.test/file.png'))
+      .toEqual(held);
+    expect(adapter).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain('PRIVATE');
+  });
+
   it('holds Gelato, then resumes on the same import with a real order type', async () => {
     const adapter = vi.fn(async () => new Response('{"id":"test"}'));
     vi.stubGlobal('fetch', adapter);
