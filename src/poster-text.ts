@@ -1,3 +1,4 @@
+import { fontOutline } from './font-outline.js';
 import { resolvePickerFont, pickerFamily } from './picker-fonts.js';
 /**
  * Clean-engine poster typography.
@@ -44,6 +45,28 @@ export function resolveLockupFont(value?: unknown): LockupFont {
   if (value !== undefined) console.warn('[fonts] Unknown lockupFont; falling back to roboto');
   return 'roboto';
 }
+
+export interface LockupOptions {
+  lockupLayout?: 'v2';
+  showCity?: boolean;
+  showCountry?: boolean;
+  showCoords?: boolean;
+}
+export function resolveLockupLayout(value?: unknown): 'v2' | undefined {
+  if (value === 'v2') return value;
+  if (value !== undefined) console.warn('[lockup] Unknown lockupLayout; falling back to legacy');
+  return undefined;
+}
+export function resolveLineToggle(value: unknown, field: string): boolean {
+  if (typeof value === 'boolean') return value;
+  if (value !== undefined) console.warn('[lockup] Non-boolean ' + field + '; ignoring');
+  return true;
+}
+/** Ivan's option A Small. Reference lengths scale by short / 482.390625. */
+export const LOCKUP_V2 = { city: .055, country: .025, coords: .021, citySpacing: .12,
+  countrySpacing: .14, coordsSpacing: .04, padX: 38.59125, padTop: 6, padBottom: 14,
+  cityMarginBottom: 3, ruleMarginBottom: 4, countryMarginBottom: 3, coordMargin: .4,
+  ruleHeight: 1, dividerWidth: .2, safeWidth: .84, fadeCapHeight: .6 } as const;
 
 /** Explicit editor CSS line-height, shared by both lockups (not font "normal"). */
 export const CSS_LINE_HEIGHT = 1.15;
@@ -129,6 +152,7 @@ export interface PosterTextLayout {
   coords: PosterLine;
   /** Top of .mvs-poster-text-strip, in canvas pixels from the top of the poster. */
   stripTop: number;
+  textFadeTop?: number;
   credit: { size: number; y: number; leftX: number; rightX: number };
 }
 
@@ -183,12 +207,17 @@ export function layoutPosterText(input: {
   textLayout?: string;
   lockupFont?: LockupFont;
   glyph: GlyphMeasure;
-}): PosterTextLayout {
+  baselineEm?: Partial<Record<'city' | 'country' | 'coords', number>>;
+} & LockupOptions): PosterTextLayout {
   const { width, height, glyph } = input;
   const metrics = LOCKUP_METRICS[input.lockupFont ?? 'roboto'];
-  const city = input.city || '';
-  const country = input.country || '';
-  const coords = input.coords || '';
+  const v2 = resolveLockupLayout(input.lockupLayout) === 'v2';
+  const city = resolveLineToggle(input.showCity, 'showCity') ? input.city || '' : '';
+  const country = resolveLineToggle(input.showCountry, 'showCountry') ? input.country || '' : '';
+  const coords = resolveLineToggle(input.showCoords, 'showCoords') ? input.coords || '' : '';
+  const citySpacing = v2 ? LOCKUP_V2.citySpacing : CITY_SPACING;
+  const countrySpacing = v2 ? LOCKUP_V2.countrySpacing : COUNTRY_SPACING;
+  const coordsSpacing = v2 ? LOCKUP_V2.coordsSpacing : COORDS_SPACING;
   const ds = posterDimensionScale(width, height);
   const editorial = input.textLayout === 'editorial';
   const align: 'center' | 'left' = editorial ? 'left' : 'center';
@@ -198,18 +227,18 @@ export function layoutPosterText(input: {
   const px = (cssPx: number) => cssPx * css;
   // 1px at the reference poster, scaled with the sheet. 20% of the content
   // box (the strip's 18px side padding), not 20% of the full sheet.
-  const border = px(RULE_BORDER_PX);
+  const border = px(v2 ? LOCKUP_V2.ruleHeight : RULE_BORDER_PX);
   const halfStroke = border / 2;
-  const padX = px(STRIP_PAD_X_PX);
-  const dividerWidth = 0.20 * Math.max(1, width - 2 * padX);
-  const maxWidth = editorial
+  const padX = px(v2 ? LOCKUP_V2.padX : STRIP_PAD_X_PX);
+  const dividerWidth = (v2 ? LOCKUP_V2.dividerWidth : 0.20) * Math.max(1, width - 2 * padX);
+  const maxWidth = v2 ? width * LOCKUP_V2.safeWidth : editorial
     ? Math.max(1, width * (1 - EDITORIAL_INSET) - padX)
     : Math.max(1, width - 2 * padX);
 
-  const citySize0 = shrinkFont(CITY_CQMIN * short, CITY_MIN * ds, city.length, CITY_SPACING);
-  const cityFit = fitToWidth('city', city, citySize0, CITY_SPACING, maxWidth, glyph);
-  const countryFit = fitToWidth('country', country, COUNTRY_CQMIN * short, COUNTRY_SPACING, maxWidth, glyph);
-  const coordsFit = fitToWidth('coords', coords, COORDS_CQMIN * short, COORDS_SPACING, maxWidth, glyph);
+  const citySize0 = v2 ? LOCKUP_V2.city * short : shrinkFont(CITY_CQMIN * short, CITY_MIN * ds, city.length, CITY_SPACING);
+  const cityFit = fitToWidth('city', city, citySize0, citySpacing, maxWidth, glyph);
+  const countryFit = fitToWidth('country', country, (v2 ? LOCKUP_V2.country : COUNTRY_CQMIN) * short, countrySpacing, maxWidth, glyph);
+  const coordsFit = fitToWidth('coords', coords, (v2 ? LOCKUP_V2.coords : COORDS_CQMIN) * short, coordsSpacing, maxWidth, glyph);
 
   // CSS block flow inside the strip's padding. Vertical margins collapse.
   // y grows downward. The strip is bottom-aligned, so the stack is shifted
@@ -217,10 +246,12 @@ export function layoutPosterText(input: {
   // stays inside its box instead of pushing the next line down.
   interface FlowBlock { box: number; marginTop: number; marginBottom: number }
   const blocks: FlowBlock[] = [];
-  if (city) blocks.push({ box: cityFit.size * metrics.city.lineHeight, marginTop: 0, marginBottom: px(CITY_MARGIN_BOTTOM_PX) });
-  blocks.push({ box: border, marginTop: 0, marginBottom: px(RULE_MARGIN_BOTTOM_PX) });
-  if (country) blocks.push({ box: countryFit.size * metrics.country.lineHeight, marginTop: 0, marginBottom: px(COUNTRY_MARGIN_BOTTOM_PX) });
-  if (coords) blocks.push({ box: coordsFit.size * metrics.coords.lineHeight, marginTop: coordsFit.size, marginBottom: coordsFit.size });
+  if (city) blocks.push({ box: cityFit.size * metrics.city.lineHeight, marginTop: 0, marginBottom: px(v2 ? LOCKUP_V2.cityMarginBottom : CITY_MARGIN_BOTTOM_PX) });
+  // Keep unmodified legacy snapshots byte-for-byte, including their unconditional rule.
+  const rule = (!!city && !!(country || coords)) || (!v2 && ![input.showCity, input.showCountry, input.showCoords].some(value => typeof value === 'boolean'));
+  if (rule) blocks.push({ box: border, marginTop: 0, marginBottom: px(v2 ? LOCKUP_V2.ruleMarginBottom : RULE_MARGIN_BOTTOM_PX) });
+  if (country) blocks.push({ box: countryFit.size * metrics.country.lineHeight, marginTop: 0, marginBottom: px(v2 ? LOCKUP_V2.countryMarginBottom : COUNTRY_MARGIN_BOTTOM_PX) });
+  if (coords) blocks.push({ box: coordsFit.size * metrics.coords.lineHeight, marginTop: coordsFit.size * (v2 ? LOCKUP_V2.coordMargin : 1), marginBottom: coordsFit.size * (v2 ? LOCKUP_V2.coordMargin : 1) });
 
   const placed: Array<{ top: number; bottom: number }> = [];
   let cursor = 0;
@@ -234,8 +265,8 @@ export function layoutPosterText(input: {
     prevMarginBottom = block.marginBottom;
   }
   const contentBottom = cursor + prevMarginBottom;
-  const padTop = px(STRIP_PAD_TOP_PX);
-  const padBottom = px(STRIP_PAD_BOTTOM_PX);
+  const padTop = px(v2 ? LOCKUP_V2.padTop : STRIP_PAD_TOP_PX);
+  const padBottom = px(v2 ? LOCKUP_V2.padBottom : STRIP_PAD_BOTTOM_PX);
   const stripTop = height - (padTop + contentBottom + padBottom);
   const origin = stripTop + padTop;
 
@@ -246,17 +277,17 @@ export function layoutPosterText(input: {
     return box;
   };
   const cityBox = city ? take() : { top: 0, bottom: 0 };
-  const ruleBox = take();
+  const ruleBox = rule ? take() : { top: 0, bottom: 0 };
   const countryBox = country ? take() : { top: 0, bottom: 0 };
   const coordsBox = coords ? take() : { top: 0, bottom: 0 };
   const baselineY = (box: { top: number }, size: number, text: string, role: 'city' | 'country' | 'coords') =>
-    origin + box.top + (text ? metrics[role].baselineEm * size : 0);
+    origin + box.top + (text ? (input.baselineEm?.[role] ?? metrics[role].baselineEm) * size : 0);
 
   // Trailing letter-spacing is part of the centred inline box, so the ink
   // sits half a spacing to the left. Left-aligned editorial text starts at
   // the inset; the trailing gap only extends to the right.
   const cityX = align === 'center' && city
-    ? anchorX - (CITY_SPACING / 2) * cityFit.size
+    ? anchorX - (citySpacing / 2) * cityFit.size
     : anchorX;
 
   const line = (
@@ -288,16 +319,22 @@ export function layoutPosterText(input: {
   return {
     ds,
     align,
-    city: line(city, baselineY(cityBox, cityFit.size, city, 'city'), cityX, cityFit, CITY_SPACING, cityBox),
+    city: line(city, baselineY(cityBox, cityFit.size, city, 'city'), cityX, cityFit, citySpacing, cityBox),
     divider: {
       x: anchorX,
       y: origin + (ruleBox.top + ruleBox.bottom) / 2,
-      width: dividerWidth,
+      width: rule ? dividerWidth : 0,
       halfStroke,
     },
-    country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), anchorX, countryFit, COUNTRY_SPACING, countryBox),
-    coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), anchorX, coordsFit, COORDS_SPACING, coordsBox),
-    stripTop,
+    country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), align === 'center' ? anchorX - countrySpacing * countryFit.size / 2 : anchorX, countryFit, countrySpacing, countryBox),
+    coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), align === 'center' ? anchorX - coordsSpacing * coordsFit.size / 2 : anchorX, coordsFit, coordsSpacing, coordsBox),
+    stripTop: blocks.length ? stripTop : height,
+    textFadeTop: v2 ? (() => {
+      const first = city ? { box: cityBox, fit: cityFit, role: 'city' as const, text: city }
+        : country ? { box: countryBox, fit: countryFit, role: 'country' as const, text: country }
+        : coords ? { box: coordsBox, fit: coordsFit, role: 'coords' as const, text: coords } : undefined;
+      return first ? Math.max(0, baselineY(first.box, first.fit.size, first.text, first.role) - (1 + LOCKUP_V2.fadeCapHeight) * first.fit.ink.ascent) : height;
+    })() : undefined,
     credit: {
       size: creditSize,
       y: height - bottomInset,
@@ -332,13 +369,14 @@ function drawSpaced(
   spacingEm: number,
   fontPx: number,
   align: 'center' | 'left',
+  v2 = false,
 ): void {
   if (spacingEm === 0 || text.length === 0) {
     ctx.fillText(text, x, y);
     return;
   }
   const gap = spacingEm * fontPx;
-  const total = ctx.measureText(text).width + gap * (text.length - 1);
+  const total = (v2 ? [...text].reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) : ctx.measureText(text).width) + gap * (text.length - 1);
   let cursor = align === 'center' ? x - total / 2 : x;
   const saved = ctx.textAlign;
   ctx.textAlign = 'left';
@@ -349,12 +387,12 @@ function drawSpaced(
   ctx.textAlign = saved;
 }
 
-function measureCanvasGlyph(ctx: any, font: string, text: string): GlyphBox {
+function measureCanvasGlyph(ctx: any, font: string, text: string, v2 = false): GlyphBox {
   ctx.font = font;
   ctx.textBaseline = 'alphabetic';
-  // Whole-string width matches drawSpaced's centering measure. Vertical
+  // Legacy uses whole-string width; v2 sums the same glyph advances it draws. Vertical
   // extent is per glyph so a space (negative ascent) cannot pad the line box.
-  const width = text ? ctx.measureText(text).width : 0;
+  const width = v2 ? [...text].reduce((sum, ch) => sum + ctx.measureText(ch).width, 0) : text ? ctx.measureText(text).width : 0;
   let ascent = 0;
   let descent = 0;
   for (const ch of text) {
@@ -383,7 +421,11 @@ export function drawPosterText(
   credits: boolean,
   textLayout: string,
   lockupFont?: LockupFont,
+  options: LockupOptions = {},
+  beforeDraw?: (layout?: PosterTextLayout) => void,
 ): void {
+  const v2 = resolveLockupLayout(options.lockupLayout) === 'v2';
+  if (v2) ctx.fontKerning = 'none';
   const land = (theme && theme.map && theme.map.land) || '#808080';
   const rgb = parseHex(land);
   const luma = (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
@@ -391,8 +433,8 @@ export function drawPosterText(
   const attrColor = luma < 0.52 ? '#f5faff' : '#0e1822';
   // Roboto Light is registered under its own family. node-canvas collapses
   // Light and Regular when both files keep the name-table family "Roboto".
-  // A picker font chosen by the customer always wins: it keeps the legacy
-  // layout and fallbacks, so print matches what the editor showed. The
+  // A picker font chosen by the customer always wins family selection.
+  // Layout versioning is independent, so v2 also uses picker metrics. The
   // lockup id only replaces the default (Roboto) when no picker font is set.
   // A blank or whitespace-only fontFamily means "no picker font".
   const pickerValue = (fontFamily || '').trim();
@@ -408,9 +450,17 @@ export function drawPosterText(
   const creditFamily = spacePlex ? coordsFamily : lightFamily;
   const creditWeight = spacePlex ? '400' : '300';
 
+  const faceFile = (role: 'city' | 'country' | 'coords') => {
+    const weight = role === 'city' ? 700 : role === 'country' ? 300 : 400;
+    return picker ? (picker.faces.find(f => +f.weight === weight) ?? picker.faces.find(f => f.weight === '400')!).staticFile
+      : spacePlex ? ({ city: 'SpaceGrotesk-Bold.ttf', country: 'IBMPlexMono-Light.ttf', coords: 'IBMPlexMono-Regular.ttf' })[role]
+      : 'Roboto-' + (role === 'city' ? 'Bold' : role === 'country' ? 'Light' : 'Regular') + '.ttf';
+  };
   let laid: PosterTextLayout | undefined;
   if (showText) {
     laid = layoutPosterText({
+      ...options,
+      baselineEm: v2 ? Object.fromEntries((['city', 'country', 'coords'] as const).map(role => [role, fontOutline(faceFile(role)).baselineEm])) : undefined,
       width: W,
       height: H,
       city: fmtCity(city || ''),
@@ -424,17 +474,24 @@ export function drawPosterText(
           : role === 'country'
             ? '300 ' + fontPx + 'px ' + lightFamily
             : '400 ' + fontPx + 'px ' + coordsFamily;
-        return measureCanvasGlyph(ctx, font, text);
+        const measured = measureCanvasGlyph(ctx, font, text, v2);
+        if (!v2) return measured;
+        const outline = fontOutline(faceFile(role)).ink(text);
+        if (outline) return { ...measured, ascent: outline.ascent * fontPx, descent: outline.descent * fontPx };
+        const probe = measureCanvasGlyph(ctx, font.replace(fontPx + 'px', '1000px'), text, true);
+        return { ...measured, ascent: probe.ascent * fontPx / 1000, descent: probe.descent * fontPx / 1000 };
       },
     });
 
+    beforeDraw?.(laid);
+    if (v2) ctx.globalAlpha = 1;
     ctx.fillStyle = textColor;
     ctx.textAlign = laid.align;
     ctx.textBaseline = 'alphabetic';
     ctx.font = '700 ' + laid.city.size + 'px ' + titleFamily;
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
-    drawSpaced(ctx, laid.city.text, laid.city.x, laid.city.y, laid.city.spacing, laid.city.size, laid.align);
+    drawSpaced(ctx, laid.city.text, laid.city.x, laid.city.y, laid.city.spacing, laid.city.size, laid.align, v2);
 
     ctx.strokeStyle = textColor;
     ctx.lineWidth = laid.divider.halfStroke * 2;
@@ -446,17 +503,18 @@ export function drawPosterText(
       ctx.moveTo(laid.divider.x, laid.divider.y);
       ctx.lineTo(laid.divider.x + laid.divider.width, laid.divider.y);
     }
-    ctx.stroke();
+    if (laid.divider.width > 0) ctx.stroke();
 
     ctx.font = '300 ' + laid.country.size + 'px ' + lightFamily;
-    drawSpaced(ctx, laid.country.text, laid.country.x, laid.country.y, laid.country.spacing, laid.country.size, laid.align);
+    drawSpaced(ctx, laid.country.text, laid.country.x, laid.country.y, laid.country.spacing, laid.country.size, laid.align, v2);
 
     ctx.globalAlpha = 0.7;
     ctx.font = '400 ' + laid.coords.size + 'px ' + coordsFamily;
-    drawSpaced(ctx, laid.coords.text, laid.coords.x, laid.coords.y, laid.coords.spacing, laid.coords.size, laid.align);
+    drawSpaced(ctx, laid.coords.text, laid.coords.x, laid.coords.y, laid.coords.spacing, laid.coords.size, laid.align, v2);
     ctx.globalAlpha = 1;
   }
 
+  if (!showText) beforeDraw?.();
   const creditSize = laid ? laid.credit.size : ATTRIBUTION_BASE * posterDimensionScale(W, H);
   const creditY = laid ? laid.credit.y : H * (1 - EDGE_MARGIN);
   const creditLeft = laid ? laid.credit.leftX : W * EDGE_MARGIN;
@@ -527,7 +585,7 @@ function dither(ctx: any, rx: number, ry: number, w: number, h: number, intensit
  *  The sheet fraction is the band; the stops are fractions of that band.
  *  No dither: the editor gradient is smooth, and a ±4 dither shifted the cream.
  */
-export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string): void {
+export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string, textFadeTop?: number): void {
   const kind = fadeKind(fadeStyle);
   if (kind === 'none') return;
   if (kind === 'text') {
@@ -563,7 +621,8 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
   }
 
   // Editor `.poster-fade` / `.poster-fade--bottom`: height 14%, pinned to the bottom.
-  const bH = Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT));
+  const bH = textFadeTop === undefined ? Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT)) : H - textFadeTop;
+  if (bH <= 0) return;
   const bY = H - bH;
   const bg = ctx.createLinearGradient(0, H, 0, bY);
   const stops = process.env.DISABLE_EASEIN_FADE === 'true'
@@ -572,4 +631,23 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
   for (const [t, a] of stops) bg.addColorStop(t, withAlpha(color, a));
   ctx.fillStyle = bg;
   ctx.fillRect(0, bY, W, bH);
+}
+
+/** Shared compositor for both render paths. Legacy fade choices stay frozen. */
+export function compositePosterOverlay(ctx: any, width: number, height: number, overlay: any,
+  lat: number, lon: number, legacyFadeColor: string, legacyFadeStyle: string): void {
+  const v2 = resolveLockupLayout(overlay.lockupLayout) === 'v2';
+  const theme = overlay.theme ?? {};
+  const color = v2 ? theme.map?.overlayBg ?? theme.ui?.bg ?? '#f5f5f0' : legacyFadeColor;
+  drawPosterText(ctx, width, height, theme, lat, lon, overlay.displayCity || '', overlay.displayCountry || '',
+    overlay.fontFamily || '', overlay.showPosterText !== false, overlay.includeCredits !== false,
+    overlay.textLayout || 'centered', overlay.lockupFont, { ...overlay, lockupLayout: v2 ? 'v2' : undefined },
+    layout => applyFades(ctx, width, height, color, overlay.fadeStyle || (v2 ? 'fullbleed' : legacyFadeStyle),
+      overlay.textLayout || 'centered', v2 ? layout?.textFadeTop ?? height : undefined));
+}
+/** Normalized mean alpha over nonzero glyph pixels, plus area for weight comparisons. */
+export function measureInkCoverage(data: ArrayLike<number>) {
+  let alpha = 0, pixels = 0;
+  for (let i = 3; i < data.length; i += 4) { alpha += data[i] / 255; if (data[i]) pixels++; }
+  return { meanAlpha: pixels ? alpha / pixels : 0, glyphPixels: pixels, alphaArea: alpha, coverage: alpha / (data.length / 4) };
 }

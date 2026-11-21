@@ -41,7 +41,7 @@ import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
 import { BUNDLED_FONTS } from './bundled-fonts.js';
 import { resolvePickerFont } from './picker-fonts.js';
-import { applyFades, drawPosterText, resolveLockupFont, type LockupFont } from './poster-text.js';
+import { compositePosterOverlay, resolveLockupFont, type LockupFont } from './poster-text.js';
 import {
   preparePrintStyle,
   resolvePrintCamera,
@@ -420,6 +420,10 @@ interface OverlayParams {
   displayCountry: string;
   fontFamily:     string;
   lockupFont?:    LockupFont;
+  lockupLayout?: 'v2';
+  showCity?: boolean;
+  showCountry?: boolean;
+  showCoords?: boolean;
   showPosterText: boolean;
   fadeStyle:      string;
   includeCredits: boolean;
@@ -593,17 +597,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   // 3. Fades + poster text
   if (overlay) {
     const fc = bgColor; // resolved via map.overlayBg → ui.bg → '#f5f5f0'
-    applyFades(ctx, w, h, fc, overlay.fadeStyle || 'default', overlay.textLayout || 'centered');
-    drawPosterText(ctx, w, h, overlay.theme || {},
-      lat, lng,
-      overlay.displayCity    || '',
-      overlay.displayCountry || '',
-      overlay.fontFamily     || '',
-      overlay.showPosterText !== false,
-      overlay.includeCredits !== false,
-      overlay.textLayout     || 'centered',
-      overlay.lockupFont,
-    );
+    compositePosterOverlay(ctx, w, h, overlay, lat, lng, fc, 'default');
   }
 
   // Encode as sRGB RGB PNG — flattens alpha onto white, writes DPI, embeds the
@@ -713,17 +707,7 @@ async function renderTiledPng(
   if (overlay && params.printMode) {
     const theme = (overlay.theme ?? {}) as any;
     const [lng, lat] = params.center;
-    applyFades(ctx, totalW, totalH, theme?.map?.fade ?? '#1B2A4A', overlay.fadeStyle ?? 'fullbleed', overlay.textLayout ?? 'centered');
-    drawPosterText(
-      ctx, totalW, totalH, theme, lat, lng,
-      overlay.displayCity    ?? '',
-      overlay.displayCountry ?? '',
-      overlay.fontFamily     ?? '',
-      overlay.showPosterText !== false,
-      overlay.includeCredits !== false,
-      overlay.textLayout     ?? 'centered',
-      overlay.lockupFont,
-    );
+    compositePosterOverlay(ctx, totalW, totalH, overlay, lat, lng, theme?.map?.fade ?? '#1B2A4A', 'fullbleed');
   }
 
   const finalRaw      = (ctx.getImageData(0, 0, totalW, totalH) as any).data;
@@ -748,6 +732,10 @@ interface MapvibeConfigSnapshot {
   displayCountry: string;
   fontFamily:     string;
   lockupFont?:    LockupFont;
+  lockupLayout?: 'v2';
+  showCity?: boolean;
+  showCountry?: boolean;
+  showCoords?: boolean;
   showPosterText: boolean;
   fadeStyle:      string;
   includeCredits: boolean;
@@ -981,6 +969,8 @@ async function renderConfigToBlobUrl(
       displayCountry: cfg.displayCountry ?? '',
       fontFamily:     (cfg.fontFamily ?? '').trim(),
       lockupFont:     resolveLockupFont(cfg.lockupFont),
+      lockupLayout: cfg.lockupLayout,
+      showCity: cfg.showCity, showCountry: cfg.showCountry, showCoords: cfg.showCoords,
       showPosterText: cfg.showPosterText !== false,
       fadeStyle:      (cfg.fadeStyle && cfg.fadeStyle !== 'text') ? cfg.fadeStyle : 'fullbleed',
       includeCredits: cfg.includeCredits !== false,
@@ -1090,7 +1080,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
   const {
     styleJson, center, zoom, bounds, width=2400, height=2400, bearing=0, pitch=0, printMode=false,
     mapWidth, mapHeight,
-    displayCity, displayCountry, fontFamily, lockupFont, showPosterText, fadeStyle, includeCredits, textLayout, theme,
+    displayCity, displayCountry, fontFamily, lockupFont, lockupLayout, showCity, showCountry, showCoords, showPosterText, fadeStyle, includeCredits, textLayout, theme,
     // engine 'osm' is a hard error. osmTheme / osmDist / themeJson are ignored.
     // previewMode marks an editor preview tile; it does not select a renderer.
     engine, previewMode,
@@ -1131,6 +1121,7 @@ app.post('/render', async (req: Request, res: Response): Promise<void> => {
       displayCountry: displayCountry ?? '',
       fontFamily:     String(fontFamily ?? '').trim(),
       lockupFont:     resolveLockupFont(lockupFont),
+      lockupLayout, showCity, showCountry, showCoords,
       showPosterText: showPosterText !== false,
       fadeStyle:      fadeStyle      ?? 'default',
       includeCredits: includeCredits !== false,
