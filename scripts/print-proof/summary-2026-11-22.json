@@ -1,0 +1,338 @@
+[
+ {
+  "name": "01-new-york",
+  "framing": {
+   "corr_identity": 0.8851,
+   "corr_best": 0.9871,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 4,
+  "bands_print": 4,
+  "mean_rgb_diff": 5.78,
+  "lockup_band_rgb_diff": 2.91,
+  "ssim_global": 0.7754,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.09,
+  "lockup_ink": {
+   "city": {
+    "top": 0.09,
+    "bottom": -0.09,
+    "left": -0.12,
+    "right": 0.0,
+    "h_ratio": 0.96
+   },
+   "country": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": -0.12,
+    "right": 0.0,
+    "h_ratio": 1.038
+   },
+   "coords": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": -0.12,
+    "right": 0.0,
+    "h_ratio": 1.2
+   }
+  }
+ },
+ {
+  "name": "02-washington-country-coords",
+  "framing": {
+   "corr_identity": 0.9202,
+   "corr_best": 0.9904,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 2,
+  "bands_print": 4,
+  "mean_rgb_diff": 6.37,
+  "lockup_band_rgb_diff": 5.8,
+  "ssim_global": 0.8717,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.09,
+  "lockup_ink": {
+   "city": "hidden",
+   "country": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": -0.12,
+    "right": 0.0,
+    "h_ratio": 1.029
+   },
+   "coords": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": -0.99,
+    "right": 0.0,
+    "h_ratio": 1.2
+   }
+  }
+ },
+ {
+  "name": "03-saint-petersburg",
+  "framing": {
+   "corr_identity": 0.9123,
+   "corr_best": 0.9906,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 11,
+  "bands_print": 13,
+  "mean_rgb_diff": 3.49,
+  "lockup_band_rgb_diff": 3.8,
+  "ssim_global": 0.8231,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.46,
+  "lockup_ink": {
+   "city": {
+    "top": 0.09,
+    "bottom": -0.09,
+    "left": -0.12,
+    "right": 0.12,
+    "h_ratio": 0.96
+   },
+   "country": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": 1.35,
+    "right": -1.48,
+    "h_ratio": 1.038
+   },
+   "coords": {
+    "top": 0.46,
+    "bottom": 0.09,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 0.2
+   }
+  }
+ },
+ {
+  "name": "04-sydney",
+  "framing": {
+   "corr_identity": 0.9695,
+   "corr_best": 0.9691,
+   "best_scale": 1.0,
+   "scale_error_pct": 0.0,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 4,
+  "bands_print": 6,
+  "mean_rgb_diff": 2.81,
+  "lockup_band_rgb_diff": 2.22,
+  "ssim_global": 0.9363,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.28,
+  "lockup_ink": {
+   "city": {
+    "top": 0.28,
+    "bottom": -0.09,
+    "left": -0.14,
+    "right": 0.0,
+    "h_ratio": 0.915
+   },
+   "country": {
+    "top": 0.0,
+    "bottom": 0.0,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 1.0
+   },
+   "coords": {
+    "top": 0.0,
+    "bottom": 0.0,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 1.0
+   }
+  }
+ },
+ {
+  "name": "05-tokyo-a0",
+  "framing": {
+   "corr_identity": 0.8832,
+   "corr_best": 0.9614,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 4,
+  "bands_print": 3,
+  "mean_rgb_diff": 3.78,
+  "lockup_band_rgb_diff": 1.29,
+  "ssim_global": 0.7901,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.46,
+  "lockup_ink": {
+   "city": {
+    "top": 0.0,
+    "bottom": 0.0,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 1.0
+   },
+   "country": {
+    "top": 0.09,
+    "bottom": 0.18,
+    "left": 1.31,
+    "right": -1.44,
+    "h_ratio": 1.042
+   },
+   "coords": {
+    "top": 0.46,
+    "bottom": 0.18,
+    "left": 0.13,
+    "right": 0.0,
+    "h_ratio": 0.25
+   }
+  }
+ },
+ {
+  "name": "06-lisbon-light",
+  "framing": {
+   "corr_identity": 0.8893,
+   "corr_best": 0.9867,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 5,
+  "bands_print": 5,
+  "mean_rgb_diff": 5.92,
+  "lockup_band_rgb_diff": 1.83,
+  "ssim_global": 0.8217,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.09,
+  "lockup_ink": {
+   "city": {
+    "top": 0.09,
+    "bottom": -0.09,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 0.96
+   },
+   "country": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": 1.11,
+    "right": -1.6,
+    "h_ratio": 1.038
+   },
+   "coords": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 1.2
+   }
+  }
+ },
+ {
+  "name": "07-chicago-dark",
+  "framing": {
+   "corr_identity": 0.9596,
+   "corr_best": 0.9587,
+   "best_scale": 1.0,
+   "scale_error_pct": 0.0,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 5,
+  "bands_print": 3,
+  "mean_rgb_diff": 3.44,
+  "lockup_band_rgb_diff": 2.53,
+  "ssim_global": 0.9346,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0.37,
+  "lockup_ink": {
+   "city": {
+    "top": 0.18,
+    "bottom": -0.09,
+    "left": 0.0,
+    "right": 0.0,
+    "h_ratio": 0.938
+   },
+   "country": {
+    "top": 0.0,
+    "bottom": 0.09,
+    "left": -1.85,
+    "right": 0.4,
+    "h_ratio": 1.042
+   },
+   "coords": {
+    "top": -0.37,
+    "bottom": 0.09,
+    "left": -2.65,
+    "right": 20.5,
+    "h_ratio": 6.0
+   }
+  }
+ },
+ {
+  "name": "08-paris-no-text",
+  "framing": {
+   "corr_identity": 0.9117,
+   "corr_best": 0.9882,
+   "best_scale": 0.9975,
+   "scale_error_pct": 0.25,
+   "shift_x_pct": 0.0,
+   "shift_y_pct": 0.0
+  },
+  "bands_editor": 1,
+  "bands_print": 1,
+  "mean_rgb_diff": 7.1,
+  "lockup_band_rgb_diff": 5.56,
+  "ssim_global": 0.8586,
+  "pass": {
+   "framing_scale_le_1pct": true,
+   "framing_shift_le_1pct": true,
+   "lockup_le_0_5pct": true
+  },
+  "lockup_worst_pct": 0,
+  "lockup_ink": {
+   "city": "hidden",
+   "country": "hidden",
+   "coords": "hidden"
+  }
+ }
+]
