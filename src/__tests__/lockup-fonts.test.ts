@@ -6,7 +6,6 @@ import { resolve, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_LOCKUP_FONT, LOCKUP_METRICS, layoutPosterText, resolveLockupFont } from '../poster-text.js';
 import sheet from './fixtures/space-plex-sheet.json';
-import legacy from './fixtures/legacy-lockup-hashes.json';
 
 const pinned = {
   'SpaceGrotesk-Bold.ttf': '7209bbb75fc0f5c546a5f5773b0db74ffc6abf04c2148c1105cace5765a96bdb',
@@ -82,7 +81,8 @@ describe('versioned poster lockup', () => {
       }
       const result = JSON.parse(execFileSync(process.execPath, [resolve('src/__tests__/fixtures/lockup-canvas.cjs')],
         { env, encoding: 'utf8', timeout: 30000 }));
-      expect(result.legacyHashes).toEqual(legacy.hashes);
+      expect(result.referenceHashes).toHaveLength(8);
+      expect(result.legacyHashes).toEqual(result.referenceHashes);
       expect(result.v2.fadeSamples).toHaveLength(12);
       for (const sample of result.v2.fadeSamples) {
         expect(sample.alpha, JSON.stringify(sample)).toBeGreaterThanOrEqual(.83);

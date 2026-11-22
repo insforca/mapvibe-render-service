@@ -4,12 +4,12 @@ const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
 const { createCanvas, registerFont } = require('canvas');
-function loadTs(file) {
+function loadTs(file, baseDir = path.dirname(file)) {
   const mod = new Module(file, module);
   mod.filename = file;
   mod.paths = module.paths;
   mod.require = spec => spec.startsWith('.')
-    ? loadTs(path.resolve(path.dirname(file), spec.replace(/\.js$/, '.ts')))
+    ? loadTs(path.resolve(baseDir, spec.replace(/\.js$/, '.ts')))
     : require(spec);
   mod._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { esModuleInterop: true, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -68,14 +68,24 @@ for (const id of [undefined, 'roboto', 'space-plex', 'picker-over-space-plex', '
 }
 
 
-const legacyHashes = [];
-for (const id of [undefined, 'space-plex']) for (const textLayout of ['centered', 'editorial']) for (const showText of [false, true]) {
-  const c = createCanvas(900, 1200), x = c.getContext('2d');
-  x.fillStyle = '#172434'; x.fillRect(0, 0, 900, 1200);
-  drawPosterText(x, 900, 1200, { map: { land: '#172434' }, ui: { text: '#ffffff' } },
-    40.7128, -74.006, 'NEW YORK', 'UNITED STATES', '', showText, true, textLayout, id);
-  legacyHashes.push(require('node:crypto').createHash('sha256').update(c.toBuffer('raw')).digest('hex'));
+// Legacy must stay pixel-identical to the last released drawer (a2ed13e), compared on
+// this machine: glyph rasterization differs between Windows and Linux, so stored hashes
+// from one platform cannot be checked on the other. Its imports resolve to src/, which
+// a2ed13e..HEAD leaves unchanged (print-parity.ts, picker-fonts.ts).
+const reference = loadTs(path.resolve('src/__tests__/fixtures/legacy/poster-text.a2ed13e.ts'), path.resolve('src'));
+function legacyHashesOf(draw) {
+  const hashes = [];
+  for (const id of [undefined, 'space-plex']) for (const textLayout of ['centered', 'editorial']) for (const showText of [false, true]) {
+    const c = createCanvas(900, 1200), x = c.getContext('2d');
+    x.fillStyle = '#172434'; x.fillRect(0, 0, 900, 1200);
+    draw(x, 900, 1200, { map: { land: '#172434' }, ui: { text: '#ffffff' } },
+      40.7128, -74.006, 'NEW YORK', 'UNITED STATES', '', showText, true, textLayout, id);
+    hashes.push(require('node:crypto').createHash('sha256').update(c.toBuffer('raw')).digest('hex'));
+  }
+  return hashes;
 }
+const legacyHashes = legacyHashesOf(drawPosterText);
+const referenceHashes = legacyHashesOf(reference.drawPosterText);
 
 const v2 = { layouts: [], ink: {}, calls: {}, parity: [] };
 // Full print geometry with a one-column backing keeps native memory low.
@@ -184,5 +194,5 @@ for (let mask = 0; mask < 16; mask++) {
     const tiled = await sandbox.api.renderTiledPng(params, 240, 320, 2);
     v2.serverParity.push(single.equals(tiled));
   }
-  console.log(JSON.stringify({ widths, fingerprints, density, draws, legacyHashes, v2 }));
+  console.log(JSON.stringify({ widths, fingerprints, density, draws, legacyHashes, referenceHashes, v2 }));
 })().catch(error => { console.error(error); process.exitCode = 1; });
