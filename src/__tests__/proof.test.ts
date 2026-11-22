@@ -5,6 +5,7 @@ import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { stillExtent } from '../print-parity.js';
+import * as renderDims from '../render-dims.js';
 import * as printPng from '../print-png.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { put } from '@vercel/blob';
@@ -38,6 +39,7 @@ const snapshot = {
       { id: 'road-secondary', type: 'line', source: 'base', 'source-layer': 'transportation', layout: { visibility: 'none' } }] },
 };
 const loadStyle = vi.fn();
+const viewport = vi.fn();
 type Draw = (err: Error | null, pixels?: Buffer) => void;
 const renderFrame = vi.fn((width: number, height: number, done: Draw) => done(null, Buffer.alloc(width * height * 4)));
 let server: Server;
@@ -56,6 +58,7 @@ beforeAll(async () => {
       load = loadStyle;
       release() {}
       render({ width, height }: { width: number; height: number }, done: Draw) {
+        viewport(width, height);
         renderFrame(stillExtent(width, this.options.ratio), stillExtent(height, this.options.ratio), done);
       }
     } };
@@ -115,6 +118,7 @@ describe('POST /proof', () => {
   it.each(['{', {}, { snapshot: {} }, { snapshot: { ...snapshot, styleJson: null } },
     { snapshot: { ...snapshot, engine: 'osm' } }, { snapshot, widthCm: -1 }, { snapshot, maxHeight: 0.5 },
     { snapshot, detailedRoads: 'true' }, { snapshot: { ...snapshot, zoom: -1e308 } },
+    { snapshot, sku: 123 }, { snapshot, sku: ' ' }, { snapshot, sku: 'MVS-UNKNOWN' },
     { snapshot: { ...snapshot, zoom: 25 } }])('rejects invalid request %#', async body => {
     expect((await post(body)).status).toBe(400);
     expect(renderFrame).not.toHaveBeenCalled();
@@ -135,6 +139,45 @@ describe('POST /proof', () => {
       'x-proof-tile-host': 'tiles.openfreemap.org', 'x-proof-glyph-host': 'tiles.openfreemap.org' });
     expect(await sharp(result.png).metadata()).toMatchObject({ format: 'png', width: 40, height: 80, density: 400, hasProfile: true });
     expect(log.mock.calls).toEqual([[expect.stringMatching(/^\[proof\] status=200 elapsedMs=\d+$/)]]);
+  });
+
+  it.each([false])('uses the catalogue sheet and preserves the poster face (tiled=%s)', { timeout: 30_000 }, async tiled => {
+    // Keep physical sheet/face geometry exact at 12 px/in, with two strips
+    // for the stitched case. All type, compositing and PNG encoding are real.
+    const compute = renderDims.computeRenderDims;
+    vi.spyOn(renderDims, 'computeRenderDims').mockImplementation((w, h, bounds) =>
+      compute(w, h, bounds, { targetDpi: 12, minSinglePassDpi: 12, maxEdgePx: 400, maxPx: tiled ? 48_000 : 160_000 }));
+    const face = { ...snapshot, lockupLayout: 'v2', showPosterText: true, includeCredits: true,
+      displayCity: 'Lisbon', displayCountry: 'Portugal', mapWidth: 216, mapHeight: 288,
+      bounds: { west: -0.3, east: 0.3, north: 0.4, south: -0.4 } };
+    // Same 18x24 face and the same 12 mm frame inset as the white-frame canvas.
+    const poster = await post({ snapshot: face, sku: 'MVS-F-1824-BK' });
+    expect(poster.status).toBe(200);
+    expect(await sharp(poster.png).metadata()).toMatchObject({ width: 216, height: 288 });
+    const expected = await sharp(poster.png).raw().toBuffer();
+    for (const dimensionsArePrintArea of [false, true]) {
+      viewport.mockClear();
+      const canvas = await post({ snapshot: { ...face, dimensionsArePrintArea }, sku: 'MVS-C-1824-W',
+        widthCm: 1, heightCm: 1 });
+      expect(canvas.status).toBe(200);
+      expect(await sharp(canvas.png).metadata()).toMatchObject({ width: 252, height: 324 });
+      if (tiled) expect(viewport).toHaveBeenCalledTimes(2);
+      else expect(viewport).toHaveBeenCalledWith(...(dimensionsArePrintArea ? [216, 288] : [252, 324]));
+      const crop = await sharp(canvas.png).extract({ left: 18, top: 18, width: 216, height: 288 }).raw().toBuffer();
+      // Cairo rounds a few gradient samples one level differently after translation.
+      expect(crop.length).toBe(expected.length);
+      expect(crop.every((channel, i) => Math.abs(channel - expected[i]) <= 1)).toBe(true);
+    }
+  });
+
+  it('refuses a wrapped canvas sheet that would need tiling', async () => {
+    const compute = renderDims.computeRenderDims;
+    vi.spyOn(renderDims, 'computeRenderDims').mockImplementation((w, h, bounds) =>
+      compute(w, h, bounds, { targetDpi: 12, minSinglePassDpi: 12, maxEdgePx: 400, maxPx: 48_000 }));
+    const face = { ...snapshot, mapWidth: 216, mapHeight: 288, bounds: { west: -0.3, east: 0.3, north: 0.4, south: -0.4 } };
+    const res = await post({ snapshot: face, sku: 'MVS-C-1824-W' });
+    expect(res.status).toBe(500);
+    expect(renderFrame).not.toHaveBeenCalled();
   });
 
   it('uses the tiled pipeline for a sheet above the single-pass ceiling', async () => {

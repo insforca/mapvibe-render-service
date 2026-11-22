@@ -36,6 +36,8 @@ import {
 } from './url-allowlist.js';
 import { computeRenderDims, PRODUCTION_RENDER_CAPS } from './render-dims.js';
 import { memoryWatch } from './memory-watch.js';
+import { isRowEnabled, loadCatalogue, renderTargetForRow } from './catalogue.js';
+import { resolvePrintWindow, type ResolvedPrintWindow } from './print-window.js';
 import { planFulfillment } from './fulfill-plan.js';
 import { healthIdentity } from './health-info.js';
 import { BUNDLED_FONTS } from './bundled-fonts.js';
@@ -444,15 +446,7 @@ interface RenderParams {
   bounds?:       MapBounds;
   /** Actual DPI to embed in PNG pHYs metadata. Defaults to 400. */
   dpi?:          number;
-  /**
-   * Fraction of the canvas that holds the editor's visible composition.
-   * 1 means the bounds fill the sheet (posters, frames). Canvas print areas
-   * are larger than the visible product; the fraction is visible/print so
-   * the framed map stays in the centre and the margin is wrap. Zoom is not
-   * recomputed from this — the editor zoom is kept and the sheet's logical
-   * viewport grows by 1/fraction.
-   */
-  visibleFraction?: { w: number; h: number };
+  printWindow?: ResolvedPrintWindow;
   /**
    * Editor Clean / Detailed toggle. Detailed (`true`) leaves every opacity
    * curve alone. Clean leaves them alone too when `editorStyle` is set.
@@ -508,8 +502,8 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     bounds,
     outputWidth: w,
     outputHeight: h,
-    visibleFractionW: params.visibleFraction?.w,
-    visibleFractionH: params.visibleFraction?.h,
+    visibleFractionW: params.printWindow?.wrapApplied ? params.printWindow.visibleFractionW : 1,
+    visibleFractionH: params.printWindow?.wrapApplied ? params.printWindow.visibleFractionH : 1,
     mapWidth: params.mapWidth,
     mapHeight: params.mapHeight,
     maxZoom: MAX_ZOOM_RENDER,
@@ -605,7 +599,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   // 3. Fades + poster text
   if (overlay) {
     const fc = bgColor; // resolved via map.overlayBg → ui.bg → '#f5f5f0'
-    compositePosterOverlay(ctx, w, h, overlay, lat, lng, fc, 'default');
+    compositePosterOverlay(ctx, w, h, overlay, lat, lng, fc, 'default', params.printWindow);
   }
 
   // Encode as sRGB RGB PNG — flattens alpha onto white, writes DPI, embeds the
@@ -689,9 +683,9 @@ async function renderTiledPng(
       bounds:  { west: bounds.west, east: bounds.east, north: tileNorth, south: tileSouth },
       overlay: undefined,
       dpi:     undefined,
-      // The slice is the whole tile. A sheet-level wrap fraction must not be
-      // applied again inside each strip (tiled + wrap is already refused).
-      visibleFraction: undefined,
+      // The slice is the whole tile. A sheet-level wrap must not be applied
+      // again inside each strip (tiled + wrap is refused below).
+      printWindow: undefined,
       mapWidth: undefined,
       mapHeight: undefined,
     });
@@ -715,7 +709,7 @@ async function renderTiledPng(
   if (overlay && params.printMode) {
     const theme = (overlay.theme ?? {}) as any;
     const [lng, lat] = params.center;
-    compositePosterOverlay(ctx, totalW, totalH, overlay, lat, lng, theme?.map?.fade ?? '#1B2A4A', 'fullbleed');
+    compositePosterOverlay(ctx, totalW, totalH, overlay, lat, lng, theme?.map?.fade ?? '#1B2A4A', 'fullbleed', params.printWindow);
   }
 
   const finalRaw      = (ctx.getImageData(0, 0, totalW, totalH) as any).data;
@@ -800,14 +794,6 @@ async function downloadConfigSnapshot(configUrl: string): Promise<MapvibeConfigS
   }
 }
 
-interface PrintWindow {
-  visibleFractionW: number;
-  visibleFractionH: number;
-  visibleWIn: number;
-  visibleHIn: number;
-  hasWrap: boolean;
-}
-
 type ConfigRenderResult<T> =
   | ({ ok: true } & T)
   | {
@@ -850,7 +836,7 @@ async function renderConfigToPng(
   { dimsOverride, detailedRoads, printWindow, proof = false }: {
     dimsOverride?: PrintSizeOverride;
     detailedRoads?: boolean;
-    printWindow?: PrintWindow;
+    printWindow?: ResolvedPrintWindow;
     proof?: boolean;
   },
 ): Promise<ConfigRenderResult<ConfigPng>> {
@@ -891,7 +877,7 @@ async function renderConfigToPng(
   }
 
   if (printWindow?.hasWrap && numTiles > 1) {
-    console.error(`[fulfill] canvas print area ${widthCm}×${heightCm} cm would tile ×${numTiles}; refusing (wrap must be single-pass)`);
+    if (!proof) console.error(`[fulfill] canvas print area ${widthCm}×${heightCm} cm would tile ×${numTiles}; refusing (wrap must be single-pass)`);
     return { ok: false, kind: 'failed' };
   }
 
@@ -991,9 +977,7 @@ async function renderConfigToPng(
       : {}),
     printMode: true,
     dpi:       actualDpi,
-    ...(printWindow?.hasWrap ? {
-      visibleFraction: { w: printWindow.visibleFractionW, h: printWindow.visibleFractionH },
-    } : {}),
+    printWindow,
     overlay: {
       displayCity:    cfg.displayCity    ?? '',
       displayCountry: cfg.displayCountry ?? '',
@@ -1040,7 +1024,7 @@ async function renderConfigToBlobUrl(
   dimsOverride?: PrintSizeOverride,
   detailedRoads?: boolean,
   preloadedCfg?: MapvibeConfigSnapshot | null,
-  printWindow?: PrintWindow,
+  printWindow?: ResolvedPrintWindow,
 ): Promise<ConfigRenderResult<{ url: string }>> {
   const cfg = preloadedCfg ?? await downloadConfigSnapshot(configUrl);
   if (!cfg) return { ok: false, kind: 'failed' };
@@ -1074,6 +1058,7 @@ function finiteNumber(value: unknown): value is number {
 }
 
 interface ProofBody extends PrintSizeOverride {
+  sku?: string;
   snapshot: MapvibeConfigSnapshot;
   maxHeight?: number;
   detailedRoads?: boolean;
@@ -1095,6 +1080,7 @@ function validProofBody(body: unknown): body is ProofBody {
     .every(v => v === undefined || (finiteNumber(v) && v > 0))
     && [cfg.bearing, cfg.pitch].every(v => v === undefined || Number.isFinite(v))
     && [cfg.displayCity, cfg.displayCountry, cfg.fontFamily].every(v => v === undefined || typeof v === 'string')
+    && (body.sku === undefined || (typeof body.sku === 'string' && body.sku.trim().length > 0))
     && (body.maxHeight === undefined || (finiteNumber(body.maxHeight) && Number.isSafeInteger(body.maxHeight) && body.maxHeight > 0))
     && (body.detailedRoads === undefined || typeof body.detailedRoads === 'boolean');
 }
@@ -1129,9 +1115,18 @@ app.post('/proof', (req, res, next) => {
       res.status(503).json({ error: 'Renderer busy, retry the proof later' });
       return;
     }
-    const { snapshot, widthCm, heightCm, detailedRoads, maxHeight } = req.body;
+    const { snapshot, sku, widthCm, heightCm, detailedRoads, maxHeight } = req.body;
+    let dimsOverride: PrintSizeOverride = { widthCm, heightCm };
+    let printWindow: ResolvedPrintWindow | undefined;
+    if (sku !== undefined) {
+      const row = loadCatalogue().find(row => row.sku === sku.trim().toUpperCase());
+      if (!row || !isRowEnabled(row)) throw new ProofInputError('Unknown or disabled catalogue SKU');
+      const target = renderTargetForRow(row);
+      dimsOverride = target;
+      printWindow = resolvePrintWindow(target, snapshot.dimensionsArePrintArea === true);
+    }
     await renderQueue.add(() => memoryWatch.track('proof', async () => {
-      const print = await renderConfigToPng(snapshot, { dimsOverride: { widthCm, heightCm }, detailedRoads, proof: true });
+      const print = await renderConfigToPng(snapshot, { dimsOverride, printWindow, detailedRoads, proof: true });
       if (res.destroyed) return;
       if (!print.ok) {
         if (print.kind === 'rejected') res.status(400).json({ error: print.route.message });
