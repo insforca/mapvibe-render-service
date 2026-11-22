@@ -98,6 +98,7 @@ export interface GateSuccess {
   visibleFractionH: number;
   hasWrap: boolean;
   wrapBleedIn: number | null;
+  framedSafeInsetIn: number | null;
   bleedMm: number | null;
   needsRender: boolean;
   callerProviderIgnored: boolean;
@@ -269,6 +270,7 @@ function evaluateCatalogueRow(row: ReturnType<typeof loadCatalogue>[number], sku
     visibleFractionH: target.visibleFractionH,
     hasWrap: target.hasWrap,
     wrapBleedIn: target.wrapBleedIn,
+    framedSafeInsetIn: target.framedSafeInsetIn,
     bleedMm: row.bleedMm,
     needsRender,
     callerProviderIgnored,

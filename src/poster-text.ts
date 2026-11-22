@@ -1,3 +1,4 @@
+import { innerViewportPx, type ResolvedPrintWindow } from './print-window.js';
 import { fontOutline } from './font-outline.js';
 import { resolvePickerFont, pickerFamily } from './picker-fonts.js';
 /**
@@ -51,6 +52,8 @@ export interface LockupOptions {
   showCity?: boolean;
   showCountry?: boolean;
   showCoords?: boolean;
+  /** Framed products: keep the credits this many px from every trim edge. */
+  creditInsetPx?: number;
 }
 export function resolveLockupLayout(value?: unknown): 'v2' | undefined {
   if (value === 'v2') return value;
@@ -538,7 +541,13 @@ export function drawPosterText(
   const creditSize = laid ? laid.credit.size : ATTRIBUTION_BASE * posterDimensionScale(W, H);
   const creditY = laid ? laid.credit.y : H * (1 - EDGE_MARGIN);
   const creditLeft = laid ? laid.credit.leftX : W * EDGE_MARGIN;
-  const creditRight = laid ? laid.credit.rightX : W * (1 - EDGE_MARGIN);
+  const creditRightRaw = laid ? laid.credit.rightX : W * (1 - EDGE_MARGIN);
+  // Framed products (owner, 2026-11-22): no credit ink within the frame-safe inset.
+  // textBaseline 'bottom' puts the glyph box bottom on creditY.
+  const inset = options.creditInsetPx ?? 0;
+  const creditYSafe = inset ? Math.min(creditY, H - inset) : creditY;
+  const creditLeftSafe = inset ? Math.max(creditLeft, inset) : creditLeft;
+  const creditRight = inset ? Math.min(creditRightRaw, W - inset) : creditRightRaw;
   ctx.shadowBlur = 0;
   ctx.shadowColor = 'transparent';
   ctx.fillStyle = attrColor;
@@ -546,7 +555,7 @@ export function drawPosterText(
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
   ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
-  ctx.fillText('\u00a9 OpenStreetMap contributors', creditRight, creditY);
+  ctx.fillText('\u00a9 OpenStreetMap contributors', creditRight, creditYSafe);
   ctx.globalAlpha = 1;
   if (credits) {
     ctx.fillStyle = attrColor;
@@ -554,7 +563,7 @@ export function drawPosterText(
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
-    ctx.fillText('created with mapvibestudio.com', creditLeft, creditY);
+    ctx.fillText('created with mapvibestudio.com', creditLeftSafe, creditYSafe);
     ctx.globalAlpha = 1;
   }
 }
@@ -673,6 +682,29 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
 
 /** Shared compositor for both render paths. Legacy fade choices stay frozen. */
 export function compositePosterOverlay(ctx: any, width: number, height: number, overlay: any,
+  lat: number, lon: number, legacyFadeColor: string, legacyFadeStyle: string, printWindow?: ResolvedPrintWindow): void {
+  const inset = printWindow?.safeInsetIn && printWindow.visibleWIn > 0
+    ? printWindow.safeInsetIn * (printWindow.hasWrap ? width * printWindow.visibleFractionW : width) / printWindow.visibleWIn
+    : undefined;
+  if (inset) overlay = { ...overlay, creditInsetPx: inset };
+  if (printWindow?.hasWrap) {
+    const face = innerViewportPx(width, height, printWindow.visibleFractionW, printWindow.visibleFractionH);
+    ctx.save();
+    try {
+      ctx.translate((width - face.w) / 2, (height - face.h) / 2);
+      ctx.beginPath();
+      ctx.rect(0, 0, face.w, face.h);
+      ctx.clip();
+      drawOverlay(ctx, face.w, face.h, overlay, lat, lon, legacyFadeColor, legacyFadeStyle);
+    } finally {
+      ctx.restore();
+    }
+  } else {
+    drawOverlay(ctx, width, height, overlay, lat, lon, legacyFadeColor, legacyFadeStyle);
+  }
+}
+
+function drawOverlay(ctx: any, width: number, height: number, overlay: any,
   lat: number, lon: number, legacyFadeColor: string, legacyFadeStyle: string): void {
   const v2 = resolveLockupLayout(overlay.lockupLayout) === 'v2';
   const theme = overlay.theme ?? {};

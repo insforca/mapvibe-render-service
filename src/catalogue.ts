@@ -65,6 +65,8 @@ export interface RenderTarget {
   hasWrap: boolean;
   /** Inches of extra print beyond the visible product, per side. Null when there is no wrap. */
   wrapBleedIn: number | null;
+  /** Framed products only: keep poster text this far (inches) from every trim edge. Null otherwise. */
+  framedSafeInsetIn: number | null;
   source: 'gelato-700x1000mm' | 'gelato-a0' | 'trim-inches';
 }
 
@@ -226,7 +228,11 @@ function parseSizeLabel(size: string): { w: number; h: number } | null {
  * is larger than the visible size in the `size` column. The visible window
  * stays centred; the margin is wrap.
  */
+/** Owner decision 2026-11-22: frame lips are not published by the vendors; keep text 12 mm clear. */
+export const FRAMED_SAFE_INSET_MM = 12;
+
 export function renderTargetForRow(row: CatalogueRow): RenderTarget {
+  const framedSafeInsetIn = /^framed/i.test(row.finish) ? FRAMED_SAFE_INSET_MM / 25.4 : null;
   if (row.productRef.includes('700x1000-mm')) {
     const printWIn = 70 / CM_PER_INCH;
     const printHIn = 100 / CM_PER_INCH;
@@ -241,6 +247,7 @@ export function renderTargetForRow(row: CatalogueRow): RenderTarget {
       visibleFractionH: 1,
       hasWrap: false,
       wrapBleedIn: null,
+      framedSafeInsetIn,
       source: 'gelato-700x1000mm',
     };
   }
@@ -260,6 +267,7 @@ export function renderTargetForRow(row: CatalogueRow): RenderTarget {
       visibleFractionH: 1,
       hasWrap: false,
       wrapBleedIn: null,
+      framedSafeInsetIn,
       source: 'gelato-a0',
     };
   }
@@ -285,6 +293,7 @@ export function renderTargetForRow(row: CatalogueRow): RenderTarget {
     visibleFractionH,
     hasWrap,
     wrapBleedIn,
+    framedSafeInsetIn,
     source: 'trim-inches',
   };
 }

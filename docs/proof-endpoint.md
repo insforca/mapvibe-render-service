@@ -12,7 +12,7 @@ jq '{snapshot: ., maxHeight: 2400}' snapshot.json |
     --data-binary @- --dump-header proof.headers --output proof.png
 ```
 
-`widthCm` and `heightCm` independently override the snapshot dimensions. For a catalogue order, use the order's print-sheet dimensions. A proof uses the supplied sheet as the visible window. Wrapped catalogue canvases also require a SKU-specific visible window during fulfilment. The optional boolean `detailedRoads` has the same meaning as the fulfilment override.
+Pass an optional catalogue `sku`, such as `MVS-C-1824-W`, to use the catalogue print-sheet dimensions and visible face. The SKU takes precedence over dimension overrides. A snapshot with `dimensionsArePrintArea: true` already includes the wrap in its map bounds. Without a SKU, `widthCm` and `heightCm` independently override the snapshot dimensions and the whole sheet is visible. The optional boolean `detailedRoads` has the same meaning as the fulfilment override.
 
 **Proof mode.** `X-Proof-Mode: full-downscaled` means the service renders and validates the full print first. Omitting `maxHeight` returns those exact bytes. A smaller positive integer resizes the finished PNG proportionally, keeping its sRGB profile. This exercises the full-size camera, fonts, compositing and tiled path even for a small response.
 

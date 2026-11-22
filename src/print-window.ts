@@ -56,14 +56,18 @@ export interface WrapTarget {
   visibleFractionW: number;
   visibleFractionH: number;
   hasWrap: boolean;
+  framedSafeInsetIn?: number | null;
 }
 
+/** Physical face on the sheet, independent of how the saved map bounds were captured. */
 export interface ResolvedPrintWindow {
   visibleFractionW: number;
   visibleFractionH: number;
   visibleWIn: number;
   visibleHIn: number;
   hasWrap: boolean;
+  /** Framed products: keep poster text this far (inches) from the trim. */
+  safeInsetIn: number | null;
   /** False when the editor already expanded bounds to the print area. */
   wrapApplied: boolean;
 }
@@ -76,23 +80,14 @@ export interface ResolvedPrintWindow {
  * once.
  */
 export function resolvePrintWindow(target: WrapTarget, dimensionsArePrintArea: boolean): ResolvedPrintWindow {
-  if (dimensionsArePrintArea) {
-    return {
-      visibleFractionW: 1,
-      visibleFractionH: 1,
-      visibleWIn: target.printWIn,
-      visibleHIn: target.printHIn,
-      hasWrap: false,
-      wrapApplied: false,
-    };
-  }
   return {
     visibleFractionW: target.visibleFractionW,
     visibleFractionH: target.visibleFractionH,
     visibleWIn: target.visibleWIn,
     visibleHIn: target.visibleHIn,
     hasWrap: target.hasWrap,
-    wrapApplied: target.hasWrap,
+    wrapApplied: target.hasWrap && !dimensionsArePrintArea,
+    safeInsetIn: target.framedSafeInsetIn ?? null,
   };
 }
 

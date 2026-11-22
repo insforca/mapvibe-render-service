@@ -219,10 +219,10 @@ describe('print window', () => {
 
     const skipped = resolvePrintWindow(target, true);
     expect(skipped.wrapApplied).toBe(false);
-    expect(skipped.hasWrap).toBe(false);
-    expect(skipped.visibleFractionW).toBe(1);
-    expect(skipped.visibleFractionH).toBe(1);
-    const held = skipped.hasWrap
+    expect(skipped.hasWrap).toBe(true);
+    expect(skipped.visibleFractionW).toBeCloseTo(18 / 21, 6);
+    expect(skipped.visibleFractionH).toBeCloseTo(24 / 27, 6);
+    const held = skipped.wrapApplied
       ? expandProjectedWindow(0, target.printWIn, 0, target.printHIn, target.printWIn, target.printHIn, target.visibleWIn, target.visibleHIn)
       : { x0: 0, x1: target.printWIn, y0: 0, y1: target.printHIn };
     expect(held.x1 - held.x0).toBeCloseTo(21, 5);
