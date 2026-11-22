@@ -50,6 +50,86 @@ TTFs. All faces register at startup for single and tiled renders; unknown values
 warn and use Roboto. Picker overrides also take precedence over `space-plex`.
 Matching editor assets and browser parity remain separate work.
 
+Optional fields on `/render` and the top level of fulfilment config snapshots
+(including internally tiled renders):
+
+| Field | Behaviour |
+| --- | --- |
+| `lockupLayout: "v2"` | Ivan's option A Small. Absent preserves legacy layout; unknown values warn and use legacy. Independent of `lockupFont` and the picker `fontFamily`. |
+| `showCity`, `showCountry`, `showCoords` | Booleans, each defaulting to true. Non-booleans warn and are ignored. Hidden lines consume no height or margins. |
+| `showPosterText: false` | Hides all three lines and their divider, overriding the individual toggles. Attribution remains governed by the existing credit behaviour. |
+
+The studio must persist `lockupLayout: "v2"` for new designs that use Small;
+an existing snapshot must never be implicitly upgraded. With explicit toggles,
+the divider requires a visible city and at least one visible line below it.
+Unmodified legacy requests retain their historical divider behaviour.
+
+Exact v2 constants to mirror (exported as `LOCKUP_V2` in `src/poster-text.ts`):
+
+| Setting | Value |
+| --- | --- |
+| City / country / coordinates size | `.055 / .025 / .021 × min(width, height)` |
+| Tracking, respectively | `.12 / .14 / .04 em` |
+| Reference short side | `482.390625 px` |
+| Strip padding, top / sides / bottom | `6 / 38.59125 / 14` reference px |
+| City / divider / country bottom margin | `3 / 4 / 3` reference px |
+| Coordinates top and bottom margin | `.4 em` each |
+| Divider height / width | `1` reference px / `20%` of strip content width |
+| Line height | `1.15 em`, with adjacent vertical margins collapsed by `max` |
+| All three lines' maximum inline width | `.84 × poster width`, including trailing tracking |
+| Centred line anchor correction | `−tracking × fitted size / 2`, for each line |
+| Text colour / alpha | `theme.ui.text`; fallback white below land luma `.5`, otherwise `#111111`. City and country alpha `1`; coordinates `.7` (multiplies any colour alpha). |
+| Space/Plex faces | Space Grotesk Bold `700`; IBM Plex Mono **Light `300`**; IBM Plex Mono Regular `400` |
+| Space/Plex baseline from line-box top | `.921 / .950 / .950 em` |
+
+Reference px scale by `min(width,height) / 482.390625`. Start at proportional
+sizes and fit measured glyph advances, with no size floors or city heuristic
+pre-shrink. Measure and draw tracked text glyph by glyph with kerning disabled;
+keep every line `white-space: nowrap`. Picker fonts still win family selection;
+v2 uses the selected face's actual hhea/head baseline metrics (Roboto v2 uses
+`.963427734375 em`; legacy retains `.916796875 em`).
+
+For the ordinary v2 bottom fade, `LOCKUP_V2.fadeCapHeight = 1.0`:
+`textInkTop = baselineY - ascent`, `textFadeTop = max(0, textInkTop - 1.0 * ascent)`.
+Use the first visible line (city, country or coordinates) and its outline ink
+ascent. Read the maximum non-space glyph yMax from the selected TTF, scaled by
+units per em; do not use the DOM line box. CFF picker ink uses a 1000px canvas
+probe scaled to the fitted size; its baseline still comes from hhea/head.
+
+Mirror `LOCKUP_V2_FADE_INK_ALPHA = .85` and these exact exported
+`LOCKUP_V2_FADE_STOPS` (`u` runs from fade top to first ink top):
+
+```text
+[0, 0], [.1, .23035], [.2, .4148], [.3, .55845], [.4, .6664],
+[.5, .74375], [.6, .7956], [.7, .82705], [.8, .8432], [.9, .84915], [1, .85]
+```
+
+The generating formula is `alpha = .85 * (1 - (1 - u)^3)` (cubic ease-out).
+Canvas and studio linearly interpolate these exact stops. For the whole band,
+`r = (textInkTop - textFadeTop) / (height - textFadeTop)`;
+map each `[u, alpha]` to `[r * u, alpha]`, then append `[1, 1]`.
+This formula is exported as `lockupV2FadeStops`. Below ink, alpha is
+`.85 + .15 * (y - textInkTop) / (height - textInkTop)`.
+The band extends without rounding to the bottom edge. No visible lines means
+no bottom band. Legacy `EDITOR_BOTTOM_FADE_STOPS` and its environment override
+remain unchanged; the override does not affect v2.
+The `none` and special `text` fade modes retain their previous behaviour.
+Both v2 render paths use `theme.map.overlayBg ?? theme.ui.bg ?? "#f5f5f0"` as
+the fade colour.
+
+The offline canvas fixture `src/__tests__/fixtures/lockup-canvas.cjs` emits
+`v2.ink` per line for studio matching. It renders white text on transparent
+900×1200 canvases (NEW YORK / UNITED STATES / 33.8688° S / 151.2093° E), with
+credits excluded. `meanAlpha` is `sum(alpha/255) / count(alpha>0)`;
+`alphaArea` and bitmap `coverage` also quantify weight. Fontconfig reference
+means are city `0.849483`, country `0.530948`, coordinates `0.354931`.
+The suite checks these line diagnostics, exact faces, colour and alpha, and
+separately verifies Plex Regular has greater raster density than Light.
+Use the same dimensions, strings and transparent backing in the studio check;
+antialiasing can vary by platform. On Windows set `PANGOCAIRO_BACKEND=fc` and
+`FONTCONFIG_FILE` to a config containing the absolute `assets/fonts` directory
+before starting Node, as the test does. No browser or network is needed.
+
 `styleJson` must be a MapLibre style with at least one layer. `engine: "osm"`, a missing `styleJson`, or a style with no layers returns **400** and does not render. There is no Python/OSM fallback, and this endpoint does not send the failure email (`/render` is also used for image tests). `osmTheme`, `osmDist`, and `themeJson` are ignored. `RENDER_ENGINE` is not an engine switch.
 
 ### `POST /fulfill`

@@ -81,6 +81,39 @@ describe('versioned poster lockup', () => {
       }
       const result = JSON.parse(execFileSync(process.execPath, [resolve('src/__tests__/fixtures/lockup-canvas.cjs')],
         { env, encoding: 'utf8', timeout: 30000 }));
+      expect(result.referenceHashes).toHaveLength(8);
+      expect(result.legacyHashes).toEqual(result.referenceHashes);
+      expect(result.v2.fadeSamples).toHaveLength(12);
+      for (const sample of result.v2.fadeSamples) {
+        expect(sample.alpha, JSON.stringify(sample)).toBeGreaterThanOrEqual(.83);
+        expect(sample.alpha).toBeLessThanOrEqual(.87);
+        expect(sample.inkTop).toBeCloseTo(sample.expectedInkTop, 8);
+        expect(sample.clearance + 1e-8).toBeGreaterThanOrEqual(sample.ascent);
+        expect(sample.above).toBe(0);
+        expect(sample.bottom).toBeGreaterThan(.98);
+      }
+      expect(result.v2.serverParity).toEqual(Array(48).fill(true));
+      expect(result.v2.parity).toEqual(Array(16).fill(true));
+      for (const layout of result.v2.stress) {
+        expect(layout.coords.text).toBe('-33.8688? S / 151.2093? E');
+        expect(layout.coords.width + layout.coords.spacing * layout.coords.size).toBeLessThanOrEqual(84.001);
+      }
+      for (const { layout } of result.v2.layouts) {
+        expect((134 - layout.stripTop) / 134).toBeLessThanOrEqual(.15);
+        expect(layout.coords.width + layout.coords.spacing * layout.coords.size).toBeLessThanOrEqual(84.001);
+        expect(layout.textFadeTop).toBeLessThan(layout.city.y - layout.city.ascent);
+      }
+      for (const role of ['city', 'country', 'coords']) {
+        const ink = result.v2.ink[role];
+        const reference: Record<string, number> = { city: .849483, country: .530948, coords: .354931 };
+        expect(Math.abs(ink.meanAlpha - reference[role])).toBeLessThan(.04);
+        expect(ink.meanAlpha).toBeLessThanOrEqual(role === 'coords' ? .7 : 1);
+        expect(ink.glyphPixels).toBeGreaterThan(100);
+        const call = result.v2.calls[role][0];
+        expect(call.alpha).toBeCloseTo(role === 'coords' ? .7 : 1, 2);
+        expect(call.color).toBe('#ffffff');
+        expect(call.font).toContain(role === 'city' ? 'Space Grotesk' : role === 'country' ? 'IBM Plex Mono Light' : 'IBM Plex Mono');
+      }
       expect(result.draws.absent).toEqual(result.draws.roboto);
       expect(result.draws.absent[0].font).toContain('Roboto');
       // A customer's picker font wins over the lockup default, with the legacy fallbacks.

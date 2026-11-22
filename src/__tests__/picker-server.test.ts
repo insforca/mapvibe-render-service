@@ -36,7 +36,7 @@ async function freshServer(missingPicker = false, invalidPicker = false) {
     fetch, AbortSignal, Buffer, Uint8ClampedArray, Date,
     mercLatToY: (n: number) => n, mercYToLat: (n: number) => n,
     renderPngInternal: tile, sharp: () => ({ composite: () => ({ raw: () => ({ toBuffer: async () => Buffer.alloc(16) }) }) }),
-    createCanvas: () => ({ getContext: () => ctx }), applyFades() {}, drawPosterText: draw,
+    createCanvas: () => ({ getContext: () => ctx }), compositePosterOverlay: (...args: any[]) => draw(),
     encodePrintPng: async () => Buffer.alloc(0),
   };
   const code = source.slice(start, end) + '\n' + source.slice(tiledStart, tiledEnd)
