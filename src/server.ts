@@ -11,13 +11,12 @@
  *   (smaller image, explicit GL/EGL deps instead of bundled Chromium)
  *
  * Env vars:
- *   RENDER_API_SECRET        — required; auth for /render and /fulfill
+ *   RENDER_API_SECRET        — required; auth for /render, /proof and /fulfill
  *   MAX_CONCURRENT           — max simultaneous renders (default: 4)
  *   MAX_QUEUE_SIZE           — max requests waiting in queue before 503 (default: 20)
  *   PRINTFUL_API_KEY         — Printful OAuth token
  *   PRINTFUL_STORE_ID        — Printful store ID (default: 17897492)
  *   BLOB_READ_WRITE_TOKEN    — Vercel Blob write token
- *   MAPTILER_API_KEY         — MapTiler API key (optional; used for glyph CDN)
  *   SITE_ORIGIN              — Site origin (default: https://mapvibestudio.com)
  *   VERCEL_APP_ORIGIN        — Vercel app origin for sprite absolutization
  */
@@ -103,7 +102,7 @@ const app = express();
 // getRequestId(res) inside handlers and concatenate into existing
 // [fulfill/*] log strings — no logger-wrapper refactor needed.
 app.use(requestIdMiddleware);
-app.use(express.json({ limit: '2mb' }));
+const parseJson = express.json({ limit: '2mb' });
 
 const PORT       = process.env.PORT || 3000;
 const API_SECRET = process.env.RENDER_API_SECRET ?? '';
@@ -127,7 +126,6 @@ const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
 
 // ── Config-render constants ──────────────────────────────────────────────────
-const MAPTILER_API_KEY  = process.env.MAPTILER_API_KEY      ?? '';
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
 const VERCEL_APP_ORIGIN = process.env.VERCEL_APP_ORIGIN     ?? 'https://mapvibe-studio-alpha.vercel.app';
 const MAX_RENDER_PX_WH  = PRODUCTION_RENDER_CAPS.maxEdgePx;  // full 400 DPI up to 24×36; larger sizes drop DPI
@@ -265,7 +263,7 @@ function patchStyleForHalo(style: Record<string, unknown>, bgHex?: string): Reco
   return style;
 }
 
-function patchStyleForOptionC(style: Record<string, unknown>): Record<string, unknown> {
+function patchStyleForOptionC(style: Record<string, unknown>, quiet = false): Record<string, unknown> {
   const layers = style.layers as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(layers)) return style;
   let roadPatched = 0;
@@ -300,7 +298,7 @@ function patchStyleForOptionC(style: Record<string, unknown>): Record<string, un
       parkPatched++;
     }
   }
-  console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${roadHidden} secondary+minor road layers hidden, ${parkPatched} park layers visible`);
+  if (!quiet) console.log(`[optionC] style patched — ${roadPatched} road layers @ ${OPTION_C_LINE_WIDTH}px, ${roadHidden} secondary+minor road layers hidden, ${parkPatched} park layers visible`);
   return style;
 }
 
@@ -433,6 +431,7 @@ interface OverlayParams {
 
 // ── Native render pipeline ───────────────────────────────────────────────────
 interface RenderParams {
+  proof?: boolean;
   styleJson:     object;
   center:        [number, number];
   zoom:          number;
@@ -515,7 +514,14 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     mapHeight: params.mapHeight,
     maxZoom: MAX_ZOOM_RENDER,
   });
-  if (process.env.RENDER_DEVICE_SCALE && process.env.RENDER_DEVICE_SCALE !== '1') {
+  if (params.proof && (camera.cssWidth > 32767 || camera.cssHeight > 32767
+      || !Number.isSafeInteger(camera.bufferWidth * camera.bufferHeight)
+      || camera.bufferWidth * camera.bufferHeight > 268_402_689)) {
+    // Sharp's default input pixel limit also bounds native allocations from
+    // an inconsistent editor viewport or bounds/zoom supplied directly to /proof.
+    throw new ProofInputError('Snapshot viewport exceeds the image pixel limit');
+  }
+  if (!params.proof && process.env.RENDER_DEVICE_SCALE && process.env.RENDER_DEVICE_SCALE !== '1') {
     console.warn('[render] RENDER_DEVICE_SCALE is ignored; resolution comes from the editor pixel ratio');
   }
 
@@ -531,7 +537,9 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     request(req: { url: string }, callback: (err: Error | null, res?: { data: Buffer }) => void) {
       const { url } = req;
       if (!isAllowedUrl(url)) {
-        try { const { hostname } = new URL(url); console.warn(`[render] Blocked: ${hostname}`); } catch {}
+        if (!params.proof) {
+          try { const { hostname } = new URL(url); console.warn(`[render] Blocked: ${hostname}`); } catch {}
+        }
         callback(new Error(`Blocked URL: ${url}`));
         return;
       }
@@ -606,7 +614,7 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
   const actualDensity = params.dpi ?? 400;
   const pngBuf = await encodePrintPng(rawData, w, h, actualDensity);
   const modeLabel = `${w}x${h}px zoom=${camera.zoom.toFixed(3)} css=${camera.cssWidth}x${camera.cssHeight} ratio=${camera.pixelRatio} (${camera.source})`;
-  console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, ${actualDensity}DPI sRGB)`);
+  if (!params.proof) console.log(`[render] done in ${Math.round((Date.now()-renderStart)/1000)}s — ${modeLabel} (Sharp-RGB, ${actualDensity}DPI sRGB)`);
   return pngBuf;
 }
 
@@ -668,7 +676,7 @@ async function renderTiledPng(
     const tileNorth      = mercYToLat(tileMercTop);
     const tileSouth      = mercYToLat(tileMercBottom);
 
-    console.log(`[tiled] tile ${i + 1}/${numTiles}: ${totalW}×${thisTileH}px (y ${tileTop}–${tileTop + thisTileH})`);
+    if (!params.proof) console.log(`[tiled] tile ${i + 1}/${numTiles}: ${totalW}×${thisTileH}px (y ${tileTop}–${tileTop + thisTileH})`);
     // Same editor zoom as the sheet. The tile's own centre keeps the slice
     // on its geographic band; the sheet centre would repeat the middle band.
     const tileCenterLng = (bounds.west + bounds.east) / 2;
@@ -690,7 +698,7 @@ async function renderTiledPng(
     rawTileBuffers.push({ buf: tileBuf, top: tileTop });
   }
 
-  console.log(`[tiled] stitching ${numTiles} tiles → ${totalW}×${totalH}px`);
+  if (!params.proof) console.log(`[tiled] stitching ${numTiles} tiles → ${totalW}×${totalH}px`);
   const stitchedRaw = await sharp({
     create: { width: totalW, height: totalH, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 255 } },
   })
@@ -714,7 +722,7 @@ async function renderTiledPng(
   const actualDensity = params.dpi ?? 400;
   const pngBuf = await encodePrintPng(finalRaw, totalW, totalH, actualDensity);
 
-  console.log(`[tiled] done in ${Math.round((Date.now() - totalStart) / 1000)}s — ${totalW}×${totalH}px @ ${actualDensity} DPI`);
+  if (!params.proof) console.log(`[tiled] done in ${Math.round((Date.now() - totalStart) / 1000)}s — ${totalW}×${totalH}px @ ${actualDensity} DPI`);
   return pngBuf;
 }
 
@@ -800,8 +808,8 @@ interface PrintWindow {
   hasWrap: boolean;
 }
 
-type ConfigRenderResult =
-  | { ok: true; url: string }
+type ConfigRenderResult<T> =
+  | ({ ok: true } & T)
   | {
       ok: false;
       kind: 'rejected';
@@ -811,26 +819,43 @@ type ConfigRenderResult =
     }
   | { ok: false; kind: 'failed' };
 
-async function renderConfigToBlobUrl(
-  configUrl: string,
-  dimsOverride?: { widthCm: number; heightCm: number },
-  detailedRoads?: boolean,
-  preloadedCfg?: MapvibeConfigSnapshot | null,
-  printWindow?: PrintWindow,
-): Promise<ConfigRenderResult> {
-  // 1. Download config snapshot (skipped when /fulfill already fetched it,
-  // so a download failure can be a non-2xx before the 202 ack).
-  let cfg: MapvibeConfigSnapshot;
-  if (preloadedCfg) {
-    cfg = preloadedCfg;
-  } else {
-    const downloaded = await downloadConfigSnapshot(configUrl);
-    if (!downloaded) return { ok: false, kind: 'failed' };
-    cfg = downloaded;
-  }
+type PrintSizeOverride = { widthCm?: number; heightCm?: number };
 
+interface ConfigPng {
+  pngBuffer: Buffer;
+  width: number;
+  height: number;
+  actualDpi: number;
+  engine: string;
+  tileHost: string;
+  glyphHost: string;
+}
+
+function tileSourceHost(style: Record<string, unknown>): string {
+  const sources = style.sources as Record<string, { type?: string; url?: string; tiles?: string[] }> | undefined;
+  const layers = style.layers as Array<{ source?: string }>;
+  for (const layer of layers) {
+    const source = typeof layer?.source === 'string' && sources?.[layer.source];
+    if (!source || !['vector', 'raster', 'raster-dem'].includes(source.type ?? '')) continue;
+    const url = source.url ?? source.tiles?.[0];
+    if (typeof url === 'string' && URL.canParse(url)) return new URL(url).hostname;
+  }
+  return 'none'; // For example, a background-only style.
+}
+
+class ProofInputError extends Error {}
+
+async function renderConfigToPng(
+  cfg: MapvibeConfigSnapshot,
+  { dimsOverride, detailedRoads, printWindow, proof = false }: {
+    dimsOverride?: PrintSizeOverride;
+    detailedRoads?: boolean;
+    printWindow?: PrintWindow;
+    proof?: boolean;
+  },
+): Promise<ConfigRenderResult<ConfigPng>> {
   // No usable style, or an explicit request for the retired OSM engine.
-  // Fail before any pixels. The caller logs [FULFILL-FAIL] and emails.
+  // Fail before any pixels. Fulfilment owns alerting for rejected orders.
   const route = resolveFulfillRoute(cfg, RENDER_ENGINE, detailedRoads);
   if (route.engine === 'rejected') {
     const city = cfg.displayCity || cfg.city || undefined;
@@ -859,15 +884,20 @@ async function renderConfigToBlobUrl(
     maxPx: MAX_PX,
   });
   const { width, height, actualDpi, numTiles } = dims;
+  if (proof && (!Number.isSafeInteger(width * height) || width < 1 || height < 1 || height > 32767)) {
+    // Tiling bounds individual frames, but the stitched sheet must still
+    // fit a Cairo canvas. Reject impossible sheets before rendering tiles.
+    throw new ProofInputError('Print dimensions exceed the image limits');
+  }
 
   if (printWindow?.hasWrap && numTiles > 1) {
     console.error(`[fulfill] canvas print area ${widthCm}×${heightCm} cm would tile ×${numTiles}; refusing (wrap must be single-pass)`);
     return { ok: false, kind: 'failed' };
   }
 
-  if (dims.mode === 'tiled') {
+  if (!proof && dims.mode === 'tiled') {
     console.log(`[fulfill] Config render [TILED×${numTiles}] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI`);
-  } else {
+  } else if (!proof) {
     const fallbackNote = dims.mode === 'single-pass-fallback' ? ' (FALLBACK — no bounds for tiling)' : '';
     console.log(`[fulfill] Config render [single-pass] (${dimSource}): ${widthCm}×${heightCm}cm → ${width}×${height}px @ ${actualDpi} DPI${fallbackNote}`);
     if (actualDpi < 300) {
@@ -890,15 +920,12 @@ async function renderConfigToBlobUrl(
         }
       }
     }
-    if (typeof styleJson.glyphs === 'string' && (styleJson.glyphs.startsWith('/') || styleJson.glyphs.includes('mapvibestudio.com')))
-      styleJson.glyphs = MAPTILER_API_KEY
-        ? `https://api.maptiler.com/fonts/{fontstack}/{range}.pbf?key=${MAPTILER_API_KEY}`
-        : `https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf`;
     if (typeof styleJson.sprite === 'string' && styleJson.sprite.startsWith('/'))
       styleJson.sprite = VERCEL_APP_ORIGIN + styleJson.sprite;
   } catch {
     styleJson = cfg.styleJson as Record<string, unknown>;
   }
+  styleJson.glyphs = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf';
 
   // ── Print styling ─────────────────────────────────────────────────────────
   // Width stops stay in editor pixels. renderPngInternal evaluates them at
@@ -909,7 +936,7 @@ async function renderConfigToBlobUrl(
   // Styled Detailed uses this same camera (resolvePrintCamera). It does not
   // multiply line widths either.
   if (process.env.OPTION_C_STYLE === '1') {
-    styleJson = patchStyleForOptionC(styleJson);
+    styleJson = patchStyleForOptionC(styleJson, proof);
   }
   // ── Text-halo legibility: halos are applied at the canvas (poster-text) level
   // only, NOT to MapLibre tile symbol layers. Tile halos create road-corridor
@@ -929,8 +956,10 @@ async function renderConfigToBlobUrl(
   // 5. MapLibre only. Detailed + a real style replays that style through
   //    the same camera as Clean (resolvePrintCamera: editor zoom, pixel
   //    ratio, no second line-width scale). Unusable styles already returned.
-  if (route.warning) console.warn(`[fulfill] ${route.warning}`);
-  console.log(`[fulfill] engine route: ${route.engine} (${route.reason})`);
+  if (!proof) {
+    if (route.warning) console.warn(`[fulfill] ${route.warning}`);
+    console.log(`[fulfill] engine route: ${route.engine} (${route.reason})`);
+  }
   const useDetailedParity = route.reason === 'detailed-style-parity' || route.reason === 'detailed-override';
   let pngBuffer: Buffer;
 
@@ -943,6 +972,7 @@ async function renderConfigToBlobUrl(
     styleJson = applyNeighbourhoodDetail(styleJson);
   }
   const sharedParams: RenderParams = {
+    proof,
     styleJson,
     center:    cfg.center,
     zoom:      renderZoom,
@@ -986,18 +1016,38 @@ async function renderConfigToBlobUrl(
       pngBuffer = await renderPngInternal({ ...sharedParams, width, height });
     }
   } catch (err) {
-    console.error('[fulfill] Render error:', err);
+    if (err instanceof ProofInputError) throw err;
+    if (!proof) console.error('[fulfill] Render error:', err);
     return { ok: false, kind: 'failed' };
   }
 
   // 6. Validate PNG magic bytes
   const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (!pngBuffer.slice(0, 8).equals(PNG_MAGIC)) {
-    console.error('[fulfill] Render returned invalid PNG (bad magic bytes)');
+  if (pngBuffer.length < 24 || !pngBuffer.subarray(0, 8).equals(PNG_MAGIC)) {
+    if (!proof) console.error('[fulfill] Render returned invalid PNG (bad magic bytes)');
     return { ok: false, kind: 'failed' };
   }
 
-  // 7. Upload to Vercel Blob
+  return {
+    ok: true, pngBuffer, width: pngBuffer.readUInt32BE(16), height: pngBuffer.readUInt32BE(20),
+    actualDpi, engine: route.engine, tileHost: tileSourceHost(styleJson),
+    glyphHost: new URL(styleJson.glyphs as string).hostname,
+  };
+}
+
+async function renderConfigToBlobUrl(
+  configUrl: string,
+  dimsOverride?: PrintSizeOverride,
+  detailedRoads?: boolean,
+  preloadedCfg?: MapvibeConfigSnapshot | null,
+  printWindow?: PrintWindow,
+): Promise<ConfigRenderResult<{ url: string }>> {
+  const cfg = preloadedCfg ?? await downloadConfigSnapshot(configUrl);
+  if (!cfg) return { ok: false, kind: 'failed' };
+  const rendered = await renderConfigToPng(cfg, { dimsOverride, detailedRoads, printWindow });
+  if (!rendered.ok) return rendered;
+  const { pngBuffer, width, height, actualDpi } = rendered;
+
   try {
     const hash = Math.random().toString(36).slice(2, 10);
     const blob = await put(`poster-${Date.now()}-${hash}.png`, pngBuffer, {
@@ -1015,6 +1065,105 @@ async function renderConfigToBlobUrl(
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+interface ProofBody extends PrintSizeOverride {
+  snapshot: MapvibeConfigSnapshot;
+  maxHeight?: number;
+  detailedRoads?: boolean;
+}
+
+function validProofBody(body: unknown): body is ProofBody {
+  if (!isRecord(body) || !isRecord(body.snapshot)) return false;
+  const cfg = body.snapshot;
+  if (!Array.isArray(cfg.center) || cfg.center.length !== 2
+      || !cfg.center.every(Number.isFinite) || Math.abs(cfg.center[1]) > 90
+      || !finiteNumber(cfg.zoom) || cfg.zoom < 0 || cfg.zoom > 24) return false; // MapLibre zoom range
+  const bounds = cfg.bounds;
+  if (bounds != null && (!isRecord(bounds) || !finiteNumber(bounds.north) || !finiteNumber(bounds.south)
+      || !finiteNumber(bounds.west) || !finiteNumber(bounds.east) || bounds.west === bounds.east
+      || bounds.north <= bounds.south || bounds.north >= 90 || bounds.south <= -90)) return false;
+  const style = cfg.styleJson;
+  if (isRecord(style) && Array.isArray(style.layers) && !style.layers.every(isRecord)) return false;
+  return [body.widthCm, body.heightCm, cfg.widthCm, cfg.heightCm, cfg.mapWidth, cfg.mapHeight]
+    .every(v => v === undefined || (finiteNumber(v) && v > 0))
+    && [cfg.bearing, cfg.pitch].every(v => v === undefined || Number.isFinite(v))
+    && [cfg.displayCity, cfg.displayCountry, cfg.fontFamily].every(v => v === undefined || typeof v === 'string')
+    && (body.maxHeight === undefined || (finiteNumber(body.maxHeight) && Number.isSafeInteger(body.maxHeight) && body.maxHeight > 0))
+    && (body.detailedRoads === undefined || typeof body.detailedRoads === 'boolean');
+}
+
+const proofRequests: number[] = [];
+app.post('/proof', (req, res, next) => {
+  const started = Date.now();
+  res.once('close', () => console.log(
+    `[proof] status=${res.writableEnded ? res.statusCode : 'disconnected'} elapsedMs=${Date.now() - started}`,
+  ));
+  if (!checkAuth(req, res)) return;
+  while (proofRequests.length && proofRequests[0] <= started - 60_000) proofRequests.shift();
+  if (proofRequests.length >= 6) {
+    res.set('Retry-After', String(Math.ceil((proofRequests[0] + 60_000 - started) / 1000)));
+    res.status(429).json({ error: 'Proof rate limit reached' });
+    return;
+  }
+  proofRequests.push(started);
+  parseJson(req, res, err => {
+    if (err) res.status(err.status ?? 400).json({ error: 'Invalid proof request body' });
+    else next();
+  });
+}, async (req, res) => {
+  try {
+    if (!validProofBody(req.body)) {
+      res.status(400).json({ error: 'Invalid snapshot or proof options' });
+      return;
+    }
+    // Start only on an idle renderer. add() takes the slot synchronously, so
+    // competing proofs cannot build a backlog in front of a paid order.
+    if (renderQueue.pending || renderQueue.size) {
+      res.status(503).json({ error: 'Renderer busy, retry the proof later' });
+      return;
+    }
+    const { snapshot, widthCm, heightCm, detailedRoads, maxHeight } = req.body;
+    await renderQueue.add(() => memoryWatch.track('proof', async () => {
+      const print = await renderConfigToPng(snapshot, { dimsOverride: { widthCm, heightCm }, detailedRoads, proof: true });
+      if (res.destroyed) return;
+      if (!print.ok) {
+        if (print.kind === 'rejected') res.status(400).json({ error: print.route.message });
+        else res.status(500).json({ error: 'Proof render failed' });
+        return;
+      }
+      // Full-downscaled: exercise the same full frame(s), camera and poster
+      // overlay as an order. Resize only the final validated PNG, in this slot.
+      let { pngBuffer, width, height } = print;
+      if (maxHeight !== undefined && maxHeight < height) {
+        const resized = await sharp(pngBuffer, { limitInputPixels: width * height })
+          .resize({ height: maxHeight }).withMetadata({ density: print.actualDpi })
+          .withIccProfile(packagedSrgbIcc.path).png().toBuffer({ resolveWithObject: true });
+        pngBuffer = resized.data;
+        ({ width, height } = resized.info);
+      }
+      res.set({
+        'Content-Type': 'image/png', 'Cache-Control': 'no-store',
+        'X-Proof-Mode': 'full-downscaled', 'X-Proof-Width': String(width),
+        'X-Proof-Height': String(height), 'X-Proof-Dpi': String(print.actualDpi),
+        'X-Proof-Engine': print.engine, 'X-Proof-Tile-Host': print.tileHost,
+        'X-Proof-Glyph-Host': print.glyphHost,
+      }).end(pngBuffer);
+    }, { log: false }));
+  } catch (err) {
+    if (res.destroyed) return;
+    if (err instanceof ProofInputError) res.status(400).json({ error: err.message });
+    else res.status(500).json({ error: 'Proof render failed' });
+  }
+});
+
+app.use(parseJson);
 app.get('/health', (req: Request, res: Response) => {
   // Public on purpose. Railway probes /health with no key, and the studio
   // webhook reads `capabilities` to see that this build accepts dryRun and

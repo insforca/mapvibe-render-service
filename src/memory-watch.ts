@@ -231,7 +231,7 @@ export class MemoryWatch {
    * Observability only — the callback's result and thrown errors pass through
    * untouched, and a sampling failure must never fail a render.
    */
-  async track<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  async track<T>(label: string, fn: () => Promise<T>, { log = true } = {}): Promise<T> {
     const baseline = this.sample();
     this.active += 1;
     this.activeLabel = label;
@@ -266,7 +266,8 @@ export class MemoryWatch {
         this.lastRender.endContainerBytes = this.lastContainer.currentBytes;
         this.lastRender.endAnonBytes = this.lastContainer.anonBytes;
         const r = this.lastRender;
-        console.log(
+        // Proofs keep the samples in /health and log one request summary.
+        if (log) console.log(
           `[memory] ${label}: baseline ${toMb(r.baselineRssBytes)} MB → peak ` +
             `${toMb(r.peakRssBytes)} MB → end ${toMb(end.rssBytes)} MB ` +
             `(delta held ${toMb(end.rssBytes - r.baselineRssBytes)} MB, ` +
@@ -275,7 +276,7 @@ export class MemoryWatch {
         // Container line is the load-bearing one: native MapLibre buffers are
         // outside the V8 heap the in-process numbers above report. Printed
         // separately so the two are never confused.
-        if (this.cgroup.usageAvailable) {
+        if (log && this.cgroup.usageAvailable) {
           const kernelPeak = this.cgroup.kernelPeakAvailable ? readKernelPeak().bytes : null;
           const peakContainer = maxOrNull(r.peakContainerBytes, kernelPeak);
           console.log(
