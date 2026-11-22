@@ -232,7 +232,8 @@ function parseSizeLabel(size: string): { w: number; h: number } | null {
 export const FRAMED_SAFE_INSET_MM = 12;
 
 export function renderTargetForRow(row: CatalogueRow): RenderTarget {
-  const framedSafeInsetIn = /^framed/i.test(row.finish) ? FRAMED_SAFE_INSET_MM / 25.4 : null;
+  // Any finish with a frame: "Framed - …" posters and "Canvas - White frame". Gallery-wrap canvas has none.
+  const framedSafeInsetIn = /\bframe/i.test(row.finish) ? FRAMED_SAFE_INSET_MM / 25.4 : null;
   if (row.productRef.includes('700x1000-mm')) {
     const printWIn = 70 / CM_PER_INCH;
     const printHIn = 100 / CM_PER_INCH;

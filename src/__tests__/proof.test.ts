@@ -150,7 +150,8 @@ describe('POST /proof', () => {
     const face = { ...snapshot, lockupLayout: 'v2', showPosterText: true, includeCredits: true,
       displayCity: 'Lisbon', displayCountry: 'Portugal', mapWidth: 216, mapHeight: 288,
       bounds: { west: -0.3, east: 0.3, north: 0.4, south: -0.4 } };
-    const poster = await post({ snapshot: face, sku: 'MVS-P-1824' });
+    // Same 18x24 face and the same 12 mm frame inset as the white-frame canvas.
+    const poster = await post({ snapshot: face, sku: 'MVS-F-1824-BK' });
     expect(poster.status).toBe(200);
     expect(await sharp(poster.png).metadata()).toMatchObject({ width: 216, height: 288 });
     const expected = await sharp(poster.png).raw().toBuffer();
