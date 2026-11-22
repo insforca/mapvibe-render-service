@@ -89,13 +89,30 @@ keep every line `white-space: nowrap`. Picker fonts still win family selection;
 v2 uses the selected face's actual hhea/head baseline metrics (Roboto v2 uses
 `.963427734375 em`; legacy retains `.916796875 em`).
 
-For the ordinary bottom fade, use the first visible line's outline ink ascent:
-`fadeTop = max(0, baselineY − 1.6 × ascent)`, i.e. `.6` cap heights above its ink.
-Read the maximum non-space glyph yMax from the selected TTF, scaled by units per
-em; do not use the DOM line box. CFF picker ink uses a 1000px canvas probe scaled
-to the fitted size; its baseline still comes from hhea/head. The band extends
-without rounding to the bottom edge, with the existing
-`EDITOR_BOTTOM_FADE_STOPS` unchanged. No visible lines means no bottom band.
+For the ordinary v2 bottom fade, `LOCKUP_V2.fadeCapHeight = 1.0`:
+`textInkTop = baselineY - ascent`, `textFadeTop = max(0, textInkTop - 1.0 * ascent)`.
+Use the first visible line (city, country or coordinates) and its outline ink
+ascent. Read the maximum non-space glyph yMax from the selected TTF, scaled by
+units per em; do not use the DOM line box. CFF picker ink uses a 1000px canvas
+probe scaled to the fitted size; its baseline still comes from hhea/head.
+
+Mirror `LOCKUP_V2_FADE_INK_ALPHA = .85` and these exact exported
+`LOCKUP_V2_FADE_STOPS` (`u` runs from fade top to first ink top):
+
+```text
+[0, 0], [.1, .23035], [.2, .4148], [.3, .55845], [.4, .6664],
+[.5, .74375], [.6, .7956], [.7, .82705], [.8, .8432], [.9, .84915], [1, .85]
+```
+
+The generating formula is `alpha = .85 * (1 - (1 - u)^3)` (cubic ease-out).
+Canvas and studio linearly interpolate these exact stops. For the whole band,
+`r = (textInkTop - textFadeTop) / (height - textFadeTop)`;
+map each `[u, alpha]` to `[r * u, alpha]`, then append `[1, 1]`.
+This formula is exported as `lockupV2FadeStops`. Below ink, alpha is
+`.85 + .15 * (y - textInkTop) / (height - textInkTop)`.
+The band extends without rounding to the bottom edge. No visible lines means
+no bottom band. Legacy `EDITOR_BOTTOM_FADE_STOPS` and its environment override
+remain unchanged; the override does not affect v2.
 The `none` and special `text` fade modes retain their previous behaviour.
 Both v2 render paths use `theme.map.overlayBg ?? theme.ui.bg ?? "#f5f5f0"` as
 the fade colour.

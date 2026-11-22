@@ -83,6 +83,15 @@ describe('versioned poster lockup', () => {
       const result = JSON.parse(execFileSync(process.execPath, [resolve('src/__tests__/fixtures/lockup-canvas.cjs')],
         { env, encoding: 'utf8', timeout: 30000 }));
       expect(result.legacyHashes).toEqual(legacy.hashes);
+      expect(result.v2.fadeSamples).toHaveLength(12);
+      for (const sample of result.v2.fadeSamples) {
+        expect(sample.alpha, JSON.stringify(sample)).toBeGreaterThanOrEqual(.83);
+        expect(sample.alpha).toBeLessThanOrEqual(.87);
+        expect(sample.inkTop).toBeCloseTo(sample.expectedInkTop, 8);
+        expect(sample.clearance + 1e-8).toBeGreaterThanOrEqual(sample.ascent);
+        expect(sample.above).toBe(0);
+        expect(sample.bottom).toBeGreaterThan(.98);
+      }
       expect(result.v2.serverParity).toEqual(Array(48).fill(true));
       expect(result.v2.parity).toEqual(Array(16).fill(true));
       for (const layout of result.v2.stress) {

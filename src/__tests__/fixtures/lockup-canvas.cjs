@@ -17,7 +17,7 @@ function loadTs(file) {
   return mod.exports;
 }
 const { BUNDLED_FONTS } = loadTs(path.resolve('src/bundled-fonts.ts'));
-const { drawPosterText, compositePosterOverlay, measureInkCoverage, layoutPosterText } = loadTs(path.resolve('src/poster-text.ts'));
+const { drawPosterText, compositePosterOverlay, measureInkCoverage, layoutPosterText, applyFades } = loadTs(path.resolve('src/poster-text.ts'));
 for (const { family, weight, staticFile } of BUNDLED_FONTS) {
   registerFont(path.resolve('assets/fonts', staticFile), { family, weight });
 }
@@ -78,6 +78,25 @@ for (const id of [undefined, 'space-plex']) for (const textLayout of ['centered'
 }
 
 const v2 = { layouts: [], ink: {}, calls: {}, parity: [] };
+// Full print geometry with a one-column backing keeps native memory low.
+// Real font outlines and the real canvas gradient are used at every size.
+v2.fadeSamples = [];
+for (const [width, height] of [[240, 320], [5400, 7200], [240, 339], [9933, 14043]]) {
+  for (const first of ['city', 'country', 'coords']) {
+    const c = createCanvas(1, height), x = c.getContext('2d');
+    let layout;
+    drawPosterText(x, width, height, {}, -33.8688, 151.2093, 'NEW YORK', 'UNITED STATES', '',
+      true, false, 'centered', 'space-plex', { lockupLayout: 'v2',
+        showCity: first === 'city', showCountry: first !== 'coords', showCoords: true }, l => { layout = l; });
+    x.clearRect(0, 0, 1, height);
+    applyFades(x, width, height, '#ffffff', 'fullbleed', 'centered', layout.textFadeTop, layout.textInkTop);
+    const sample = y => x.getImageData(0, Math.floor(y), 1, 1).data[3] / 255;
+    v2.fadeSamples.push({ width, height, first, alpha: sample(layout.textInkTop),
+      above: sample(layout.textFadeTop - 1), bottom: sample(height - 1),
+      clearance: layout.textInkTop - layout.textFadeTop, ascent: layout[first].ascent,
+      inkTop: layout.textInkTop, expectedInkTop: layout[first].y - layout[first].ascent });
+  }
+}
 v2.stress = BUNDLED_FONTS.map(face => layoutPosterText({ width: 100, height: 134,
   city: 'NEW YORK', country: 'UNITED STATES', coords: '-33.8688? S / 151.2093? E', lockupLayout: 'v2',
   glyph(role, text, size) {

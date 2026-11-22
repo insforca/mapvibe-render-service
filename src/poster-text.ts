@@ -66,7 +66,25 @@ export function resolveLineToggle(value: unknown, field: string): boolean {
 export const LOCKUP_V2 = { city: .055, country: .025, coords: .021, citySpacing: .12,
   countrySpacing: .14, coordsSpacing: .04, padX: 38.59125, padTop: 6, padBottom: 14,
   cityMarginBottom: 3, ruleMarginBottom: 4, countryMarginBottom: 3, coordMargin: .4,
-  ruleHeight: 1, dividerWidth: .2, safeWidth: .84, fadeCapHeight: .6 } as const;
+  ruleHeight: 1, dividerWidth: .2, safeWidth: .84, fadeCapHeight: 1.0 } as const;
+
+/** Top-to-ink stops: alpha = .85 * (1 - (1 - u)^3), u in [0, 1].
+ * Canvas/studio interpolate these exact stops; below ink, alpha is linear.
+ */
+export const LOCKUP_V2_FADE_INK_ALPHA = .85;
+export const LOCKUP_V2_FADE_STOPS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [.1, .23035], [.2, .4148], [.3, .55845], [.4, .6664],
+  [.5, .74375], [.6, .7956], [.7, .82705], [.8, .8432], [.9, .84915], [1, .85],
+];
+/** Full band stops, from fade top (0) to sheet bottom (1).
+ * r = (textInkTop - textFadeTop) / (height - textFadeTop).
+ * Map each [u, alpha] to [r*u, alpha], then append [1, 1].
+ * Below ink: alpha = .85 + .15 * (y - textInkTop)/(height - textInkTop).
+ */
+export function lockupV2FadeStops(textFadeTop: number, textInkTop: number, height: number): ReadonlyArray<readonly [number, number]> {
+  const r = (textInkTop - textFadeTop) / (height - textFadeTop);
+  return [...LOCKUP_V2_FADE_STOPS.map(([u, alpha]) => [r * u, alpha] as const), [1, 1]];
+}
 
 /** Explicit editor CSS line-height, shared by both lockups (not font "normal"). */
 export const CSS_LINE_HEIGHT = 1.15;
@@ -153,6 +171,8 @@ export interface PosterTextLayout {
   /** Top of .mvs-poster-text-strip, in canvas pixels from the top of the poster. */
   stripTop: number;
   textFadeTop?: number;
+  /** First visible line outline ink top, in poster pixels (v2 only). */
+  textInkTop?: number;
   credit: { size: number; y: number; leftX: number; rightX: number };
 }
 
@@ -316,6 +336,12 @@ export function layoutPosterText(input: {
   const creditSize = ATTRIBUTION_BASE * ds;
   const bottomInset = px(CREDIT_EDGE_PX);
 
+  const first = city ? { box: cityBox, fit: cityFit, role: 'city' as const, text: city }
+    : country ? { box: countryBox, fit: countryFit, role: 'country' as const, text: country }
+    : coords ? { box: coordsBox, fit: coordsFit, role: 'coords' as const, text: coords } : undefined;
+  const textInkTop = v2 && first
+    ? baselineY(first.box, first.fit.size, first.text, first.role) - first.fit.ink.ascent : undefined;
+
   return {
     ds,
     align,
@@ -329,12 +355,8 @@ export function layoutPosterText(input: {
     country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), align === 'center' ? anchorX - countrySpacing * countryFit.size / 2 : anchorX, countryFit, countrySpacing, countryBox),
     coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), align === 'center' ? anchorX - coordsSpacing * coordsFit.size / 2 : anchorX, coordsFit, coordsSpacing, coordsBox),
     stripTop: blocks.length ? stripTop : height,
-    textFadeTop: v2 ? (() => {
-      const first = city ? { box: cityBox, fit: cityFit, role: 'city' as const, text: city }
-        : country ? { box: countryBox, fit: countryFit, role: 'country' as const, text: country }
-        : coords ? { box: coordsBox, fit: coordsFit, role: 'coords' as const, text: coords } : undefined;
-      return first ? Math.max(0, baselineY(first.box, first.fit.size, first.text, first.role) - (1 + LOCKUP_V2.fadeCapHeight) * first.fit.ink.ascent) : height;
-    })() : undefined,
+    textFadeTop: v2 ? (first ? Math.max(0, textInkTop! - LOCKUP_V2.fadeCapHeight * first.fit.ink.ascent) : height) : undefined,
+    textInkTop,
     credit: {
       size: creditSize,
       y: height - bottomInset,
@@ -581,11 +603,12 @@ function dither(ctx: any, rx: number, ry: number, w: number, h: number, intensit
 }
 
 /** Bottom (and, for fadeStyle 'text', top) gradient behind the poster lines.
- *  fullbleed / default is the editor's `.poster-fade` bottom 14% ease-in.
- *  The sheet fraction is the band; the stops are fractions of that band.
+ *  Legacy fullbleed/default is the editor's bottom 14% ease-in.
+ *  Supplying both layout anchors selects the v2 ease-out behind the first ink.
+ *  Stops are fractions of the respective band, not of the sheet.
  *  No dither: the editor gradient is smooth, and a ±4 dither shifted the cream.
  */
-export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string, textFadeTop?: number): void {
+export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string, textFadeTop?: number, textInkTop?: number): void {
   const kind = fadeKind(fadeStyle);
   if (kind === 'none') return;
   if (kind === 'text') {
@@ -620,6 +643,16 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
     return;
   }
 
+  if (textFadeTop !== undefined && textInkTop !== undefined && H > textFadeTop) {
+    const bg = ctx.createLinearGradient(0, textFadeTop, 0, H);
+    for (const [t, alpha] of lockupV2FadeStops(textFadeTop, textInkTop, H)) {
+      bg.addColorStop(t, withAlpha(color, alpha));
+    }
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, textFadeTop, W, H - textFadeTop);
+    return;
+  }
+
   // Editor `.poster-fade` / `.poster-fade--bottom`: height 14%, pinned to the bottom.
   const bH = textFadeTop === undefined ? Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT)) : H - textFadeTop;
   if (bH <= 0) return;
@@ -643,7 +676,7 @@ export function compositePosterOverlay(ctx: any, width: number, height: number, 
     overlay.fontFamily || '', overlay.showPosterText !== false, overlay.includeCredits !== false,
     overlay.textLayout || 'centered', overlay.lockupFont, { ...overlay, lockupLayout: v2 ? 'v2' : undefined },
     layout => applyFades(ctx, width, height, color, overlay.fadeStyle || (v2 ? 'fullbleed' : legacyFadeStyle),
-      overlay.textLayout || 'centered', v2 ? layout?.textFadeTop ?? height : undefined));
+      overlay.textLayout || 'centered', v2 ? layout?.textFadeTop ?? height : undefined, v2 ? layout?.textInkTop : undefined));
 }
 /** Normalized mean alpha over nonzero glyph pixels, plus area for weight comparisons. */
 export function measureInkCoverage(data: ArrayLike<number>) {
