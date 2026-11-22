@@ -85,12 +85,11 @@ describe('versioned poster lockup', () => {
       expect(result.legacyHashes).toEqual(result.referenceHashes);
       expect(result.v2.fadeSamples).toHaveLength(12);
       for (const sample of result.v2.fadeSamples) {
-        expect(sample.alpha, JSON.stringify(sample)).toBeGreaterThanOrEqual(.83);
-        expect(sample.alpha).toBeLessThanOrEqual(.87);
-        expect(sample.inkTop).toBeCloseTo(sample.expectedInkTop, 8);
-        expect(sample.clearance + 1e-8).toBeGreaterThanOrEqual(sample.ascent);
-        expect(sample.above).toBe(0);
-        expect(sample.bottom).toBeGreaterThan(.98);
+        expect(sample.centre).toBeCloseTo(.85, 2);
+        // A preview pixel spans several stop percentages on a coords-only oval.
+        expect(sample.shoulder).toBeGreaterThan(.2);
+        expect(sample.shoulder).toBeLessThan(.65);
+        expect(sample.outside).toBe(0);
       }
       expect(result.v2.serverParity).toEqual(Array(48).fill(true));
       expect(result.v2.parity).toEqual(Array(16).fill(true));
@@ -101,7 +100,6 @@ describe('versioned poster lockup', () => {
       for (const { layout } of result.v2.layouts) {
         expect((134 - layout.stripTop) / 134).toBeLessThanOrEqual(.15);
         expect(layout.coords.width + layout.coords.spacing * layout.coords.size).toBeLessThanOrEqual(84.001);
-        expect(layout.textFadeTop).toBeLessThan(layout.city.y - layout.city.ascent);
       }
       for (const role of ['city', 'country', 'coords']) {
         const ink = result.v2.ink[role];

@@ -66,24 +66,33 @@ export function resolveLineToggle(value: unknown, field: string): boolean {
 export const LOCKUP_V2 = { city: .055, country: .025, coords: .021, citySpacing: .12,
   countrySpacing: .14, coordsSpacing: .04, padX: 38.59125, padTop: 6, padBottom: 14,
   cityMarginBottom: 3, ruleMarginBottom: 4, countryMarginBottom: 3, coordMargin: .4,
-  ruleHeight: 1, dividerWidth: .2, safeWidth: .84, fadeCapHeight: 1.0 } as const;
+  ruleHeight: 1, dividerWidth: .2, safeWidth: .84 } as const;
 
-/** Top-to-ink stops: alpha = .85 * (1 - (1 - u)^3), u in [0, 1].
- * Canvas/studio interpolate these exact stops; below ink, alpha is linear.
- */
-export const LOCKUP_V2_FADE_INK_ALPHA = .85;
-export const LOCKUP_V2_FADE_STOPS: ReadonlyArray<readonly [number, number]> = [
-  [0, 0], [.1, .23035], [.2, .4148], [.3, .55845], [.4, .6664],
-  [.5, .74375], [.6, .7956], [.7, .82705], [.8, .8432], [.9, .84915], [1, .85],
-];
-/** Full band stops, from fade top (0) to sheet bottom (1).
- * r = (textInkTop - textFadeTop) / (height - textFadeTop).
- * Map each [u, alpha] to [r*u, alpha], then append [1, 1].
- * Below ink: alpha = .85 + .15 * (y - textInkTop)/(height - textInkTop).
- */
-export function lockupV2FadeStops(textFadeTop: number, textInkTop: number, height: number): ReadonlyArray<readonly [number, number]> {
-  const r = (textInkTop - textFadeTop) / (height - textFadeTop);
-  return [...LOCKUP_V2_FADE_STOPS.map(([u, alpha]) => [r * u, alpha] as const), [1, 1]];
+/** Approved v2 oval: em padding, radius scale and [normalized radius, alpha] stops. */
+export const LOCKUP_V2_OVAL = {
+  paddingX: 1.2,
+  paddingY: .9,
+  scale: 1.35,
+  stops: [[0, .85], [.5, .85], [.62, .78], [.72, .62], [.8, .44],
+    [.87, .27], [.93, .12], [.97, .04], [1, 0]],
+} as const;
+
+export function lockupFadeEllipse(layout?: PosterTextLayout) {
+  if (!layout) return;
+  const lines = [layout.city, layout.country, layout.coords].filter(line => line.text);
+  if (!lines.length) return;
+  const widest = lines.reduce((a, b) => a.width >= b.width ? a : b);
+  const top = Math.min(...lines.map(line => line.y - line.ascent));
+  const bottom = Math.max(...lines.map(line => line.y + line.descent));
+  const size = lines[0].size;
+  const { paddingX, paddingY, scale } = LOCKUP_V2_OVAL;
+  return {
+    // The divider keeps the poster centre anchor even when its width is zero.
+    cx: layout.align === 'center' ? layout.divider.x : widest.x + widest.width / 2,
+    cy: (top + bottom) / 2,
+    rx: (widest.width / 2 + paddingX * size) * scale,
+    ry: ((bottom - top) / 2 + paddingY * size) * scale,
+  };
 }
 
 /** Explicit editor CSS line-height, shared by both lockups (not font "normal"). */
@@ -170,9 +179,6 @@ export interface PosterTextLayout {
   coords: PosterLine;
   /** Top of .mvs-poster-text-strip, in canvas pixels from the top of the poster. */
   stripTop: number;
-  textFadeTop?: number;
-  /** First visible line outline ink top, in poster pixels (v2 only). */
-  textInkTop?: number;
   credit: { size: number; y: number; leftX: number; rightX: number };
 }
 
@@ -336,12 +342,6 @@ export function layoutPosterText(input: {
   const creditSize = ATTRIBUTION_BASE * ds;
   const bottomInset = px(CREDIT_EDGE_PX);
 
-  const first = city ? { box: cityBox, fit: cityFit, role: 'city' as const, text: city }
-    : country ? { box: countryBox, fit: countryFit, role: 'country' as const, text: country }
-    : coords ? { box: coordsBox, fit: coordsFit, role: 'coords' as const, text: coords } : undefined;
-  const textInkTop = v2 && first
-    ? baselineY(first.box, first.fit.size, first.text, first.role) - first.fit.ink.ascent : undefined;
-
   return {
     ds,
     align,
@@ -355,8 +355,6 @@ export function layoutPosterText(input: {
     country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), align === 'center' ? anchorX - countrySpacing * countryFit.size / 2 : anchorX, countryFit, countrySpacing, countryBox),
     coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), align === 'center' ? anchorX - coordsSpacing * coordsFit.size / 2 : anchorX, coordsFit, coordsSpacing, coordsBox),
     stripTop: blocks.length ? stripTop : height,
-    textFadeTop: v2 ? (first ? Math.max(0, textInkTop! - LOCKUP_V2.fadeCapHeight * first.fit.ink.ascent) : height) : undefined,
-    textInkTop,
     credit: {
       size: creditSize,
       y: height - bottomInset,
@@ -602,13 +600,8 @@ function dither(ctx: any, rx: number, ry: number, w: number, h: number, intensit
   ctx.putImageData(id, ax, ay);
 }
 
-/** Bottom (and, for fadeStyle 'text', top) gradient behind the poster lines.
- *  Legacy fullbleed/default is the editor's bottom 14% ease-in.
- *  Supplying both layout anchors selects the v2 ease-out behind the first ink.
- *  Stops are fractions of the respective band, not of the sheet.
- *  No dither: the editor gradient is smooth, and a ±4 dither shifted the cream.
- */
-export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, _layout?: string, textFadeTop?: number, textInkTop?: number): void {
+/** Apply the selected fade before drawing the measured lockup. */
+export function applyFades(ctx: any, W: number, H: number, color: string, fadeStyle: string, lockupLayout?: 'v2', layout?: PosterTextLayout): void {
   const kind = fadeKind(fadeStyle);
   if (kind === 'none') return;
   if (kind === 'text') {
@@ -643,19 +636,31 @@ export function applyFades(ctx: any, W: number, H: number, color: string, fadeSt
     return;
   }
 
-  if (textFadeTop !== undefined && textInkTop !== undefined && H > textFadeTop) {
-    const bg = ctx.createLinearGradient(0, textFadeTop, 0, H);
-    for (const [t, alpha] of lockupV2FadeStops(textFadeTop, textInkTop, H)) {
-      bg.addColorStop(t, withAlpha(color, alpha));
+  if (lockupLayout === 'v2') {
+    const ellipse = lockupFadeEllipse(layout);
+    if (!ellipse) return;
+    const { cx, cy, rx, ry } = ellipse;
+    const previousFill = ctx.fillStyle;
+    ctx.save();
+    try {
+      ctx.translate(cx, cy);
+      ctx.scale(1, ry / rx);
+      const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      for (const [radius, alpha] of LOCKUP_V2_OVAL.stops) {
+        gradient.addColorStop(radius, withAlpha(color, alpha));
+      }
+      ctx.fillStyle = gradient;
+      ctx.fillRect(-rx, -rx, 2 * rx, 2 * rx);
+    } finally {
+      ctx.restore();
+      // node-canvas retains the gradient in its fillStyle getter after restore().
+      ctx.fillStyle = previousFill;
     }
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, textFadeTop, W, H - textFadeTop);
     return;
   }
 
   // Editor `.poster-fade` / `.poster-fade--bottom`: height 14%, pinned to the bottom.
-  const bH = textFadeTop === undefined ? Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT)) : H - textFadeTop;
-  if (bH <= 0) return;
+  const bH = Math.max(1, Math.round(H * EDITOR_BOTTOM_FADE_HEIGHT));
   const bY = H - bH;
   const bg = ctx.createLinearGradient(0, H, 0, bY);
   const stops = process.env.DISABLE_EASEIN_FADE === 'true'
@@ -676,7 +681,7 @@ export function compositePosterOverlay(ctx: any, width: number, height: number, 
     overlay.fontFamily || '', overlay.showPosterText !== false, overlay.includeCredits !== false,
     overlay.textLayout || 'centered', overlay.lockupFont, { ...overlay, lockupLayout: v2 ? 'v2' : undefined },
     layout => applyFades(ctx, width, height, color, overlay.fadeStyle || (v2 ? 'fullbleed' : legacyFadeStyle),
-      overlay.textLayout || 'centered', v2 ? layout?.textFadeTop ?? height : undefined, v2 ? layout?.textInkTop : undefined));
+      v2 ? 'v2' : undefined, layout));
 }
 /** Normalized mean alpha over nonzero glyph pixels, plus area for weight comparisons. */
 export function measureInkCoverage(data: ArrayLike<number>) {

@@ -17,7 +17,7 @@ function loadTs(file, baseDir = path.dirname(file)) {
   return mod.exports;
 }
 const { BUNDLED_FONTS } = loadTs(path.resolve('src/bundled-fonts.ts'));
-const { drawPosterText, compositePosterOverlay, measureInkCoverage, layoutPosterText, applyFades } = loadTs(path.resolve('src/poster-text.ts'));
+const { drawPosterText, compositePosterOverlay, measureInkCoverage, layoutPosterText, lockupFadeEllipse, applyFades } = loadTs(path.resolve('src/poster-text.ts'));
 for (const { family, weight, staticFile } of BUNDLED_FONTS) {
   registerFont(path.resolve('assets/fonts', staticFile), { family, weight });
 }
@@ -99,12 +99,12 @@ for (const [width, height] of [[240, 320], [5400, 7200], [240, 339], [9933, 1404
       true, false, 'centered', 'space-plex', { lockupLayout: 'v2',
         showCity: first === 'city', showCountry: first !== 'coords', showCoords: true }, l => { layout = l; });
     x.clearRect(0, 0, 1, height);
-    applyFades(x, width, height, '#ffffff', 'fullbleed', 'centered', layout.textFadeTop, layout.textInkTop);
+    const { cx, cy, ry } = lockupFadeEllipse(layout);
+    x.translate(.5 - cx, 0); // Sample the centre column at full print scale.
+    applyFades(x, width, height, '#ffffff', 'fullbleed', 'v2', layout);
     const sample = y => x.getImageData(0, Math.floor(y), 1, 1).data[3] / 255;
-    v2.fadeSamples.push({ width, height, first, alpha: sample(layout.textInkTop),
-      above: sample(layout.textFadeTop - 1), bottom: sample(height - 1),
-      clearance: layout.textInkTop - layout.textFadeTop, ascent: layout[first].ascent,
-      inkTop: layout.textInkTop, expectedInkTop: layout[first].y - layout[first].ascent });
+    v2.fadeSamples.push({ centre: sample(cy), shoulder: sample(cy - .8 * ry),
+      outside: sample(cy - ry - 1) });
   }
 }
 v2.stress = BUNDLED_FONTS.map(face => layoutPosterText({ width: 100, height: 134,
@@ -136,7 +136,12 @@ for (const role of ['city', 'country', 'coords']) {
   });
   drawPosterText(proxy, 900, 1200, { map: { land: '#172434' }, ui: { text: '#ffffff' } },
     -33.8688, 151.2093, 'NEW YORK', 'UNITED STATES', '', true, false, 'centered', 'space-plex',
-    { lockupLayout: 'v2', showCity: role === 'city', showCountry: role === 'country', showCoords: role === 'coords' });
+    { lockupLayout: 'v2', showCity: role === 'city', showCountry: role === 'country', showCoords: role === 'coords' },
+    layout => {
+      applyFades(proxy, 900, 1200, '#172434', 'fullbleed', 'v2', layout);
+      // Isolate subsequent glyph pixels for the existing face and ink fingerprints.
+      x.clearRect(0, 0, 900, 1200);
+    });
   v2.ink[role] = measureInkCoverage(x.getImageData(0, 0, 900, 1200).data);
   v2.calls[role] = calls.filter(c => c.font.startsWith(role === 'city' ? '700' : role === 'country' ? '300' : '400'));
 }

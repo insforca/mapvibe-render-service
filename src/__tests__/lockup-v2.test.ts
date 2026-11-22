@@ -1,40 +1,33 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fontOutline } from '../font-outline.js';
 import { applyFades, layoutPosterText, resolveLockupLayout, resolveLineToggle, LOCKUP_V2,
-  LOCKUP_V2_FADE_INK_ALPHA, LOCKUP_V2_FADE_STOPS, lockupV2FadeStops } from '../poster-text.js';
-import { EDITOR_BOTTOM_FADE_STOPS, fadeStopAlpha } from '../print-parity.js';
+  LOCKUP_V2_OVAL, lockupFadeEllipse } from '../poster-text.js';
+import { EDITOR_BOTTOM_FADE_STOPS } from '../print-parity.js';
 
 const input = { width: 900, height: 1200, city: 'SAINT PETERSBURG', country: 'RUSSIA',
   coords: '-33.8688° S / 151.2093° E', lockupFont: 'space-plex' as const,
   glyph: (_role: string, text: string, size: number) => ({ width: text.length * .65 * size, ascent: .72 * size, descent: .02 * size }) };
 
 describe('option A versioned layout', () => {
-  it('exports the exact cubic ease-out stops and positions the ink anchor', () => {
-    expect(LOCKUP_V2.fadeCapHeight).toBe(1);
-    expect(LOCKUP_V2_FADE_INK_ALPHA).toBe(.85);
-    for (const [u, alpha] of LOCKUP_V2_FADE_STOPS) {
-      expect(alpha).toBeCloseTo(.85 * (1 - (1 - u) ** 3), 10);
-    }
-    const stops = lockupV2FadeStops(800, 900, 1200);
-    expect(fadeStopAlpha(stops, 0)).toBe(0);
-    expect(fadeStopAlpha(stops, .25)).toBe(.85);
-    expect(fadeStopAlpha(stops, .625)).toBeCloseTo(.925);
-    expect(fadeStopAlpha(stops, 1)).toBe(1);
-  });
-  it('preserves legacy bottom stops and keeps the legacy override out of v2', () => {
-    const render = (top?: number, ink?: number) => {
+  it('uses the approved radial stops independently of the legacy fade override', () => {
+    const layout = layoutPosterText({ ...input, lockupLayout: 'v2' });
+    const radial = [[0,.85],[.5,.85],[.62,.78],[.72,.62],[.8,.44],[.87,.27],[.93,.12],[.97,.04],[1,0]];
+    expect(LOCKUP_V2_OVAL.stops).toEqual(radial);
+    const render = (version?: 'v2') => {
       const stops: number[][] = [];
-      const ctx = { createLinearGradient: () => ({ addColorStop: (t: number, color: string) => {
+      const gradient = { addColorStop: (t: number, color: string) => {
         stops.push([t, Number(color.match(/,([^,]+)\)$/)![1])]);
-      } }), fillRect: () => {}, fillStyle: null };
-      applyFades(ctx, 900, 1200, '#ffffff', 'fullbleed', undefined, top, ink);
+      } };
+      const ctx = { createLinearGradient: () => gradient, createRadialGradient: () => gradient,
+        save: vi.fn(), restore: vi.fn(), translate: vi.fn(), scale: vi.fn(), fillRect: vi.fn() };
+      applyFades(ctx, 900, 1200, '#ffffff', 'fullbleed', version, layout);
       return stops;
     };
     vi.stubEnv('DISABLE_EASEIN_FADE', 'false');
     expect(render()).toEqual(EDITOR_BOTTOM_FADE_STOPS);
-    const v2 = render(800, 900);
+    expect(render('v2')).toEqual(radial);
     vi.stubEnv('DISABLE_EASEIN_FADE', 'true');
-    expect(render(800, 900)).toEqual(v2);
+    expect(render('v2')).toEqual(radial);
     expect(render()).toEqual([[0, 1], [.3, .7], [.65, .2], [1, 0]]);
     vi.unstubAllEnvs();
   });
@@ -57,8 +50,6 @@ describe('option A versioned layout', () => {
       for (const line of [l.city, l.country, l.coords]) {
         expect(line.width + line.spacing * line.size).toBeLessThanOrEqual(width * .84 + 1e-8);
       }
-      expect(l.textFadeTop).toBeCloseTo(l.city.y - 2 * l.city.ascent);
-      expect(l.textFadeTop).toBeLessThan(l.city.y - l.city.ascent);
       expect(l.city.size).toBeCloseTo(width * LOCKUP_V2.city);
     });
   }
@@ -71,10 +62,7 @@ describe('option A versioned layout', () => {
       expect(l.coords.boxHeight > 0).toBe(showCoords);
       expect(l.divider.width > 0).toBe(showCity && (showCountry || showCoords));
       if (!mask) expect(l.stripTop).toBe(input.height);
-      if (lockupLayout && mask) {
-        const first = showCity ? l.city : showCountry ? l.country : l.coords;
-        expect(l.textFadeTop).toBeCloseTo(first.y - 2 * first.ascent);
-      }
+      if (lockupLayout) expect(!!lockupFadeEllipse(l)).toBe(!!mask);
       // Empty source lines have exactly the same flow as hidden lines.
       const empty = layoutPosterText({ ...input, lockupLayout,
         city: showCity ? input.city : '', country: showCountry ? input.country : '', coords: showCoords ? input.coords : '',
