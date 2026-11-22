@@ -114,7 +114,8 @@ describe('POST /proof', () => {
 
   it.each(['{', {}, { snapshot: {} }, { snapshot: { ...snapshot, styleJson: null } },
     { snapshot: { ...snapshot, engine: 'osm' } }, { snapshot, widthCm: -1 }, { snapshot, maxHeight: 0.5 },
-    { snapshot, detailedRoads: 'true' }])('rejects invalid request %#', async body => {
+    { snapshot, detailedRoads: 'true' }, { snapshot: { ...snapshot, zoom: -1e308 } },
+    { snapshot: { ...snapshot, zoom: 25 } }])('rejects invalid request %#', async body => {
     expect((await post(body)).status).toBe(400);
     expect(renderFrame).not.toHaveBeenCalled();
   });

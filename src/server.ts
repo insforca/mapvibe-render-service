@@ -1084,7 +1084,7 @@ function validProofBody(body: unknown): body is ProofBody {
   const cfg = body.snapshot;
   if (!Array.isArray(cfg.center) || cfg.center.length !== 2
       || !cfg.center.every(Number.isFinite) || Math.abs(cfg.center[1]) > 90
-      || !Number.isFinite(cfg.zoom)) return false;
+      || !finiteNumber(cfg.zoom) || cfg.zoom < 0 || cfg.zoom > 24) return false; // MapLibre zoom range
   const bounds = cfg.bounds;
   if (bounds != null && (!isRecord(bounds) || !finiteNumber(bounds.north) || !finiteNumber(bounds.south)
       || !finiteNumber(bounds.west) || !finiteNumber(bounds.east) || bounds.west === bounds.east
