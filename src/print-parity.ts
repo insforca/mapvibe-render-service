@@ -226,14 +226,6 @@ function sheetSize(
 }
 
 /**
- * Logical viewport + pixel ratio for one still.
- *
- * The zoom is the editor zoom whenever the snapshot has one, so line-width
- * and opacity stops do not move when the sheet has more pixels. Resolution
- * is the pixel ratio. Bounds stay the framed window: the logical viewport is
- * the internal map (expanded by the canvas wrap), not the print pixel grid.
- */
-/**
  * Largest framebuffer edge maplibre-gl-native can allocate. Above it the
  * native code aborts the process instead of returning an error. Valid prints
  * stay at or below the 14 400 px output edge cap, so this only catches
@@ -255,6 +247,14 @@ export function cameraExceedsGlLimits(
   return null;
 }
 
+/**
+ * Logical viewport + pixel ratio for one still.
+ *
+ * The zoom is the editor zoom whenever the snapshot has one, so line-width
+ * and opacity stops do not move when the sheet has more pixels. Resolution
+ * is the pixel ratio. Bounds stay the framed window: the logical viewport is
+ * the internal map (expanded by the canvas wrap), not the print pixel grid.
+ */
 export function resolvePrintCamera(input: PrintCameraInput): PrintCamera {
   const outputWidth = Math.max(1, Math.round(input.outputWidth));
   const outputHeight = Math.max(1, Math.round(input.outputHeight));
