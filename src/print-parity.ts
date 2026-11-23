@@ -226,6 +226,28 @@ function sheetSize(
 }
 
 /**
+ * Largest framebuffer edge maplibre-gl-native can allocate. Above it the
+ * native code aborts the process instead of returning an error. Valid prints
+ * stay at or below the 14 400 px output edge cap, so this only catches
+ * cameras whose bounds do not match the poster aspect.
+ */
+export const GL_MAX_FRAMEBUFFER_EDGE = 16_384;
+
+/** A reason string when the camera cannot be rendered safely, otherwise null. */
+export function cameraExceedsGlLimits(
+  camera: Pick<PrintCamera, 'bufferWidth' | 'bufferHeight' | 'cssWidth' | 'cssHeight'>,
+): string | null {
+  const { bufferWidth: w, bufferHeight: h } = camera;
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w < 1 || h < 1) {
+    return `framebuffer ${w}×${h} is not a positive size`;
+  }
+  if (w > GL_MAX_FRAMEBUFFER_EDGE || h > GL_MAX_FRAMEBUFFER_EDGE) {
+    return `framebuffer ${w}×${h} exceeds the GL edge limit of ${GL_MAX_FRAMEBUFFER_EDGE}px (css ${camera.cssWidth}×${camera.cssHeight})`;
+  }
+  return null;
+}
+
+/**
  * Logical viewport + pixel ratio for one still.
  *
  * The zoom is the editor zoom whenever the snapshot has one, so line-width
