@@ -171,6 +171,7 @@ for (let mask = 0; mask < 16; mask++) {
     console: { log() {}, warn() {} }, createCanvas, compositePosterOverlay,
     encodePrintPng: loadTs(path.resolve('src/print-png.ts')).encodePrintPng,
     sharp: require('sharp'), ensureFont: async () => {}, preparePrintStyle: s => s,
+    cameraExceedsGlLimits: () => null,
     MAX_RENDER_PX_WH: 14400, MAX_PX: 14400 ** 2, MAX_ZOOM_RENDER: 20,
     resolvePrintCamera: p => ({ zoom: 12, cssWidth: p.outputWidth, cssHeight: p.outputHeight,
       bufferWidth: p.outputWidth, bufferHeight: p.outputHeight, pixelRatio: 1, source: 'fixture' }),

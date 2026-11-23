@@ -44,6 +44,7 @@ import { BUNDLED_FONTS } from './bundled-fonts.js';
 import { resolvePickerFont } from './picker-fonts.js';
 import { compositePosterOverlay, resolveLockupFont, type LockupFont } from './poster-text.js';
 import {
+  cameraExceedsGlLimits,
   preparePrintStyle,
   resolvePrintCamera,
 } from './print-parity.js';
@@ -508,6 +509,16 @@ async function renderPngInternal(params: RenderParams): Promise<Buffer> {
     mapHeight: params.mapHeight,
     maxZoom: MAX_ZOOM_RENDER,
   });
+  const glLimit = cameraExceedsGlLimits(camera);
+  if (glLimit) {
+    // maplibre-gl-native aborts the whole process (no JS error) when the
+    // framebuffer exceeds the GL size limit, which took production down on
+    // 2026-11-23. A snapshot whose bounds do not match the poster aspect gets
+    // here. Refuse it before the native call, on every path.
+    console.error(`[render] refused: ${glLimit}`);
+    if (params.proof) throw new ProofInputError('Snapshot viewport does not match the poster and exceeds the GL limit');
+    throw new Error(`[render] ${glLimit}`);
+  }
   if (params.proof && (camera.cssWidth > 32767 || camera.cssHeight > 32767
       || !Number.isSafeInteger(camera.bufferWidth * camera.bufferHeight)
       || camera.bufferWidth * camera.bufferHeight > 268_402_689)) {
