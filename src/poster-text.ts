@@ -1,3 +1,4 @@
+import { canvasCreditPixels, paintCredits } from './credit-halo.js';
 import { innerViewportPx, type ResolvedPrintWindow } from './print-window.js';
 import { fontOutline } from './font-outline.js';
 import { resolvePickerFont, pickerFamily } from './picker-fonts.js';
@@ -339,11 +340,6 @@ export function layoutPosterText(input: {
     boxHeight: text ? box.bottom - box.top : 0,
   });
 
-  // The editor has no credit line. Ours uses Roboto Light (legacy) or
-  // Plex Mono Regular (space-plex) in the bottom
-  // padding, under the coordinates, and does not move the strip.
-  const creditSize = ATTRIBUTION_BASE * ds;
-  const bottomInset = px(CREDIT_EDGE_PX);
 
   return {
     ds,
@@ -358,12 +354,17 @@ export function layoutPosterText(input: {
     country: line(country, baselineY(countryBox, countryFit.size, country, 'country'), align === 'center' ? anchorX - countrySpacing * countryFit.size / 2 : anchorX, countryFit, countrySpacing, countryBox),
     coords: line(coords, baselineY(coordsBox, coordsFit.size, coords, 'coords'), align === 'center' ? anchorX - coordsSpacing * coordsFit.size / 2 : anchorX, coordsFit, coordsSpacing, coordsBox),
     stripTop: blocks.length ? stripTop : height,
-    credit: {
-      size: creditSize,
-      y: height - bottomInset,
-      leftX: width * EDGE_MARGIN,
-      rightX: width * (1 - EDGE_MARGIN),
-    },
+    credit: layoutPosterCredits(width, height, true),
+  };
+}
+
+function layoutPosterCredits(width: number, height: number, showText: boolean, inset = 0): PosterTextLayout['credit'] {
+  const y = showText ? height - CREDIT_EDGE_PX * (Math.min(width, height) / EDITOR_POSTER_SHORT_PX) : height * (1 - EDGE_MARGIN);
+  return {
+    size: ATTRIBUTION_BASE * posterDimensionScale(width, height),
+    y: Math.min(y, height - inset),
+    leftX: Math.max(width * EDGE_MARGIN, inset),
+    rightX: Math.min(width * (1 - EDGE_MARGIN), width - inset),
   };
 }
 
@@ -473,6 +474,10 @@ export function drawPosterText(
   const creditFamily = spacePlex ? coordsFamily : lightFamily;
   const creditWeight = spacePlex ? '400' : '300';
 
+  const credit = layoutPosterCredits(W, H, showText, options.creditInsetPx);
+  const creditFont = creditWeight + ' ' + credit.size + 'px ' + creditFamily;
+  if (v2) paintCredits(ctx, credit, creditFont, credits, { read: canvasCreditPixels(ctx) });
+
   const faceFile = (role: 'city' | 'country' | 'coords') => {
     const weight = role === 'city' ? 700 : role === 'country' ? 300 : 400;
     return picker ? (picker.faces.find(f => +f.weight === weight) ?? picker.faces.find(f => f.weight === '400')!).staticFile
@@ -538,34 +543,7 @@ export function drawPosterText(
   }
 
   if (!showText) beforeDraw?.();
-  const creditSize = laid ? laid.credit.size : ATTRIBUTION_BASE * posterDimensionScale(W, H);
-  const creditY = laid ? laid.credit.y : H * (1 - EDGE_MARGIN);
-  const creditLeft = laid ? laid.credit.leftX : W * EDGE_MARGIN;
-  const creditRightRaw = laid ? laid.credit.rightX : W * (1 - EDGE_MARGIN);
-  // Framed products (owner, 2026-11-22): no credit ink within the frame-safe inset.
-  // textBaseline 'bottom' puts the glyph box bottom on creditY.
-  const inset = options.creditInsetPx ?? 0;
-  const creditYSafe = inset ? Math.min(creditY, H - inset) : creditY;
-  const creditLeftSafe = inset ? Math.max(creditLeft, inset) : creditLeft;
-  const creditRight = inset ? Math.min(creditRightRaw, W - inset) : creditRightRaw;
-  ctx.shadowBlur = 0;
-  ctx.shadowColor = 'transparent';
-  ctx.fillStyle = attrColor;
-  ctx.globalAlpha = 0.9;
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'bottom';
-  ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
-  ctx.fillText('\u00a9 OpenStreetMap contributors', creditRight, creditYSafe);
-  ctx.globalAlpha = 1;
-  if (credits) {
-    ctx.fillStyle = attrColor;
-    ctx.globalAlpha = 0.9;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    ctx.font = creditWeight + ' ' + creditSize + 'px ' + creditFamily;
-    ctx.fillText('created with mapvibestudio.com', creditLeftSafe, creditYSafe);
-    ctx.globalAlpha = 1;
-  }
+  paintCredits(ctx, credit, creditFont, credits, { fill: attrColor });
 }
 
 function withAlpha(hex: string, alpha: number): string {
