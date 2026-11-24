@@ -61,6 +61,10 @@
     { "variantId": 7, "productId": 3, "inStockUs": true, "printWidthIn": 24, "printHeightIn": 30 },
     { "variantId": 19323, "productId": 3, "inStockUs": true, "printWidthIn": 33, "printHeightIn": 43 }
   ],
+  "prodigi": [
+    { "sku": "GLOBAL-HPR-18X24", "widthIn": 18, "heightIn": 24, "printAreaPx": [5400, 7200], "shipsToUs": true },
+    { "sku": "GLOBAL-HPR-24X36", "widthIn": 24, "heightIn": 36, "printAreaPx": [7200, 10800], "shipsToUs": true }
+  ],
   "rejected": [
     {
       "id": "1000x1500",

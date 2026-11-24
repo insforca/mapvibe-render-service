@@ -33,7 +33,7 @@ export const CATALOGUE_COLUMNS = [
 
 export interface CatalogueRow {
   sku: string;
-  vendor: 'gelato' | 'printful';
+  vendor: 'gelato' | 'printful' | 'prodigi';
   productRef: string;
   orientation: string;
   trimWIn: number;
@@ -159,7 +159,7 @@ export function parseCatalogueCsv(text: string): CatalogueRow[] {
     if (seen.has(sku)) throw new Error(`catalogue: duplicate sku ${sku}`);
     seen.add(sku);
     const vendor = get('vendor').trim().toLowerCase();
-    if (vendor !== 'gelato' && vendor !== 'printful') {
+    if (vendor !== 'gelato' && vendor !== 'printful' && vendor !== 'prodigi') {
       throw new Error(`catalogue: ${sku} has unknown vendor "${vendor}"`);
     }
     const productRef = get('product_ref').trim();

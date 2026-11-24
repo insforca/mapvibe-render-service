@@ -1,8 +1,8 @@
-/** The single dispatch boundary for ALL Gelato and Printful HTTP requests. */
+/** The single dispatch boundary for ALL Gelato, Printful and Prodigi HTTP requests. */
 import { notifyFulfillHeld } from './alerting.js';
 
 export interface DispatchContext {
-  vendor: 'gelato' | 'printful';
+  vendor: 'gelato' | 'printful' | 'prodigi';
   orderId: string;
   /** Identifier only: never a label, gift message, address, or other customer data. */
   lineItem: string;

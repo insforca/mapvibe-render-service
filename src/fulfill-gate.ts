@@ -84,10 +84,11 @@ export interface GateSuccess {
   ok: true;
   mode: 'catalogue';
   sku: string;
-  vendor: 'gelato' | 'printful';
+  vendor: 'gelato' | 'printful' | 'prodigi';
   productRef: string;
   gelatoProductUid: string | null;
   printfulVariantId: number | null;
+  prodigiSku: string | null;
   widthCm: number;
   heightCm: number;
   printWIn: number;
@@ -195,7 +196,7 @@ export function evaluateFulfillGate(input: GateInput): GateResult {
     422,
     'sku-unmapped',
     sku,
-    `SKU ${sku} is not in the catalogue. It was not forwarded to Gelato or Printful.`,
+    `SKU ${sku} is not in the catalogue. It was not forwarded to a vendor.`,
   );
 }
 
@@ -260,6 +261,7 @@ function evaluateCatalogueRow(row: ReturnType<typeof loadCatalogue>[number], sku
     productRef: row.productRef,
     gelatoProductUid: row.vendor === 'gelato' ? row.productRef : null,
     printfulVariantId: catalogueVariant,
+    prodigiSku: row.vendor === 'prodigi' ? row.productRef : null,
     widthCm: target.widthCm,
     heightCm: target.heightCm,
     printWIn: target.printWIn,
