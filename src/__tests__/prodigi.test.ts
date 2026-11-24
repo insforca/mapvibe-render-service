@@ -117,6 +117,13 @@ describe('fulfillProdigi', () => {
     expect(await fulfillProdigi('1001-1', RECIPIENT, 'GLOBAL-HPR-18X24', 1, 'Lisbon', PNG)).toEqual({ status: 'submitted' });
   });
 
+  it('treats CreatedWithIssues (the US sales tax notice) and OnHold (dashboard pause window) as submitted', async () => {
+    mockFetch(200, { outcome: 'CreatedWithIssues', order: { id: 'ord_2', issues: [{ errorCode: 'destinationCountryCode.UsSalesTaxWarning' }] } });
+    expect(await fulfillProdigi('1002-1', RECIPIENT, 'GLOBAL-HPR-24X36', 1, 'x', PNG)).toEqual({ status: 'submitted' });
+    mockFetch(200, { outcome: 'OnHold', id: 'ord_3' });
+    expect(await fulfillProdigi('1003-1', RECIPIENT, 'GLOBAL-HPR-24X36', 1, 'x', PNG)).toEqual({ status: 'submitted' });
+  });
+
   it('is held by FULFILL_DRY_RUN and makes no HTTP call', async () => {
     vi.stubEnv('FULFILL_DRY_RUN', 'true');
     const fetchMock = mockFetch(200, { outcome: 'Created' });
