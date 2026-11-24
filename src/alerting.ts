@@ -31,6 +31,8 @@ export type FulfillFailReason =
   | 'gelato-uncaught'
   | 'printful-api'
   | 'printful-uncaught'
+  | 'prodigi-api'
+  | 'prodigi-uncaught'
   | 'routing-lookup-error'   // Shopify metafield lookup failed and strict mode rejected the order
   | 'routing-unresolved'     // variant has no pod_partner metafield and is not a white-canvas item
   | 'sku-unmapped'           // SKU is not in the catalogue; line was not forwarded

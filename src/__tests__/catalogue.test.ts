@@ -37,6 +37,8 @@ const OPTIONAL = [
   'MVS-F-2436-NT',
   'MVS-C-1824',
   'MVS-C-3040',
+  'MVS-PR-1824',
+  'MVS-PR-2436',
 ];
 
 beforeEach(() => {
@@ -60,9 +62,10 @@ describe('catalogue table', () => {
       'MVS-F-1824-BK', 'MVS-F-2436-BK', 'MVS-F-1824-BR', 'MVS-F-2436-BR',
       'MVS-F-1824-NT', 'MVS-F-2436-NT',
       'MVS-C-1824-W', 'MVS-C-2436-W', 'MVS-C-1824', 'MVS-C-3040',
+      'MVS-PR-1824', 'MVS-PR-2436',
     ]);
-    expect(rows).toHaveLength(15);
-    expect(new Set(rows.map(r => r.sku)).size).toBe(15);
+    expect(rows).toHaveLength(17);
+    expect(new Set(rows.map(r => r.sku)).size).toBe(17);
     expect(rows.map(r => r.sku).sort()).toEqual([...DESIGN_B, ...OPTIONAL].sort());
   });
 
@@ -92,7 +95,7 @@ describe('catalogue table', () => {
     }
 
     vi.stubEnv('CATALOGUE_ENABLE_OPTIONAL', 'true');
-    expect(rows.filter(r => isRowEnabled(r))).toHaveLength(15);
+    expect(rows.filter(r => isRowEnabled(r))).toHaveLength(17);
     vi.stubEnv('CATALOGUE_ENABLE_OPTIONAL', 'false');
     expect(rows.filter(r => isRowEnabled(r)).map(r => r.sku).sort()).toEqual([...DESIGN_B].sort());
   });

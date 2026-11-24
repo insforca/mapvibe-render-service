@@ -57,6 +57,7 @@ import {
 } from './request-id.js';
 import { fulfillPrintful } from './printful.js';
 import { fulfillGelato } from './gelato.js';
+import { fulfillProdigi } from './prodigi.js';
 import { warnIfDispatchHeld } from './vendor-dispatch.js';
 import { rejectHeldFulfillment } from './fulfill-dispatch.js';
 import {
@@ -127,6 +128,8 @@ const PRINTFUL_STORE_ID = process.env.PRINTFUL_STORE_ID     ?? '17897492';
 // fulfillGelato so vitest stubEnv works without dynamic re-imports.
 // Kept here as a local alias for the request-time API-key presence check.
 const GELATO_KEY = process.env.GELATO_API_KEY ?? '';
+// Read at request time: a key added on Railway after boot still counts, and tests can stub it.
+const prodigiKeyConfigured = () => (process.env.PRODIGI_API_KEY ?? '').trim() !== '';
 
 // ── Config-render constants ──────────────────────────────────────────────────
 const SITE_ORIGIN       = process.env.SITE_ORIGIN           ?? 'https://mapvibestudio.com';
@@ -1522,6 +1525,11 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       res.status(500).json({ error: 'GELATO_API_KEY not configured on Railway' });
       return;
     }
+    if (gate.vendor === 'prodigi' && !prodigiKeyConfigured()) {
+      console.error('[fulfill] PRODIGI_API_KEY not configured');
+      res.status(500).json({ error: 'PRODIGI_API_KEY not configured on Railway' });
+      return;
+    }
     if (gate.callerProviderIgnored) {
       console.error(`[fulfill] caller provider '${body.provider}' ignored for ${gate.sku}; catalogue vendor is ${gate.vendor}`);
     }
@@ -1556,8 +1564,9 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
 
   void (async () => {
     let finalPngUrl: string | null = null;
-    let vendor: 'gelato' | 'printful';
+    let vendor: 'gelato' | 'printful' | 'prodigi';
     let gelatoUid: string | null = null;
+    let prodigiSku: string | null = null;
     let orderedVariantId: number | null = null;
     let failSku = decision.mode === 'catalogue' ? decision.gate.sku : (decision.sku ?? 'legacy');
 
@@ -1626,6 +1635,16 @@ app.post('/fulfill', async (req: Request, res: Response): Promise<void> => {
       vendor = accepted.vendor;
       gelatoUid = accepted.gelatoProductUid;
       orderedVariantId = accepted.printfulVariantId;
+      prodigiSku = accepted.prodigiSku;
+    }
+
+    if (vendor === 'prodigi') {
+      if (!prodigiSku) {
+        notifyFulfillFail(externalId, 'sku-unrenderable', `SKU ${failSku} resolved to Prodigi without a product SKU`);
+        return;
+      }
+      await fulfillProdigi(externalId, recipient, prodigiSku, quantity, label, finalPngUrl!);
+      return;
     }
 
     if (vendor === 'gelato') {

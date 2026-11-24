@@ -56,6 +56,7 @@ def check(rows, fixture, design: str):
     warnings = []
     gelato = {p['productUid']: p for p in fixture.get('gelato', [])}
     printful = {int(v['variantId']): v for v in fixture.get('printful', [])}
+    prodigi = {p['sku']: p for p in fixture.get('prodigi', [])}
     rejected = fixture.get('rejected', [])
     seen = set()
     enabled = []
@@ -73,7 +74,7 @@ def check(rows, fixture, design: str):
         designs = [d.strip().upper() for d in (row.get('in_designs') or '').split('|') if d.strip()]
         if design in designs:
             enabled.append(sku)
-        if vendor not in ('gelato', 'printful'):
+        if vendor not in ('gelato', 'printful', 'prodigi'):
             failures.append(f'{sku}: unknown vendor {vendor}')
             continue
         if not ref:
@@ -110,6 +111,25 @@ def check(rows, fixture, design: str):
                 warnings.append(
                     f'{sku}: metric-cut {delta * 100:.2f}% under the nominal inch label'
                 )
+        elif vendor == 'prodigi':
+            product = prodigi.get(ref)
+            if product is None:
+                failures.append(f'{sku}: Prodigi SKU {ref} not in fixture')
+                continue
+            if not product.get('shipsToUs'):
+                failures.append(f'{sku}: Prodigi SKU {ref} does not ship to the US')
+            if abs(trim_w - float(product['widthIn'])) > 0.01 or abs(trim_h - float(product['heightIn'])) > 0.01:
+                failures.append(f'{sku}: trim {trim_w}x{trim_h} != Prodigi {product["widthIn"]}x{product["heightIn"]}')
+            aw, ah = product['printAreaPx']
+            try:
+                px_w, px_h = float(row['px_w']), float(row['px_h'])
+            except (TypeError, ValueError, KeyError):
+                failures.append(f'{sku}: pixel size is not numeric')
+                continue
+            if abs(px_w / px_h - aw / ah) > 0.001:
+                failures.append(f'{sku}: file aspect differs from the Prodigi print area {aw}x{ah} (would crop)')
+            if px_w < aw or px_h < ah:
+                failures.append(f'{sku}: file {px_w:.0f}x{px_h:.0f} is smaller than the Prodigi print area {aw}x{ah}')
         else:
             try:
                 variant_id = int(ref)

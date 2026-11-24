@@ -45,7 +45,7 @@ export interface DryRunRouting {
   dryRun: true;
   mode: 'catalogue' | 'legacy';
   sku: string | null;
-  vendor: 'gelato' | 'printful';
+  vendor: 'gelato' | 'printful' | 'prodigi';
   productRef: string | null;
   gelatoProductUid: string | null;
   printfulVariantId: number | null;
@@ -98,7 +98,7 @@ export type FulfillPlan =
       printfulVariantId: number;
     };
 
-const ORDER_ENDPOINT = /gelatoapis\.com|api\.printful\.com/i;
+const ORDER_ENDPOINT = /gelatoapis\.com|api\.printful\.com|prodigi\.com/i;
 
 /** True only for boolean true, or a tags string/array that contains mv-canary. */
 export function requestIsDryRun(input: { dryRun?: unknown; tags?: unknown }): boolean {
