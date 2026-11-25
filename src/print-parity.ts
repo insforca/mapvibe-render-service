@@ -278,7 +278,9 @@ export function resolvePrintCamera(input: PrintCameraInput): PrintCamera {
     };
   }
 
-  const explicitViewport = false; // DELIBERATE BREAK (frame parity proof), reverted next commit
+  const explicitViewport =
+    input.mapWidth != null && input.mapWidth > 0 &&
+    input.mapHeight != null && input.mapHeight > 0;
 
   let zoom = input.zoom;
   let source: PrintCameraSource = explicitViewport ? 'snapshot-viewport' : 'editor-viewport';
