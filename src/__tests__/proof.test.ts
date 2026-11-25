@@ -30,6 +30,8 @@ vi.mock('../render-dims.js', async importOriginal => ({
 }));
 
 const key = 'offline-proof-test';
+// Proof-only key (CP4b): accepted by /proof only, never by /render or /fulfill.
+const proofKey = 'offline-proof-only-key-0123456789';
 const snapshot = {
   center: [0, 0], zoom: 8, widthCm: 1.27, heightCm: 2.54,
   displayCity: 'Private city label', showPosterText: false, includeCredits: false,
@@ -47,6 +49,7 @@ let time = Date.UTC(2030, 0, 1);
 
 beforeAll(async () => {
   vi.stubEnv('RENDER_API_SECRET', key);
+  vi.stubEnv('PROOF_API_SECRET', proofKey);
   vi.stubEnv('GELATO_API_KEY', 'offline');
   vi.stubEnv('MAX_CONCURRENT', '1');
   vi.stubEnv('VERCEL_APP_ORIGIN', 'https://sprite.invalid');
@@ -103,6 +106,28 @@ const orderEffects = [put, fulfillGelato, fulfillPrintful, planFulfillment, reje
 function expectNoOrderEffects() {
   for (const effect of [...orderEffects, fetch]) expect(effect).not.toHaveBeenCalled();
 }
+
+describe('proof-only key', () => {
+  afterEach(expectNoOrderEffects);
+
+  it('is accepted by /proof (an invalid body then fails validation, not auth)', async () => {
+    const res = await post({}, { 'x-api-key': proofKey });
+    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(400);
+  });
+
+  it('is refused by /render and /fulfill', async () => {
+    expect((await post({}, { 'x-api-key': proofKey }, '/render')).status).toBe(401);
+    expect((await post({}, { 'x-api-key': proofKey }, '/fulfill')).status).toBe(401);
+    expect((await post({}, { authorization: 'Bearer ' + proofKey }, '/fulfill')).status).toBe(401);
+  });
+
+  it('leaves RENDER_API_SECRET working on all three routes', async () => {
+    for (const path of ['/proof', '/render', '/fulfill']) {
+      expect((await post({}, { 'x-api-key': key }, path)).status).not.toBe(401);
+    }
+  });
+});
 
 describe('POST /proof', () => {
   // Includes rejection, busy, rate-limited, corrupt render and success paths.

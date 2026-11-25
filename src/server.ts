@@ -12,6 +12,7 @@
  *
  * Env vars:
  *   RENDER_API_SECRET        — required; auth for /render, /proof and /fulfill
+ *   PROOF_API_SECRET         — optional (>= 24 chars); accepted by /proof only, never /render or /fulfill
  *   MAX_CONCURRENT           — max simultaneous renders (default: 4)
  *   MAX_QUEUE_SIZE           — max requests waiting in queue before 503 (default: 20)
  *   PRINTFUL_API_KEY         — Printful OAuth token
@@ -114,6 +115,15 @@ const API_SECRET = process.env.RENDER_API_SECRET ?? '';
 if (!API_SECRET) {
   console.error('[render] FATAL: RENDER_API_SECRET env var not set — refusing to start');
   process.exit(1);
+}
+
+// Proof-only key (CP4b): accepted by /proof alone, never by /render or /fulfill,
+// so an automated weekly proof never holds a key that can place an order.
+// Ignored (with a warning) when shorter than 24 characters.
+const PROOF_SECRET_RAW = (process.env.PROOF_API_SECRET ?? '').trim();
+const PROOF_SECRET = PROOF_SECRET_RAW.length >= 24 ? PROOF_SECRET_RAW : '';
+if (PROOF_SECRET_RAW && !PROOF_SECRET) {
+  console.warn('[render] PROOF_API_SECRET is shorter than 24 characters; ignoring it');
 }
 
 // ── Printful constants / client extracted to ./printful.ts ──────────────────
@@ -323,14 +333,24 @@ function constantTimeEqual(a: string, b: string): boolean {
  * while still varying what they disclose. checkAuth() is the gate; this is the
  * question. Same constant-time comparison either way.
  */
+function requestToken(req: Request): string {
+  const raw = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  return typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
+}
+
 function isAuthed(req: Request): boolean {
-  const raw   = req.headers['x-api-key'] ?? req.headers['authorization']?.replace(/^Bearer\s+/i, '');
-  const token = typeof raw === 'string' ? raw : (Array.isArray(raw) ? raw[0] : '');
-  return constantTimeEqual(token, API_SECRET);
+  return constantTimeEqual(requestToken(req), API_SECRET);
 }
 
 function checkAuth(req: Request, res: Response): boolean {
   const ok = isAuthed(req);
+  if (!ok) res.status(401).json({ error: 'Unauthorized' });
+  return ok;
+}
+
+/** /proof only: the main key, or the proof-only key when one is configured. */
+function checkProofAuth(req: Request, res: Response): boolean {
+  const ok = isAuthed(req) || (PROOF_SECRET !== '' && constantTimeEqual(requestToken(req), PROOF_SECRET));
   if (!ok) res.status(401).json({ error: 'Unauthorized' });
   return ok;
 }
@@ -1105,7 +1125,7 @@ app.post('/proof', (req, res, next) => {
   res.once('close', () => console.log(
     `[proof] status=${res.writableEnded ? res.statusCode : 'disconnected'} elapsedMs=${Date.now() - started}`,
   ));
-  if (!checkAuth(req, res)) return;
+  if (!checkProofAuth(req, res)) return;
   while (proofRequests.length && proofRequests[0] <= started - 60_000) proofRequests.shift();
   if (proofRequests.length >= 6) {
     res.set('Retry-After', String(Math.ceil((proofRequests[0] + 60_000 - started) / 1000)));
