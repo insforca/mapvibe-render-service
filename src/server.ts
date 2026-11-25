@@ -350,7 +350,11 @@ function checkAuth(req: Request, res: Response): boolean {
 
 /** /proof only: the main key, or the proof-only key when one is configured. */
 function checkProofAuth(req: Request, res: Response): boolean {
-  const ok = isAuthed(req) || (PROOF_SECRET !== '' && constantTimeEqual(requestToken(req), PROOF_SECRET));
+  // Both comparisons always run, so timing does not reveal which key matched (Copilot review).
+  const token = requestToken(req);
+  const main = constantTimeEqual(token, API_SECRET);
+  const proof = constantTimeEqual(token, PROOF_SECRET || API_SECRET) && PROOF_SECRET !== '';
+  const ok = main || proof;
   if (!ok) res.status(401).json({ error: 'Unauthorized' });
   return ok;
 }
