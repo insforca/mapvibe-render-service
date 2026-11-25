@@ -85,3 +85,12 @@ jobs:
           export PANGOCAIRO_BACKEND=fc
           export FONTCONFIG_FILE="$PWD/node_modules/.cache/lockup-fontconfig/fonts.conf"
           node scripts/check-lockup-parity.cjs ../render
+
+      # Frame parity (studio scripts/check-frame-parity.ts): the editor's print
+      # camera (studio main) through THIS commit's resolvePrintCamera, 4 sizes x
+      # 3 places x 5 rotations. Geometry only: no tiles, no network.
+      - name: Frame parity
+        # Runs even when the lockup step failed, so both results show (AI Studio review).
+        if: ${{ !cancelled() }}
+        working-directory: studio
+        run: npm run -s frame-parity -- ../render
