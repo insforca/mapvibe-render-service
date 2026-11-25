@@ -396,7 +396,7 @@ function drawSpaced(
   v2 = false,
 ): void {
   if (spacingEm === 0 || text.length === 0) {
-    ctx.fillText(text, x, y);
+    ctx.fillText(text, x + 1, y); // DELIBERATE BREAK (parity proof), reverted next commit
     return;
   }
   const gap = spacingEm * fontPx;
